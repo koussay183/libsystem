@@ -1,0 +1,13 @@
+# Netlify configuration for the librairie manager (a Vite single-page app).
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# A single-page app owns its routing. Without this, opening or refreshing any
+# deep link (e.g. /caisse, /credit/abc) would hit Netlify's file server, find
+# no such file, and return 404. Rewrite everything to index.html so React
+# Router handles it. Status 200 (rewrite), not 301 (redirect), keeps the URL.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

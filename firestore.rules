@@ -1,0 +1,20 @@
+rules_version = '2';
+
+// ⚠️  DEMO MODE — the database is OPEN (public read + write).
+//
+// The app is currently gated only by a static password checked in the browser
+// (see src/auth/AuthContext.tsx). That is a convenience lock for a client test,
+// NOT security: the Firebase web key ships in the bundle, so anyone with the
+// URL could read or write this data directly. This is fine for a short test
+// with throwaway data — do NOT keep it for a real shop.
+//
+// BEFORE GOING LIVE, put Firebase Authentication back and lock access to the
+// owner's account (the previous version of this file, in git history, did
+// exactly that with an `isOwner()` UID check).
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

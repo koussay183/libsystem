@@ -1,0 +1,62 @@
+/* ---------------------------------------------------------------------------
+   All component styling comes from Chakra UI (see src/theme.ts).
+   This file only holds the receipt print rules, which Chakra can't express:
+   everything is hidden except #print-area, sized for an 80mm thermal roll by
+   default, or A4 when the .a4 class is set.
+--------------------------------------------------------------------------- */
+
+@page thermal {
+  size: 80mm auto;
+  margin: 3mm;
+}
+@page a4 {
+  size: A4;
+  margin: 14mm;
+}
+
+#print-area {
+  display: none;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #print-area,
+  #print-area * {
+    visibility: visible !important;
+  }
+  #print-area {
+    display: block !important;
+    position: absolute;
+    top: 0;
+    inset-inline-start: 0;
+    background: #fff;
+    color: #000;
+    font-family: ui-monospace, "Courier New", monospace;
+  }
+  #print-area.thermal {
+    page: thermal;
+    width: 74mm;
+    font-size: 12px;
+  }
+  #print-area.a4 {
+    page: a4;
+    width: 100%;
+    font-size: 13px;
+  }
+  /* Statements (the credit carnet, a wholesale invoice) print as tables. */
+  #print-area table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  #print-area th,
+  #print-area td {
+    padding: 3px 4px;
+    text-align: start;
+    border-bottom: 1px solid #999;
+  }
+  #print-area tr {
+    break-inside: avoid;
+  }
+}

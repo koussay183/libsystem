@@ -1,0 +1,17 @@
+{
+  "name": "Librairie — Gestion",
+  "short_name": "Librairie",
+  "description": "Stock, factures, credit clients et sante financiere",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f5f4",
+  "theme_color": "#236462",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
