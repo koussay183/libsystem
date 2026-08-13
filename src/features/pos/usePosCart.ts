@@ -29,6 +29,9 @@ export interface ParkedSession {
 // v2: lines gained an `id`, misc lines and returns. v1 baskets cannot be read.
 const PARKED_KEY = 'pos.parked.v2'
 
+/** Nobody sells a thousand of anything on one line — past this it is a typo. */
+const MAX_QTY = 999
+
 let seq = 0
 const nextId = () => `l${Date.now().toString(36)}${(seq++).toString(36)}`
 
@@ -108,10 +111,15 @@ export function usePosCart() {
 
   /** qty 0 drops the line; negative means the client is bringing goods back. */
   const setQty = useCallback((id: string, qty: number) => {
+    // A barcode scanned into a selected quantity cell would otherwise turn the
+    // line into billions of units, and the total with it.
+    const n = Number.isFinite(qty)
+      ? Math.max(-MAX_QTY, Math.min(MAX_QTY, Math.trunc(qty)))
+      : 0
     setLines((prev) =>
-      qty === 0
+      n === 0
         ? prev.filter((l) => l.id !== id)
-        : prev.map((l) => (l.id === id ? { ...l, qty } : l)),
+        : prev.map((l) => (l.id === id ? { ...l, qty: n } : l)),
     )
   }, [])
 

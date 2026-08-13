@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import {
   collection,
   onSnapshot,
@@ -16,6 +16,7 @@ import {
   deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { createLiveCollection } from '@/lib/liveCollection'
 import type { Customer, CreditEntry } from '@/types/models'
 
 const CUSTOMERS = 'customers'
@@ -27,30 +28,18 @@ export interface CustomerInput {
   note?: string
 }
 
-/** Live list of all customers, ordered by name. */
+/** Live list of all customers, ordered by name — one shared subscription. */
+const customersStore = createLiveCollection<Customer>(() =>
+  query(collection(db, CUSTOMERS), orderBy('name')),
+)
+
 export function useCustomers() {
-  const [customers, setCustomers] = useState<Customer[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const q = query(collection(db, CUSTOMERS), orderBy('name'))
-    return onSnapshot(
-      q,
-      (snap) => {
-        setCustomers(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Customer, 'id'>) })),
-        )
-        setLoading(false)
-      },
-      (err) => {
-        setError(err.message)
-        setLoading(false)
-      },
-    )
-  }, [])
-
-  return { customers, loading, error }
+  const state = useSyncExternalStore(
+    customersStore.subscribe,
+    customersStore.getSnapshot,
+    customersStore.getSnapshot,
+  )
+  return { customers: state.data, loading: state.loading, error: state.error }
 }
 
 /** Live single customer document. */

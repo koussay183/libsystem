@@ -5,6 +5,7 @@ import {
   query,
   orderBy,
   limit,
+  where,
   doc,
   writeBatch,
   increment,
@@ -42,7 +43,24 @@ export interface RecordedSale {
   id: string
   ticketNo: string
   date: number
+  /**
+   * True when the shop was offline: the ticket is safely written to this
+   * device and will reach the server on its own, but is not there yet.
+   */
+  pending: boolean
 }
+
+/**
+ * How long to wait for the server before telling the cashier the ticket is in.
+ *
+ * Firestore resolves a commit only when the server acknowledges it, so with the
+ * line down the promise below never settles: the till would spin forever with
+ * no ticket and no error, and a cashier who reloads and rings the sale again
+ * would have it recorded twice once the connection returned. By then the write
+ * is already durable on this device, so after this delay we say so and let him
+ * carry on serving.
+ */
+const OFFLINE_ACK_MS = 3500
 
 /** Live list of sales, newest first. Capped so the till stays fast. */
 export function useSales(max = 200) {
@@ -66,6 +84,38 @@ export function useSales(max = 200) {
   }, [max])
 
   return { sales, loading, error }
+}
+
+/**
+ * Only today's tickets. The home screen shows "sales so far today" and nothing
+ * else, and downloading the last few hundred tickets to add up two numbers is
+ * a lot of documents to pull over a shop connection. A range filter on the same
+ * field it is ordered by needs no composite index.
+ */
+export function useTodaySales() {
+  const [sales, setSales] = useState<Sale[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const q = query(
+      collection(db, SALES),
+      where('date', '>=', start.getTime()),
+      orderBy('date', 'desc'),
+    )
+    return onSnapshot(
+      q,
+      (snap) => {
+        setSales(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Sale, 'id'>) })))
+        setLoading(false)
+      },
+      // The day's total is a nicety; it must never block the home screen.
+      () => setLoading(false),
+    )
+  }, [])
+
+  return { sales, loading }
 }
 
 /**
@@ -170,6 +220,20 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
     })
   }
 
-  await batch.commit()
-  return { id: saleRef.id, ticketNo, date: now }
+  const commit = batch.commit()
+  // A rejection that arrives after the race below has already been decided
+  // still needs a handler, or it surfaces as an unhandled rejection.
+  commit.catch(() => {})
+
+  let pending = false
+  await Promise.race([
+    commit,
+    new Promise<void>((resolve) => {
+      setTimeout(() => {
+        pending = true
+        resolve()
+      }, OFFLINE_ACK_MS)
+    }),
+  ])
+  return { id: saleRef.id, ticketNo, date: now, pending }
 }

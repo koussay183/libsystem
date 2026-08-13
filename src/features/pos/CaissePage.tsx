@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -38,20 +38,58 @@ import {
   Percent,
   Keyboard,
   AlertTriangle,
+  CheckCircle2,
+  Volume2,
+  VolumeX,
+  Banknote,
+  Coins,
 } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
+import {
+  beepOk,
+  beepWarn,
+  beepError,
+  beepDone,
+  soundEnabled,
+  setSoundEnabled,
+} from '@/lib/beep'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { recordSale } from '@/features/sales/useSales'
 import { usePosCart } from './usePosCart'
+import { useBarcodeScanner } from './useBarcodeScanner'
 import type { PosLine } from './usePosCart'
 import { Ticket } from './Ticket'
 import type { TicketData } from './Ticket'
 import type { PaymentMode, Product, Customer } from '@/types/models'
 
 type PayKind = 'cash' | 'credit' | 'partial'
+
+/**
+ * A barcode as the till compares it. Coerced through String() because a code
+ * restored from a JSON backup can come back as a number, and a number never
+ * matches the scanned text.
+ */
+const codeOf = (v: unknown) => String(v ?? '').trim()
+
+/**
+ * The same code without the separators catalogues like to print inside ISBNs.
+ * A shelf label reading 978-2-07-036822-8 has to match the 9782070368228 the
+ * scanner reads off the very same book.
+ */
+const loose = (code: string) => code.replace(/[\s-]/g, '')
+
+/**
+ * How long one code stays "already dealt with". A scanner's trailing Enter
+ * lands a few milliseconds after the code it belongs to; without this the
+ * article goes on the ticket twice, which is money.
+ */
+const CONSUMED_MS = 400
+
+/** Codes held while the stock loads. Deep enough for a basket, not a shift. */
+const MAX_PENDING = 20
 
 /**
  * Quantity is edited as free text and only committed on blur/Enter — otherwise
@@ -89,10 +127,11 @@ function QtyCell({
           e.currentTarget.blur()
         }
       }}
-      size="lg"
-      w="4.5rem"
+      size="xl"
+      w="5rem"
       textAlign="center"
       fontWeight="bold"
+      fontSize="xl"
       inputMode="numeric"
     />
   )
@@ -172,11 +211,45 @@ export function CaissePage() {
   const scanRef = useRef<HTMLInputElement>(null)
   const [scan, setScan] = useState('')
   const [notice, setNotice] = useState('')
+  /** Severity of `notice` — "the stock is still loading" is not a warning. */
+  const [noticeStatus, setNoticeStatus] = useState<'info' | 'warning'>('warning')
+  /** Only an unknown code offers to create the article on the spot. */
+  const [canCreate, setCanCreate] = useState(false)
   const [busy, setBusy] = useState(false)
   const [saveError, setSaveError] = useState('')
 
   // Ambiguous scan → let the cashier pick instead of guessing.
   const [matches, setMatches] = useState<Product[] | null>(null)
+
+  /**
+   * The article that just went in. The cashier is looking at the customer and
+   * at the goods, not at the screen, so the confirmation has to be big enough
+   * to catch out of the corner of an eye - and undoable in one click.
+   */
+  const [lastAdded, setLastAdded] = useState<{
+    productId: string | null
+    name: string
+    price: number
+  } | null>(null)
+
+  const [sound, setSound] = useState(soundEnabled)
+
+  /**
+   * Codes scanned before the stock finished loading, in the order they came,
+   * replayed once it lands. A queue and not a single slot: a cashier who
+   * empties a basket across the counter while the app is still waking up would
+   * otherwise keep only the last article.
+   */
+  const pendingScans = useRef<string[]>([])
+
+  /**
+   * The code that was just dealt with, and when. Every path that can ring an
+   * article up goes through here, so the scanner's trailing Enter — or a
+   * re-render arriving late with stale text — cannot sell the same unit twice.
+   * Keyed on the code itself, so scanning two different articles back to back
+   * is never blocked.
+   */
+  const consumed = useRef({ term: '', at: 0 })
 
   // Unknown code → create the product without leaving the till.
   const [newOpen, setNewOpen] = useState(false)
@@ -222,12 +295,29 @@ export function CaissePage() {
   const money = (m: number) => formatMoney(m, { symbol })
   const focusScan = () => scanRef.current?.focus()
 
-  const anyDialogOpen =
-    payOpen || miscOpen || newOpen || discountOpen || !!matches || !!priceLine || !!ticket
+  /**
+   * Dialogs that own the keyboard. The receipt shown after a sale is
+   * deliberately not one of them: scanning the next customer's first article
+   * closes it and opens the next ticket by itself, which is one less button to
+   * find between two customers.
+   */
+  const dialogBlocking =
+    payOpen || miscOpen || newOpen || discountOpen || !!matches || !!priceLine
+  const anyDialogOpen = dialogBlocking || !!ticket
 
+  /**
+   * Read from inside the scanner wedge, which is armed once and outlives the
+   * render it was created in. A ref rather than the value itself, so a scan
+   * never has to re-arm the listener.
+   */
+  const blocked = useRef(false)
+  blocked.current = dialogBlocking || busy
+
+  // The cursor belongs in the scan field at all times - coming back from any
+  // dialog, the next scan must land without a click.
   useEffect(() => {
-    focusScan()
-  }, [])
+    if (!anyDialogOpen) focusScan()
+  }, [anyDialogOpen])
 
   /**
    * A parked ticket can outlive the product it holds: if the article was
@@ -247,47 +337,275 @@ export function CaissePage() {
   const isRefund = cart.total < 0
 
   // --- scanning ---------------------------------------------------------
-  const submitScan = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault()
-    const term = scan.trim()
-    if (!term) return
-    setNotice('')
-    setScan('')
 
-    const byBarcode = products.find((p) => p.barcode === term)
-    if (byBarcode) {
-      cart.addProduct(byBarcode)
-      focusScan()
-      return
+  /**
+   * barcode -> the products carrying it. Indexed under both the code as typed
+   * and its separator-free form, so a hyphenated ISBN on the shelf and the bare
+   * digits the scanner reads land on the same article. Two products can share
+   * one code (a data-entry slip), which is why the value is a list.
+   */
+  const byBarcode = useMemo(() => {
+    const index = new Map<string, Product[]>()
+    const put = (key: string, p: Product) => {
+      if (!key) return
+      const already = index.get(key)
+      if (!already) index.set(key, [p])
+      else if (!already.includes(p)) already.push(p)
     }
+    for (const p of products) {
+      const code = codeOf(p.barcode)
+      if (!code) continue
+      put(code, p)
+      put(loose(code), p)
+    }
+    return index
+  }, [products])
 
-    const needle = term.toLowerCase()
-    const found = products.filter(
-      (p) =>
-        p.name.toLowerCase().includes(needle) ||
-        (p.family ?? '').toLowerCase().includes(needle),
-    )
+  /**
+   * `physical` is the same burst read off the physical keys: on the French
+   * AZERTY layout these machines run, a scanner still set to US sends the
+   * digit row as &é"'(-è_çà, and this is what turns that back into digits.
+   */
+  const findByCode = useCallback(
+    (term: string, physical?: string | null) => {
+      for (const candidate of [term, loose(term), physical, physical && loose(physical)]) {
+        if (!candidate) continue
+        const hit = byBarcode.get(candidate)
+        if (hit) return hit
+      }
+      return null
+    },
+    [byBarcode],
+  )
 
-    if (found.length === 1) {
-      cart.addProduct(found[0])
-    } else if (found.length > 1) {
-      // Never guess: picking the first alphabetical match sells the wrong item.
-      setMatches(found.slice(0, 40))
-      setNotice(t('pos.manyMatches', { term }))
-      return
-    } else {
+  const addToCart = useCallback(
+    (p: Product) => {
+      cart.addProduct(p)
+      setLastAdded({ productId: p.id, name: p.name, price: p.salePrice })
+      setNotice('')
+      setCanCreate(false)
+      setMatches(null)
+      // Selling below the counted stock is allowed - the shelf knows better
+      // than the count - but it says so out loud instead of silently.
+      if (p.quantity <= 0) beepWarn()
+      else beepOk()
+      focusScan()
+    },
+    [cart.addProduct],
+  )
+
+  /**
+   * The one place a code becomes a line on the ticket, whatever brought it in:
+   * the scanner, the Enter key, or a barcode completed while typing.
+   */
+  const lookup = useCallback(
+    (raw: string, physical: string | null = null) => {
+      const term = codeOf(raw)
+      if (!term) {
+        setScan('')
+        return
+      }
+
+      // The scanner's trailing Enter, arriving just after the code it belongs
+      // to already went in.
+      if (term === consumed.current.term && performance.now() - consumed.current.at < CONSUMED_MS) {
+        setScan('')
+        return
+      }
+
+      // A dialog owns the screen, the sale is being written, or the navigation
+      // drawer is open. The scanner's Enter has already been swallowed by the
+      // wedge; drop the code rather than drop an article into a basket that is
+      // on its way out. Queried from the DOM so a dialog added later cannot be
+      // forgotten here.
+      if (
+        blocked.current ||
+        document.querySelector('[data-scope="drawer"][data-state="open"]')
+      ) {
+        // The refusing tone, not the warning one: nothing was added and the
+        // cashier has to scan again once the screen is his own.
+        beepError()
+        // The characters have to go, and the code has to count as dealt with.
+        // Left in the field they would be picked up by the auto-add effect the
+        // moment the sale finished — quietly landing this customer's article on
+        // the NEXT customer's ticket.
+        consumed.current = { term, at: performance.now() }
+        setScan('')
+        setNoticeStatus('warning')
+        setNotice(t('pos.scanRefused'))
+        return
+      }
+
+      consumed.current = { term, at: performance.now() }
+      setScan('')
+      setCanCreate(false)
+
+      // A scan is also how the cashier says "next customer, please".
+      setTicket(null)
+      focusScan()
+
+      if (productsLoading) {
+        // Answering "unknown code" here would be a lie, and offering to create
+        // the article would duplicate it. Hold it and replay it below.
+        if (pendingScans.current.length < MAX_PENDING) pendingScans.current.push(term)
+        setNoticeStatus('info')
+        setNotice(t('pos.waitingStock'))
+        return
+      }
+
+      setNotice('')
+
+      const exact = findByCode(term, physical)
+      if (exact && exact.length === 1) {
+        addToCart(exact[0])
+        return
+      }
+
+      const needle = term.toLowerCase()
+      const found =
+        exact && exact.length > 1
+          ? exact
+          : products.filter(
+              (p) =>
+                p.name.toLowerCase().includes(needle) ||
+                (p.family ?? '').toLowerCase().includes(needle),
+            )
+
+      if (found.length === 1) {
+        addToCart(found[0])
+        return
+      }
+      if (found.length > 1) {
+        // Never guess: picking the first alphabetical match sells the wrong item.
+        setMatches(found.slice(0, 40))
+        setNoticeStatus('warning')
+        setNotice(t('pos.manyMatches', { term }))
+        beepWarn()
+        return
+      }
+
+      setNoticeStatus('warning')
       setNotice(t('pos.notFound', { term }))
+      setCanCreate(true)
+      beepError()
       setNewCode(/^\d+$/.test(term) ? term : '')
       setNewName(/^\d+$/.test(term) ? '' : term)
+      focusScan()
+    },
+    [addToCart, findByCode, products, productsLoading, t],
+  )
+
+  /**
+   * The hand scanner types the code and simply stops - it sends no Enter. The
+   * wedge recognises the burst by its speed and rings the article up on its
+   * own, from anywhere on the page.
+   */
+  const scanner = useBarcodeScanner({ targetRef: scanRef, onScan: lookup })
+
+  /**
+   * A complete barcode sitting in the field IS an article - no key to press.
+   * Held back while a longer code starts with the same digits, so a code that
+   * is the beginning of another one is never rung up early.
+   */
+  useEffect(() => {
+    const term = codeOf(scan)
+    if (term.length < 4 || productsLoading || busy || dialogBlocking) return
+    if (term === consumed.current.term && performance.now() - consumed.current.at < CONSUMED_MS) {
+      return
+    }
+    const hit = findByCode(term)
+    if (!hit || hit.length !== 1) return
+    for (const p of products) {
+      const code = codeOf(p.barcode)
+      if (code && code !== term && code.startsWith(term)) return
+    }
+    // The wedge is still holding the same characters; without this it would
+    // fire a moment later and ring the very same unit up twice.
+    scanner.reset()
+    consumed.current = { term, at: performance.now() }
+    setScan('')
+    addToCart(hit[0])
+  }, [scan, findByCode, products, productsLoading, busy, dialogBlocking, addToCart, scanner])
+
+  /** The stock arrived - serve every code that was scanned while it loaded. */
+  useEffect(() => {
+    if (productsLoading) return
+    const held = pendingScans.current
+    if (held.length === 0) return
+    pendingScans.current = []
+    for (const code of held) {
+      // Each code was stamped as dealt with when it went on hold, and the same
+      // article can legitimately appear twice in the queue. Clear the stamp
+      // before every replay, or the second copy is mistaken for a scanner's
+      // trailing Enter and dropped.
+      consumed.current = { term: '', at: 0 }
+      lookup(code)
+    }
+  }, [productsLoading, lookup])
+
+  /** The confirmation fades by itself; it must not outlive the next customer. */
+  useEffect(() => {
+    if (!lastAdded) return
+    const id = setTimeout(() => setLastAdded(null), 6000)
+    return () => clearTimeout(id)
+  }, [lastAdded])
+
+  const submitScan = (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
+    scanner.reset()
+    lookup(scan)
+  }
+
+  /**
+   * Bluetooth imagers and phone-camera scanners hand the code over as a paste
+   * instead of typing it, so the burst detector never sees a single keystroke.
+   */
+  const pasteScan = (text: string) => {
+    const term = codeOf(text)
+    if (term.length < 4) return false
+    scanner.reset()
+    lookup(term)
+    return true
+  }
+
+  const chooseMatch = (p: Product) => {
+    setMatches(null)
+    setScan('')
+    addToCart(p)
+  }
+
+  /** Removes one unit of the article just added - the "oops, twice" button. */
+  const undoLastAdded = () => {
+    const target = lastAdded
+    setLastAdded(null)
+    if (!target) return
+    for (let i = cart.lines.length - 1; i >= 0; i -= 1) {
+      const l = cart.lines[i]
+      const same = target.productId
+        ? l.productId === target.productId
+        : l.productId === null && l.name === target.name
+      if (same && l.qty > 0) {
+        cart.setQty(l.id, l.qty - 1)
+        break
+      }
     }
     focusScan()
   }
 
-  const chooseMatch = (p: Product) => {
-    cart.addProduct(p)
-    setMatches(null)
-    setNotice('')
-    setScan('')
+  /**
+   * "3 articles" tells the cashier nothing when three tickets are waiting. The
+   * first article and the amount are what he actually recognises a basket by.
+   */
+  const parkLabel = () => {
+    const first = cart.lines[0]?.name ?? ''
+    return `${first} · ${cart.itemCount} ${t('pos.items')} · ${money(cart.total)}`
+  }
+
+  const toggleSound = () => {
+    const next = !sound
+    setSound(next)
+    setSoundEnabled(next)
+    if (next) beepOk()
     focusScan()
   }
 
@@ -317,7 +635,7 @@ export function CaissePage() {
         lowStockThreshold: 0,
       })
       if (!alive.current) return
-      cart.addProduct({
+      addToCart({
         id,
         barcode: newCode.trim() || null,
         name: newName.trim(),
@@ -330,6 +648,7 @@ export function CaissePage() {
       })
       setNewOpen(false)
       setNotice('')
+      setCanCreate(false)
       setNewName('')
       setNewCode('')
       focusScan()
@@ -345,6 +664,8 @@ export function CaissePage() {
     const price = parseMoney(miscPrice)
     if (miscName.trim() === '' || price === null) return
     cart.addMisc(miscName.trim(), price)
+    setLastAdded({ productId: null, name: miscName.trim(), price })
+    beepOk()
     setMiscOpen(false)
     setMiscName('')
     setMiscPrice('')
@@ -408,19 +729,24 @@ export function CaissePage() {
         received: receivedNow,
         mode,
         clientName: customers.find((c) => c.id === client)?.name,
+        pending: rec.pending,
       }
       setTicket(data)
       setLastTicket(data)
       cart.clear()
+      setLastAdded(null)
+      beepDone()
       setPayOpen(false)
       setCustomerId('')
       setReceived('')
     } catch {
       // The basket is deliberately left untouched: nothing was written, so the
       // cashier can simply try again instead of re-scanning the whole ticket.
+      // The dialog stays open on purpose: the cashier is mid-payment and the
+      // retry button has to be where he is already looking.
       if (alive.current) {
         setSaveError(t('pos.saveFailed'))
-        setPayOpen(false)
+        beepError()
       }
     } finally {
       submitting.current = false
@@ -434,7 +760,7 @@ export function CaissePage() {
       // An empty field means "exact money" — one keystroke for the common case.
       const receivedNow = given ?? cart.total
       if (receivedNow < cart.total) {
-        setPayError(t('pos.remaining'))
+        setPayError(t('pos.notEnough'))
         return
       }
       await finish('paid', cart.total, receivedNow, null)
@@ -454,10 +780,20 @@ export function CaissePage() {
     await finish(paidNow > 0 ? 'partial' : 'credit', paidNow, given, customerId)
   }
 
+  /**
+   * The paper format is a React state that the print stylesheet reads off the
+   * DOM, so printing has to wait for the render — a timer would sometimes fire
+   * first and print the previous format.
+   */
+  const [printRequest, setPrintRequest] = useState(0)
   const doPrint = (which: 'thermal' | 'a4') => {
     setPaper(which)
-    setTimeout(() => window.print(), 50)
+    setPrintRequest((n) => n + 1)
   }
+  useEffect(() => {
+    if (printRequest === 0) return
+    window.print()
+  }, [printRequest, paper])
 
   const reprintLast = () => {
     if (!lastTicket) return
@@ -473,7 +809,7 @@ export function CaissePage() {
         openPay('cash')
       } else if (e.key === 'F4') {
         e.preventDefault()
-        if (cart.lines.length > 0) cart.park(`${cart.itemCount} ${t('pos.items')}`)
+        if (cart.lines.length > 0) cart.park(parkLabel())
       } else if (e.key === 'F6') {
         e.preventDefault()
         setMiscOpen(true)
@@ -510,6 +846,17 @@ export function CaissePage() {
         </Box>
         <Heading size="2xl">{t('pos.title')}</Heading>
         <Box flex="1" />
+        {/* The beep is the confirmation the cashier actually notices, so it
+            has to be switchable from the till itself, not buried in settings. */}
+        <IconButton
+          aria-label={sound ? t('pos.soundOn') : t('pos.soundOff')}
+          title={sound ? t('pos.soundOn') : t('pos.soundOff')}
+          variant="outline"
+          size="lg"
+          onClick={toggleSound}
+        >
+          {sound ? <Volume2 size={20} /> : <VolumeX size={20} />}
+        </IconButton>
         {lastTicket && (
           <Button variant="outline" size="lg" onClick={reprintLast}>
             <Printer size={18} />
@@ -534,6 +881,9 @@ export function CaissePage() {
                     autoFocus
                     value={scan}
                     onChange={(e) => setScan(e.target.value)}
+                    onPaste={(e) => {
+                      if (pasteScan(e.clipboardData.getData('text'))) e.preventDefault()
+                    }}
                     placeholder={t('pos.scanPlaceholder')}
                     fontSize="lg"
                   />
@@ -552,13 +902,54 @@ export function CaissePage() {
                 </Flex>
               </form>
 
+              <Text mt={2} color="fg.subtle" fontSize="sm">
+                {t('pos.scanHint')}
+              </Text>
+
+              {/* The loud, unmissable "it went in". Big enough to read from
+                  arm's length, and undoable without hunting for a small icon. */}
+              {lastAdded && (
+                <Flex
+                  mt={3}
+                  align="center"
+                  gap={3}
+                  p={3}
+                  borderWidth="2px"
+                  borderColor="green.400"
+                  bg="green.50"
+                  borderRadius="lg"
+                >
+                  <Box color="green.600" flexShrink={0}>
+                    <CheckCircle2 size={34} />
+                  </Box>
+                  <Box minW={0} flex="1">
+                    <Text fontSize="xl" fontWeight="bold" color="green.900" truncate>
+                      {lastAdded.name}
+                    </Text>
+                    <Text fontSize="lg" color="green.700">
+                      {money(lastAdded.price)} · {t('pos.added')}
+                    </Text>
+                  </Box>
+                  <Button
+                    size="lg"
+                    variant="outline"
+                    colorPalette="red"
+                    flexShrink={0}
+                    onClick={undoLastAdded}
+                  >
+                    <Undo2 size={18} />
+                    {t('pos.undoAdd')}
+                  </Button>
+                </Flex>
+              )}
+
               {notice && (
-                <Alert.Root status="warning" mt={3}>
+                <Alert.Root status={noticeStatus} mt={3} size="lg">
                   <Alert.Indicator />
                   <Alert.Content>
-                    <Alert.Title>{notice}</Alert.Title>
+                    <Alert.Title fontSize="lg">{notice}</Alert.Title>
                   </Alert.Content>
-                  {!matches && (
+                  {canCreate && !matches && (
                     <Button size="lg" colorPalette="brand" onClick={openNewProduct}>
                       {t('pos.createFromScan')}
                     </Button>
@@ -566,15 +957,30 @@ export function CaissePage() {
                 </Alert.Root>
               )}
 
+              {/* Until now this alert blocked the sale with no way out of it:
+                  the article no longer exists, so the only move is dropping the
+                  lines — which is now the button next to the message. */}
               {staleLines.length > 0 && (
-                <Alert.Root status="error" mt={3}>
+                <Alert.Root status="error" mt={3} size="lg">
                   <Alert.Indicator />
                   <Alert.Content>
-                    <Alert.Title>{t('pos.productDeleted')}</Alert.Title>
+                    <Alert.Title fontSize="lg">{t('pos.productDeleted')}</Alert.Title>
                     <Alert.Description>
                       {staleLines.map((l) => l.name).join(', ')}
                     </Alert.Description>
                   </Alert.Content>
+                  <Button
+                    size="lg"
+                    colorPalette="red"
+                    flexShrink={0}
+                    onClick={() => {
+                      for (const l of staleLines) cart.removeLine(l.id)
+                      focusScan()
+                    }}
+                  >
+                    <Trash2 size={18} />
+                    {t('pos.removeStale')}
+                  </Button>
                 </Alert.Root>
               )}
             </Card.Body>
@@ -631,7 +1037,7 @@ export function CaissePage() {
                                 )}
                                 {stale && (
                                   <Badge colorPalette="red" variant="subtle">
-                                    {t('pos.productDeleted')}
+                                    {t('pos.deletedBadge')}
                                   </Badge>
                                 )}
                                 {!isReturn && l.productId && l.qty > l.stock && (
@@ -650,11 +1056,11 @@ export function CaissePage() {
                               <HStack justify="center" gap={1}>
                                 <IconButton
                                   aria-label={t('common.decrease')}
-                                  size="sm"
+                                  size="lg"
                                   variant="outline"
                                   onClick={() => cart.setQty(l.id, l.qty - 1)}
                                 >
-                                  <Minus size={16} />
+                                  <Minus size={20} />
                                 </IconButton>
                                 <QtyCell
                                   value={l.qty}
@@ -663,11 +1069,11 @@ export function CaissePage() {
                                 />
                                 <IconButton
                                   aria-label={t('common.increase')}
-                                  size="sm"
+                                  size="lg"
                                   variant="outline"
                                   onClick={() => cart.setQty(l.id, l.qty + 1)}
                                 >
-                                  <Plus size={16} />
+                                  <Plus size={20} />
                                 </IconButton>
                               </HStack>
                             </Table.Cell>
@@ -683,34 +1089,37 @@ export function CaissePage() {
                               <HStack gap={1} justify="flex-end">
                                 <IconButton
                                   aria-label={t('pos.editPrice')}
-                                  size="sm"
+                                  title={t('pos.editPrice')}
+                                  size="lg"
                                   variant="ghost"
                                   onClick={() => {
                                     setPriceLine(l)
                                     setPriceText(String(fromMinor(l.unitPrice)))
                                   }}
                                 >
-                                  <Pencil size={16} />
+                                  <Pencil size={20} />
                                 </IconButton>
                                 <IconButton
                                   aria-label={
                                     isReturn ? t('pos.undoReturn') : t('pos.returnLine')
                                   }
-                                  size="sm"
+                                  title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                                  size="lg"
                                   variant="ghost"
                                   colorPalette={isReturn ? 'gray' : 'orange'}
                                   onClick={() => cart.toggleReturn(l.id)}
                                 >
-                                  <Undo2 size={16} />
+                                  <Undo2 size={20} />
                                 </IconButton>
                                 <IconButton
                                   aria-label={t('common.remove')}
-                                  size="sm"
+                                  title={t('common.remove')}
+                                  size="lg"
                                   variant="ghost"
                                   colorPalette="red"
                                   onClick={() => cart.removeLine(l.id)}
                                 >
-                                  <Trash2 size={16} />
+                                  <Trash2 size={20} />
                                 </IconButton>
                               </HStack>
                             </Table.Cell>
@@ -777,22 +1186,31 @@ export function CaissePage() {
               )}
 
               <Stack gap={3} mt={5}>
+                {/* Two ways to finish, both big enough to hit without aiming:
+                    the customer hands over a round note (change to work out),
+                    or he hands over the exact amount and it is done in one tap. */}
                 <Button
-                  size="xl"
+                  h="4.5rem"
+                  fontSize="2xl"
                   colorPalette="green"
                   disabled={!canSettle}
+                  loading={busy}
                   onClick={() => openPay('cash')}
                 >
+                  <Banknote size={28} />
                   {isRefund ? t('pos.refundButton') : t('pos.pay')} · F2
                 </Button>
                 <Button
-                  size="lg"
+                  h="3.75rem"
+                  fontSize="xl"
                   variant="outline"
                   colorPalette="green"
                   disabled={!canSettle || isRefund}
+                  loading={busy}
                   onClick={() => finish('paid', cart.total, cart.total, null)}
                 >
-                  {t('pos.payExact')}
+                  <Coins size={24} />
+                  {t('pos.payExact')} · {money(cart.total)}
                 </Button>
                 <HStack gap={2}>
                   <Button
@@ -835,7 +1253,7 @@ export function CaissePage() {
                   flex="1"
                   variant="outline"
                   disabled={cart.lines.length === 0}
-                  onClick={() => cart.park(`${cart.itemCount} ${t('pos.items')}`)}
+                  onClick={() => cart.park(parkLabel())}
                 >
                   <PauseCircle size={18} />
                   {t('pos.park')}
@@ -866,12 +1284,14 @@ export function CaissePage() {
                     <Flex key={s.id} align="center" gap={2}>
                       <Button
                         flex="1"
+                        minW={0}
+                        size="lg"
                         variant="outline"
                         justifyContent="flex-start"
                         onClick={() => cart.resume(s.id)}
                       >
                         <PlayCircle size={18} />
-                        {s.label}
+                        <Text truncate>{s.label}</Text>
                       </Button>
                       <IconButton
                         aria-label={t('common.delete')}
@@ -891,7 +1311,7 @@ export function CaissePage() {
       </Grid>
 
       {/* ---------------- Ambiguous scan: choose the product ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={!!matches} onOpenChange={(e) => !e.open && setMatches(null)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={!!matches} onOpenChange={(e) => !e.open && setMatches(null)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -931,7 +1351,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Create a product from the till ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={newOpen} onOpenChange={(e) => setNewOpen(e.open)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={newOpen} onOpenChange={(e) => setNewOpen(e.open)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1004,7 +1424,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Free line ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={miscOpen} onOpenChange={(e) => setMiscOpen(e.open)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={miscOpen} onOpenChange={(e) => setMiscOpen(e.open)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1056,7 +1476,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Change one line's price ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={!!priceLine} onOpenChange={(e) => !e.open && setPriceLine(null)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={!!priceLine} onOpenChange={(e) => !e.open && setPriceLine(null)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1108,7 +1528,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Ticket discount ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={discountOpen} onOpenChange={(e) => setDiscountOpen(e.open)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={discountOpen} onOpenChange={(e) => setDiscountOpen(e.open)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1158,7 +1578,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Settlement ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={payOpen} onOpenChange={(e) => setPayOpen(e.open)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={payOpen} onOpenChange={(e) => setPayOpen(e.open)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1277,6 +1697,17 @@ export function CaissePage() {
                       </Text>
                     </Flex>
                   )}
+
+                  {saveError && (
+                    <Alert.Root status="error">
+                      <Alert.Indicator>
+                        <AlertTriangle size={20} />
+                      </Alert.Indicator>
+                      <Alert.Content>
+                        <Alert.Title>{saveError}</Alert.Title>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
                 </Stack>
               </Dialog.Body>
 
@@ -1299,7 +1730,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Ticket after a sale ---------------- */}
-      <Dialog.Root scrollBehavior="inside" open={!!ticket} onOpenChange={(e) => !e.open && setTicket(null)}>
+      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={!!ticket} onOpenChange={(e) => !e.open && setTicket(null)}>
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
@@ -1336,8 +1767,19 @@ export function CaissePage() {
                         </Text>
                       </Flex>
                     )}
+                    {ticket.pending && (
+                      <Alert.Root status="info" mt={2}>
+                        <Alert.Indicator />
+                        <Alert.Content>
+                          <Alert.Title>{t('pos.savedOffline')}</Alert.Title>
+                        </Alert.Content>
+                      </Alert.Root>
+                    )}
                   </Stack>
                 )}
+                <Text mt={4} color="fg.subtle" fontSize="sm">
+                  {t('pos.nextCustomerHint')}
+                </Text>
               </Dialog.Body>
               <Dialog.Footer>
                 <Button size="lg" variant="outline" onClick={() => doPrint('thermal')}>
@@ -1351,6 +1793,7 @@ export function CaissePage() {
                 <Button
                   size="lg"
                   colorPalette="brand"
+                  autoFocus
                   onClick={() => {
                     setTicket(null)
                     focusScan()

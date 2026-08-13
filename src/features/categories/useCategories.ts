@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import {
   collection,
-  onSnapshot,
   query,
   orderBy,
   where,
@@ -13,6 +12,7 @@ import {
   doc,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { createLiveCollection } from '@/lib/liveCollection'
 import type { Category } from '@/types/models'
 
 const COL = 'categories'
@@ -22,25 +22,17 @@ const PRODUCTS = 'products'
 const BATCH_LIMIT = 400
 
 /** Live list of managed product categories, ordered by name. */
+const categoriesStore = createLiveCollection<Category>(() =>
+  query(collection(db, COL), orderBy('name')),
+)
+
 export function useCategories() {
-  const [categories, setCategories] = useState<Category[]>([])
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const q = query(collection(db, COL), orderBy('name'))
-    return onSnapshot(
-      q,
-      (snap) => {
-        setCategories(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Category, 'id'>) })),
-        )
-        setLoading(false)
-      },
-      () => setLoading(false),
-    )
-  }, [])
-
-  return { categories, loading }
+  const state = useSyncExternalStore(
+    categoriesStore.subscribe,
+    categoriesStore.getSnapshot,
+    categoriesStore.getSnapshot,
+  )
+  return { categories: state.data, loading: state.loading }
 }
 
 export async function createCategory(name: string): Promise<string> {

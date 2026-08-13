@@ -23,7 +23,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { formatMoney } from '@/lib/money'
-import { useSales } from '@/features/sales/useSales'
+import { useTodaySales } from '@/features/sales/useSales'
 
 interface Tile {
   to: string
@@ -36,20 +36,17 @@ interface Tile {
 
 export function HomePage() {
   const { t } = useTranslation()
-  const { sales } = useSales(300)
+  const { sales } = useTodaySales()
   const symbol = t('money.symbol')
 
   // "How did today go?" is the first thing the owner wants when he walks in.
-  const today = useMemo(() => {
-    const start = new Date()
-    start.setHours(0, 0, 0, 0)
-    const from = start.getTime()
-    const todays = sales.filter((s) => s.date >= from)
-    return {
-      count: todays.length,
-      total: todays.reduce((sum, s) => sum + s.total, 0),
-    }
-  }, [sales])
+  const today = useMemo(
+    () => ({
+      count: sales.length,
+      total: sales.reduce((sum, s) => sum + s.total, 0),
+    }),
+    [sales],
+  )
 
   const tiles: Tile[] = [
     {

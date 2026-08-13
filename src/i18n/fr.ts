@@ -55,7 +55,8 @@ export const fr = {
     scanPlaceholder: 'Scannez un code-barres ou tapez un nom…',
     unknownCode: 'Code inconnu : {{code}}',
     emptyTicket: 'Ticket vide — scannez un produit pour commencer',
-    emptyTicketHint: 'Le curseur reste dans le champ : scannez sans rien cliquer.',
+    emptyTicketHint:
+      'Passez l’article devant le lecteur : il s’ajoute tout seul, sans rien cliquer.',
     items: 'articles',
     total: 'TOTAL',
     subtotal: 'Sous-total',
@@ -124,6 +125,20 @@ export const fr = {
     quickCash: 'Appoint rapide',
     keepOpen: 'Le ticket reste ouvert tant que rien n’est encaissé.',
     productDeleted: 'Produit supprimé du stock — retirez la ligne',
+    // --- scan sans toucher au clavier -----------------------------------
+    scanHint: 'Scannez : l’article s’ajoute tout seul. Pas besoin d’appuyer sur Entrée.',
+    added: 'ajouté au ticket',
+    undoAdd: 'Retirer',
+    waitingStock: 'Chargement du stock… l’article sera ajouté dès que c’est prêt',
+    soundOn: 'Couper le son',
+    soundOff: 'Activer le son',
+    nextCustomerHint: 'Scannez simplement l’article suivant : un nouveau ticket s’ouvre.',
+    notEnough: 'Le montant donné est inférieur au total',
+    deletedBadge: 'Supprimé',
+    removeStale: 'Retirer ces lignes',
+    scanRefused: 'Article non ajouté — terminez l’opération en cours puis scannez à nouveau',
+    savedOffline:
+      'Enregistré sur cet ordinateur. Ce sera envoyé automatiquement au retour d’internet.',
   },
   nav: {
     home: 'Accueil',

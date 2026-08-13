@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import {
   collection,
-  onSnapshot,
   query,
   orderBy,
   where,
@@ -16,6 +15,7 @@ import {
   increment,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { createLiveCollection } from '@/lib/liveCollection'
 import type { Product, ProductInput } from '@/types/models'
 
 const COL = 'products'
@@ -26,30 +26,22 @@ const BATCH_LIMIT = 400
 /** Firestore caps an `in` filter at 30 values. */
 const IN_LIMIT = 30
 
-/** Live-subscribes to the products collection, ordered by name. */
+/**
+ * The stock, live and ordered by name. Shared across every screen: the till,
+ * the stock table and the dialogs on top of it all read the same subscription
+ * instead of opening one each.
+ */
+const productsStore = createLiveCollection<Product>(() =>
+  query(collection(db, COL), orderBy('name')),
+)
+
 export function useProducts() {
-  const [products, setProducts] = useState<Product[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const q = query(collection(db, COL), orderBy('name'))
-    return onSnapshot(
-      q,
-      (snap) => {
-        setProducts(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Product, 'id'>) })),
-        )
-        setLoading(false)
-      },
-      (err) => {
-        setError(err.message)
-        setLoading(false)
-      },
-    )
-  }, [])
-
-  return { products, loading, error }
+  const state = useSyncExternalStore(
+    productsStore.subscribe,
+    productsStore.getSnapshot,
+    productsStore.getSnapshot,
+  )
+  return { products: state.data, loading: state.loading, error: state.error }
 }
 
 /** Creates the product and returns its new document id — the till adds the

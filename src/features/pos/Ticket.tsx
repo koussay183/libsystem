@@ -17,6 +17,8 @@ export interface TicketData {
   received: number
   mode: PaymentMode
   clientName?: string
+  /** Written on this device but not yet acknowledged by the server. */
+  pending?: boolean
 }
 
 const row: CSSProperties = { display: 'flex', justifyContent: 'space-between' }

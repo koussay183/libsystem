@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react'
+import { lazy, useEffect, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from '@/auth/AuthContext'
 import { RequireAuth } from '@/auth/RequireAuth'
@@ -10,15 +10,16 @@ import { isFirebaseConfigured } from '@/lib/firebase'
 
 // Code-split the feature pages so the initial load stays small (the dashboard
 // pulls in the charting library, which we don't want in the first bundle).
-const HomePage = lazy(() =>
-  import('@/features/home/HomePage').then((m) => ({ default: m.HomePage })),
-)
-const CaissePage = lazy(() =>
-  import('@/features/pos/CaissePage').then((m) => ({ default: m.CaissePage })),
-)
-const StockPage = lazy(() =>
-  import('@/features/stock/StockPage').then((m) => ({ default: m.StockPage })),
-)
+//
+// The three the owner actually opens every day keep a named loader so they can
+// also be fetched ahead of time — see the prefetch below.
+const loadHome = () => import('@/features/home/HomePage')
+const loadCaisse = () => import('@/features/pos/CaissePage')
+const loadStock = () => import('@/features/stock/StockPage')
+
+const HomePage = lazy(() => loadHome().then((m) => ({ default: m.HomePage })))
+const CaissePage = lazy(() => loadCaisse().then((m) => ({ default: m.CaissePage })))
+const StockPage = lazy(() => loadStock().then((m) => ({ default: m.StockPage })))
 const InvoicesPage = lazy(() =>
   import('@/features/invoices/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
 )
@@ -55,6 +56,28 @@ function PageFallback() {
 }
 
 export function App() {
+  /**
+   * Warm the till in the background as soon as the browser is idle. Opening the
+   * caisse is the first thing that happens every morning, and waiting for its
+   * chunk to download with a customer already at the counter is exactly the
+   * pause the shop feels. Fetched at idle so it never competes with the first
+   * paint, and errors are ignored — this is only ever an optimisation.
+   */
+  useEffect(() => {
+    if (!isFirebaseConfigured) return
+    const warm = () => {
+      void loadCaisse().catch(() => {})
+      void loadHome().catch(() => {})
+      void loadStock().catch(() => {})
+    }
+    if (typeof window.requestIdleCallback === 'function') {
+      const id = window.requestIdleCallback(warm, { timeout: 3000 })
+      return () => window.cancelIdleCallback?.(id)
+    }
+    const id = window.setTimeout(warm, 1500)
+    return () => window.clearTimeout(id)
+  }, [])
+
   // Before the owner pastes their Firebase config, show a setup screen
   // instead of a blank crash.
   if (!isFirebaseConfigured) return <SetupNeeded />

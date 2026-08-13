@@ -1,7 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useSyncExternalStore } from 'react'
 import {
   collection,
-  onSnapshot,
   query,
   orderBy,
   addDoc,
@@ -11,6 +10,7 @@ import {
   deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { createLiveCollection } from '@/lib/liveCollection'
 import type { Supplier } from '@/types/models'
 
 const COL = 'suppliers'
@@ -22,29 +22,17 @@ export interface SupplierInput {
 }
 
 /** Live list of managed suppliers (fournisseurs), ordered by name. */
+const suppliersStore = createLiveCollection<Supplier>(() =>
+  query(collection(db, COL), orderBy('name')),
+)
+
 export function useSuppliers() {
-  const [suppliers, setSuppliers] = useState<Supplier[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const q = query(collection(db, COL), orderBy('name'))
-    return onSnapshot(
-      q,
-      (snap) => {
-        setSuppliers(
-          snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Supplier, 'id'>) })),
-        )
-        setLoading(false)
-      },
-      (err) => {
-        setError(err.message)
-        setLoading(false)
-      },
-    )
-  }, [])
-
-  return { suppliers, loading, error }
+  const state = useSyncExternalStore(
+    suppliersStore.subscribe,
+    suppliersStore.getSnapshot,
+    suppliersStore.getSnapshot,
+  )
+  return { suppliers: state.data, loading: state.loading, error: state.error }
 }
 
 export async function createSupplier(input: SupplierInput): Promise<string> {
