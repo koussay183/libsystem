@@ -219,9 +219,13 @@ export function PurchasesTab() {
               <Table.Row>
                 <Table.ColumnHeader>{t('common.date')}</Table.ColumnHeader>
                 <Table.ColumnHeader>{t('purchases.supplier')}</Table.ColumnHeader>
-                <Table.ColumnHeader>{t('purchases.reference')}</Table.ColumnHeader>
+                <Table.ColumnHeader display={{ base: 'none', lg: 'table-cell' }}>
+                  {t('purchases.reference')}
+                </Table.ColumnHeader>
                 <Table.ColumnHeader textAlign="end">{t('common.total')}</Table.ColumnHeader>
-                <Table.ColumnHeader textAlign="end">{t('sales.paid')}</Table.ColumnHeader>
+                <Table.ColumnHeader textAlign="end" display={{ base: 'none', md: 'table-cell' }}>
+                  {t('sales.paid')}
+                </Table.ColumnHeader>
                 <Table.ColumnHeader textAlign="end">
                   {t('purchases.owedToSupplier')}
                 </Table.ColumnHeader>
@@ -246,7 +250,7 @@ export function PurchasesTab() {
                         {itemCount} {t('purchases.items')}
                       </Text>
                     </Table.Cell>
-                    <Table.Cell>
+                    <Table.Cell display={{ base: 'none', lg: 'table-cell' }}>
                       <Text>{p.reference || '—'}</Text>
                       {p.note && (
                         <Text fontSize="sm" color="fg.muted" truncate maxW="14rem">
@@ -257,7 +261,7 @@ export function PurchasesTab() {
                     <Table.Cell textAlign="end" whiteSpace="nowrap" fontWeight="bold">
                       {money(p.total)}
                     </Table.Cell>
-                    <Table.Cell textAlign="end" whiteSpace="nowrap">
+                    <Table.Cell textAlign="end" whiteSpace="nowrap" display={{ base: 'none', md: 'table-cell' }}>
                       {money(p.paid ?? 0)}
                     </Table.Cell>
                     <Table.Cell

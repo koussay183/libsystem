@@ -30,6 +30,7 @@ import {
 } from '@chakra-ui/react'
 import { useAuth } from '@/auth/AuthContext'
 import { LanguageToggle } from '@/components/LanguageToggle'
+import { SyncStatus, UpdateBanner } from '@/components/SyncStatus'
 
 interface NavItem {
   to: string
@@ -231,6 +232,7 @@ export function AppShell() {
 
       {/* ---------------- Content column ---------------- */}
       <Box ms={{ base: 0, lg: SIDEBAR_W }} minW={0}>
+        <UpdateBanner />
         <Flex
           as="header"
           position="sticky"
@@ -260,6 +262,7 @@ export function AppShell() {
           </Text>
 
           <HStack gap={{ base: 1, sm: 2 }} flexShrink={0}>
+            <SyncStatus />
             <LanguageToggle />
             <Button variant="ghost" size="lg" onClick={handleLogout}>
               <LogOut size={20} />

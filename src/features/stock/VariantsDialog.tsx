@@ -80,6 +80,13 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
   const [rows, setRows] = useState<VariantRow[]>([blankRow(), blankRow()])
   const [familyError, setFamilyError] = useState('')
   const [saveError, setSaveError] = useState('')
+  /**
+   * A barcode already in use, once the owner has been told. Shared codes are
+   * allowed — the till asks which article when one is scanned — so this is a
+   * warning he can accept rather than a wall.
+   */
+  const [sharedWarning, setSharedWarning] = useState('')
+  const sharedOk = sharedWarning !== ''
   const [busy, setBusy] = useState(false)
   const [newCategory, setNewCategory] = useState(false)
   const [newSupplier, setNewSupplier] = useState(false)
@@ -202,14 +209,17 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
       return
     }
 
-    // Two lines of the same family must not fight over one barcode either.
+    // Two lines sharing one barcode is usually a slip, so it is worth saying —
+    // but it is allowed: the same printed code really does turn up on different
+    // articles, and the till asks which one when it is scanned. Warn once, then
+    // let the second click through.
     const seen = new Map<string, string>()
     for (const row of filledRows) {
       const code = row.barcode.trim()
       if (code === '') continue
-      const twin = seen.get(code)
-      if (twin) {
-        setSaveError(t('stock.barcodeTaken', { name: twin }))
+      const other = seen.get(code)
+      if (other && !sharedOk) {
+        setSharedWarning(t('stock.barcodeShared', { name: other }))
         return
       }
       seen.set(code, composeName(familyName, row.variant))
@@ -236,12 +246,14 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     setBusy(true)
     try {
       const codes = inputs.map((i) => i.barcode ?? '').filter((c) => c !== '')
-      if (codes.length > 0) {
+      if (codes.length > 0 && !sharedOk) {
         const owners = await findProductsByBarcodes(codes)
         if (!alive.current) return
         const clash = codes.find((c) => owners.has(c))
         if (clash) {
-          setSaveError(t('stock.barcodeTaken', { name: owners.get(clash)?.name ?? clash }))
+          setSharedWarning(
+            t('stock.barcodeShared', { name: owners.get(clash)?.name ?? clash }),
+          )
           return
         }
       }
@@ -540,6 +552,16 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                     </Alert.Root>
                   )}
 
+                  {sharedWarning && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{sharedWarning}</Alert.Title>
+                        <Alert.Description>{t('stock.sharedCodeHint')}</Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   {saveError && (
                     <Alert.Root status="error">
                       <Alert.Indicator />
@@ -563,11 +585,11 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                 size="lg"
                 type="submit"
                 form="variants-form"
-                colorPalette="brand"
+                colorPalette={sharedOk ? 'orange' : 'brand'}
                 loading={busy}
                 loadingText={t('common.saving')}
               >
-                {t('common.save')}
+                {sharedOk ? t('stock.saveAnyway') : t('common.save')}
               </Button>
             </Dialog.Footer>
           </Dialog.Content>

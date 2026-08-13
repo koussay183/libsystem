@@ -17,6 +17,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { createLiveCollection } from '@/lib/liveCollection'
+import { track } from '@/lib/syncStatus'
 import type { Customer, CreditEntry } from '@/types/models'
 
 const CUSTOMERS = 'customers'
@@ -240,5 +241,5 @@ export async function addCreditEntry(
     balance: increment(delta),
     updatedAt: now,
   })
-  await batch.commit()
+  await track(batch.commit())
 }

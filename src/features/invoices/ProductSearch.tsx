@@ -5,6 +5,7 @@ import { Box, Button, Input, InputGroup, Text } from '@chakra-ui/react'
 import { Search } from 'lucide-react'
 import { formatMoney } from '@/lib/money'
 import { useProducts } from '@/features/stock/useProducts'
+import { sameCode } from '@/features/stock/barcode'
 import type { Product } from '@/types/models'
 
 /**
@@ -43,9 +44,16 @@ export function ProductSearch({
 
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
-    const exact = products.find((p) => p.barcode === q.trim())
-    const chosen = exact ?? results[0]
-    if (chosen) pick(chosen)
+    // Two articles can share a printed code. Picking the first one silently
+    // would restock the wrong product at the wrong cost price, so an ambiguous
+    // code leaves the results list up — that list IS the chooser.
+    const hits = products.filter((p) => sameCode(p.barcode, q))
+    if (hits.length === 1) {
+      pick(hits[0])
+      return
+    }
+    if (hits.length > 1) return
+    if (results[0]) pick(results[0])
   }
 
   return (

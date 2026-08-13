@@ -1,12 +1,12 @@
 import { useSyncExternalStore } from 'react'
 import {
   collection,
+  setDoc,
   query,
   orderBy,
   where,
   limit,
   getDocs,
-  addDoc,
   updateDoc,
   deleteDoc,
   doc,
@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { createLiveCollection } from '@/lib/liveCollection'
+import { track } from '@/lib/syncStatus'
 import type { Product, ProductInput } from '@/types/models'
 
 const COL = 'products'
@@ -44,15 +45,25 @@ export function useProducts() {
   return { products: state.data, loading: state.loading, error: state.error }
 }
 
-/** Creates the product and returns its new document id — the till adds the
- *  freshly created article to the open ticket without waiting for the
- *  snapshot to come round. */
-export async function createProduct(input: ProductInput): Promise<string> {
+/**
+ * Creates the product and returns its new document id — the till adds the
+ * freshly created article to the open ticket without waiting for the snapshot
+ * to come round.
+ *
+ * The id is minted locally and the write is NOT awaited, because Firestore
+ * resolves a write only when the server acknowledges it: with the line down,
+ * awaiting addDoc never returns, and the cashier who scanned an unknown book
+ * would watch the dialog spin forever with a customer at the counter. The
+ * document is already durable in IndexedDB the moment setDoc is called, and
+ * the SDK sends it when the connection is back.
+ */
+export function createProduct(input: ProductInput): string {
   const now = Date.now()
-  const ref = await addDoc(collection(db, COL), {
-    ...input,
-    createdAt: now,
-    updatedAt: now,
+  const ref = doc(collection(db, COL))
+  void track(
+    setDoc(ref, { ...input, createdAt: now, updatedAt: now }),
+  ).catch(() => {
+    /* replayed by the SDK; a hard rejection surfaces on the stock list */
   })
   return ref.id
 }

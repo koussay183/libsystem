@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore'
 import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
+import { track } from '@/lib/syncStatus'
 import type { Sale, SaleItem, PaymentMode } from '@/types/models'
 
 const SALES = 'sales'
@@ -220,7 +221,9 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
     })
   }
 
-  const commit = batch.commit()
+  // Counted while it is in flight, so the header can say whether the shop's
+  // tickets have actually reached the server.
+  const commit = track(batch.commit())
   // A rejection that arrives after the race below has already been decided
   // still needs a handler, or it surfaces as an unhandled rejection.
   commit.catch(() => {})

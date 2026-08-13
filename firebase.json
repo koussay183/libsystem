@@ -15,6 +15,15 @@
         "comment": "The entry document must be rechecked, or a deploy would never reach the shop.",
         "source": "/index.html",
         "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      },
+      {
+        "comment": "The service worker is how every future update reaches the shop; cached, a machine would keep serving the old app for good.",
+        "source": "/sw.js",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+      },
+      {
+        "source": "/manifest.webmanifest",
+        "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
       }
     ]
   },

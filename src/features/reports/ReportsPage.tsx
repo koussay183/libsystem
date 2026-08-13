@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
+  Alert,
   Box,
   Flex,
   Heading,
@@ -36,7 +37,7 @@ interface Row {
 
 export function ReportsPage() {
   const { t } = useTranslation()
-  const { products, loading } = useProducts()
+  const { products, loading, error } = useProducts()
   const [sort, setSort] = useState<SortKey>('profit')
 
   const symbol = t('money.symbol')
@@ -120,7 +121,17 @@ export function ReportsPage() {
         />
       </SimpleGrid>
 
-      {!hasSales ? (
+      {/* Telling him the shop sold nothing when in fact nothing LOADED is the
+          one thing this page must never do. */}
+      {error ? (
+        <Alert.Root status="error">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>{t('common.error')}</Alert.Title>
+            <Alert.Description>{error}</Alert.Description>
+          </Alert.Content>
+        </Alert.Root>
+      ) : !hasSales ? (
         <EmptyState.Root size="lg">
           <EmptyState.Content>
             <EmptyState.Indicator>

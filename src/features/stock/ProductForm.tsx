@@ -33,6 +33,8 @@ interface ProductFormProps {
   onClose: () => void
   product?: Product | null
   initialBarcode?: string
+  /** Pre-fills the NAME when the owner searched for words, not a code. */
+  initialName?: string
   /** Pre-fills a brand-new product from an existing one — barcode stays empty. */
   template?: Product | null
   /** Opens on the short path: only the name and the sale price are asked for. */
@@ -49,6 +51,7 @@ export function ProductForm({
   onClose,
   product,
   initialBarcode,
+  initialName,
   template,
   quick = false,
 }: ProductFormProps) {
@@ -72,6 +75,13 @@ export function ProductForm({
   const [nameError, setNameError] = useState('')
   const [priceError, setPriceError] = useState('')
   const [barcodeError, setBarcodeError] = useState('')
+  /**
+   * The article that already carries this barcode, once the owner has been
+   * told. Two genuinely different products can share a printed code — cheap
+   * imported stock does it all the time — so this is a warning he can accept,
+   * not a refusal. The till asks him which one when such a code is scanned.
+   */
+  const [twin, setTwin] = useState<{ code: string; name: string } | null>(null)
   const [saveError, setSaveError] = useState('')
   const [busy, setBusy] = useState(false)
   const [short, setShort] = useState(false)
@@ -86,7 +96,8 @@ export function ProductForm({
     // Editing works on the product; "Dupliquer" copies everything but the code.
     const source = product ?? template ?? null
     setBarcode(product?.barcode ?? initialBarcode ?? '')
-    setName(source?.name ?? '')
+    setTwin(null)
+    setName(source?.name ?? initialName ?? '')
     setFamily(source?.family ?? '')
     setVariant(product?.variant ?? '')
     setUnit(source?.unit ?? '')
@@ -214,12 +225,15 @@ export function ProductForm({
 
     setBusy(true)
     try {
-      // The barcode is how the till finds the product — it must stay unique.
-      if (input.barcode) {
+      // A barcode that already belongs to another article is worth saying out
+      // loud — it is usually a mistake — but it is not forbidden: two different
+      // products really can carry the same printed code, and the till handles
+      // it by asking which one. So the first save warns, the second goes ahead.
+      if (input.barcode && twin?.code !== input.barcode) {
         const owner = await findProductByBarcode(input.barcode)
         if (!alive.current) return
         if (owner && owner.id !== product?.id) {
-          setBarcodeError(t('stock.barcodeTaken', { name: owner.name }))
+          setTwin({ code: input.barcode, name: owner.name })
           return
         }
       }
@@ -331,13 +345,14 @@ export function ProductForm({
                           onChange={(e) => {
                             setBarcode(e.target.value)
                             setBarcodeError('')
+                            setTwin(null)
                           }}
                           placeholder={t('stock.barcodePlaceholder')}
                           inputMode="numeric"
                         />
                       </InputGroup>
                       <Field.ErrorText>{barcodeError}</Field.ErrorText>
-                      {!barcodeError && (
+                      {!barcodeError && !twin && (
                         <Field.HelperText>{t('common.optional')}</Field.HelperText>
                       )}
                     </Field.Root>
@@ -531,6 +546,19 @@ export function ProductForm({
                     )}
                   </SimpleGrid>
 
+                  {/* Not an error: the owner is being told, and may go ahead. */}
+                  {twin && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>
+                          {t('stock.barcodeShared', { name: twin.name })}
+                        </Alert.Title>
+                        <Alert.Description>{t('stock.sharedCodeHint')}</Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   {saveError && (
                     <Alert.Root status="error">
                       <Alert.Indicator />
@@ -551,11 +579,11 @@ export function ProductForm({
                 size="lg"
                 type="submit"
                 form="product-form"
-                colorPalette="brand"
+                colorPalette={twin ? 'orange' : 'brand'}
                 loading={busy}
                 loadingText={t('common.saving')}
               >
-                {t('common.save')}
+                {twin ? t('stock.saveAnyway') : t('common.save')}
               </Button>
             </Dialog.Footer>
           </Dialog.Content>

@@ -220,6 +220,12 @@ export function CaissePage() {
 
   // Ambiguous scan → let the cashier pick instead of guessing.
   const [matches, setMatches] = useState<Product[] | null>(null)
+  /**
+   * Why we are asking. A code carried by two different articles is a normal
+   * situation in this shop — cheap imported stock repeats barcodes — and it
+   * deserves a different question from "your search matched several names".
+   */
+  const [matchKind, setMatchKind] = useState<'code' | 'name'>('name')
 
   /**
    * The article that just went in. The cashier is looking at the customer and
@@ -461,15 +467,15 @@ export function CaissePage() {
         return
       }
 
+      const sharedCode = !!exact && exact.length > 1
       const needle = term.toLowerCase()
-      const found =
-        exact && exact.length > 1
-          ? exact
-          : products.filter(
-              (p) =>
-                p.name.toLowerCase().includes(needle) ||
-                (p.family ?? '').toLowerCase().includes(needle),
-            )
+      const found = sharedCode
+        ? exact
+        : products.filter(
+            (p) =>
+              p.name.toLowerCase().includes(needle) ||
+              (p.family ?? '').toLowerCase().includes(needle),
+          )
 
       if (found.length === 1) {
         addToCart(found[0])
@@ -478,8 +484,9 @@ export function CaissePage() {
       if (found.length > 1) {
         // Never guess: picking the first alphabetical match sells the wrong item.
         setMatches(found.slice(0, 40))
+        setMatchKind(sharedCode ? 'code' : 'name')
         setNoticeStatus('warning')
-        setNotice(t('pos.manyMatches', { term }))
+        setNotice(sharedCode ? t('pos.sameCode') : t('pos.manyMatches', { term }))
         beepWarn()
         return
       }
@@ -514,7 +521,7 @@ export function CaissePage() {
       return
     }
     const hit = findByCode(term)
-    if (!hit || hit.length !== 1) return
+    if (!hit || hit.length === 0) return
     for (const p of products) {
       const code = codeOf(p.barcode)
       if (code && code !== term && code.startsWith(term)) return
@@ -524,8 +531,18 @@ export function CaissePage() {
     scanner.reset()
     consumed.current = { term, at: performance.now() }
     setScan('')
+    // Typed by hand rather than scanned, but a shared code is still a shared
+    // code — ask which article instead of leaving the field sitting there.
+    if (hit.length > 1) {
+      setMatches(hit.slice(0, 40))
+      setMatchKind('code')
+      setNoticeStatus('warning')
+      setNotice(t('pos.sameCode'))
+      beepWarn()
+      return
+    }
     addToCart(hit[0])
-  }, [scan, findByCode, products, productsLoading, busy, dialogBlocking, addToCart, scanner])
+  }, [scan, findByCode, products, productsLoading, busy, dialogBlocking, addToCart, scanner, t])
 
   /** The stock arrived - serve every code that was scanned while it loaded. */
   useEffect(() => {
@@ -542,6 +559,30 @@ export function CaissePage() {
       lookup(code)
     }
   }, [productsLoading, lookup])
+
+  /**
+   * With the chooser open, 1 / 2 / 3 pick an article — a till is driven with
+   * one hand. Keys arriving at machine speed are ignored: that is a scan
+   * hitting the open dialog, not a choice.
+   */
+  const lastKeyAt = useRef(0)
+  useEffect(() => {
+    if (!matches) return
+    const onKey = (e: KeyboardEvent) => {
+      const now = performance.now()
+      const gap = now - lastKeyAt.current
+      lastKeyAt.current = now
+      if (e.ctrlKey || e.altKey || e.metaKey || e.repeat) return
+      if (!/^[1-9]$/.test(e.key)) return
+      if (gap < 90) return
+      const pick = matches[Number(e.key) - 1]
+      if (!pick) return
+      e.preventDefault()
+      chooseMatchRef.current(pick)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [matches])
 
   /** The confirmation fades by itself; it must not outlive the next customer. */
   useEffect(() => {
@@ -573,6 +614,9 @@ export function CaissePage() {
     setScan('')
     addToCart(p)
   }
+  // Read by the number-key shortcut above, which is bound once per dialog.
+  const chooseMatchRef = useRef(chooseMatch)
+  chooseMatchRef.current = chooseMatch
 
   /** Removes one unit of the article just added - the "oops, twice" button. */
   const undoLastAdded = () => {
@@ -1317,7 +1361,14 @@ export function CaissePage() {
           <Dialog.Positioner>
             <Dialog.Content maxH="92dvh">
               <Dialog.Header>
-                <Dialog.Title>{t('pos.chooseProduct')}</Dialog.Title>
+                <Box minW={0}>
+                  <Dialog.Title fontSize="xl">
+                    {matchKind === 'code' ? t('pos.sameCode') : t('pos.chooseProduct')}
+                  </Dialog.Title>
+                  <Text color="fg.muted" fontSize="sm" mt={1}>
+                    {t('pos.pickNumber')}
+                  </Text>
+                </Box>
                 <Dialog.CloseTrigger asChild>
                   <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
                     <X size={18} />
@@ -1325,22 +1376,54 @@ export function CaissePage() {
                 </Dialog.CloseTrigger>
               </Dialog.Header>
               <Dialog.Body overflowY="auto">
-                <Stack gap={2}>
-                  {matches?.map((p) => (
+                <Stack gap={3}>
+                  {matches?.map((p, i) => (
                     <Button
                       key={p.id}
-                      size="xl"
+                      h="auto"
+                      py={3}
+                      px={4}
                       variant="outline"
-                      justifyContent="space-between"
+                      colorPalette="brand"
                       onClick={() => chooseMatch(p)}
                     >
-                      <Text truncate>{p.name}</Text>
-                      <HStack gap={3} flexShrink={0}>
-                        <Text color="fg.muted" fontSize="sm">
-                          {p.quantity} {t('stock.units')}
+                      <Flex align="center" gap={3} w="full" minW={0} textAlign="start">
+                        {i < 9 && (
+                          <Box
+                            flexShrink={0}
+                            boxSize="2.25rem"
+                            display="grid"
+                            placeItems="center"
+                            borderRadius="md"
+                            bg="brand.subtle"
+                            color="brand.fg"
+                            fontWeight="bold"
+                            fontSize="lg"
+                          >
+                            {i + 1}
+                          </Box>
+                        )}
+                        <Box minW={0} flex="1">
+                          <Text fontSize="lg" fontWeight="bold" truncate>
+                            {p.name}
+                          </Text>
+                          <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
+                            {p.barcode && <Text>{p.barcode}</Text>}
+                            <Text>
+                              {p.quantity} {t('stock.units')}
+                            </Text>
+                          </HStack>
+                        </Box>
+                        <Text
+                          flexShrink={0}
+                          fontSize="xl"
+                          fontWeight="bold"
+                          color="brand.fg"
+                          whiteSpace="nowrap"
+                        >
+                          {money(p.salePrice)}
                         </Text>
-                        <Text fontWeight="bold">{money(p.salePrice)}</Text>
-                      </HStack>
+                      </Flex>
                     </Button>
                   ))}
                 </Stack>

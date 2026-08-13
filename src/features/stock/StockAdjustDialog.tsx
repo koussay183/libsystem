@@ -217,7 +217,10 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
                 colorPalette="brand"
                 loading={busy}
                 loadingText={t('common.saving')}
-                disabled={mode === 'add' && typed === 0}
+                // An empty field parses to 0, and in "correct the count" mode
+                // that would quietly empty the shelf. Neither mode may save
+                // nothing.
+                disabled={busy || value.trim() === '' || invalid}
               >
                 {t('common.save')}
               </Button>

@@ -93,6 +93,8 @@ export const fr = {
     saveFailed: 'Échec de l’enregistrement — rien n’a été enregistré. Le ticket est intact, réessayez.',
     manyMatches: 'Plusieurs produits correspondent à « {{term}} »',
     chooseProduct: 'Quel produit ?',
+    sameCode: 'Deux articles portent ce code — lequel ?',
+    pickNumber: 'Cliquez, ou tapez 1, 2, 3…',
     notFound: 'Aucun produit pour « {{term}} »',
     createFromScan: 'Créer ce produit',
     outOfStock: 'Rupture — il ne reste rien en stock',
@@ -248,7 +250,11 @@ export const fr = {
     addStock: 'Ajouter du stock',
     adjustStock: 'Corriger le stock',
     adjustReason: 'Motif (casse, inventaire, perte…)',
-    barcodeTaken: 'Ce code-barres est déjà utilisé par « {{name}} »',
+    barcodeShared: 'Ce code-barres est déjà utilisé par « {{name}} »',
+    sharedCodeHint:
+      'Deux articles différents peuvent porter le même code. En caisse, on vous demandera lequel. Cliquez à nouveau pour enregistrer.',
+    saveAnyway: 'Enregistrer quand même',
+    sharedCode: 'Code partagé',
     priceBelowCost: 'Le prix de vente est inférieur au prix d’achat',
   },
   customer: {
@@ -482,6 +488,15 @@ export const fr = {
     restored: 'Sauvegarde restaurée : {{count}} documents',
     invalidFile: 'Fichier de sauvegarde invalide',
     records: 'documents',
+    lastBackup: 'Dernière sauvegarde : {{when}}',
+    neverBackedUp: 'Vous n’avez encore jamais fait de sauvegarde',
+    backupOld:
+      'Plus de {{days}} jours sans sauvegarde. Téléchargez le fichier et gardez-le sur une clé USB ou dans votre boîte mail.',
+    exportHint: 'Fonctionne aussi sans internet, à partir des données de cet ordinateur.',
+    reviewTitle: 'Vérifiez avant de restaurer',
+    fileFrom: 'Fichier créé le {{date}}',
+    restoreNow: 'Restaurer maintenant',
+    keepSafe: 'Gardez une copie ailleurs que sur cet ordinateur.',
   },
   supplier: {
     title: 'Fournisseurs',
@@ -509,6 +524,7 @@ export const fr = {
     subtitle: 'L’identité de la boutique et vos listes',
     shopTab: 'Boutique',
     categoriesTab: 'Catégories',
+    backupTab: 'Sauvegarde',
     shopName: 'Nom de la boutique',
     shopNameHint: 'Imprimé en haut de chaque ticket',
     address: 'Adresse',
@@ -539,6 +555,16 @@ export const fr = {
   placeholder: {
     comingSoon: 'Bientôt disponible',
     comingSoonHint: 'Ce module arrive dans la prochaine étape.',
+  },
+  sync: {
+    online: 'En ligne',
+    offline: 'Hors ligne',
+    offlineHint:
+      'Pas d’internet. Vous pouvez continuer à vendre : tout est enregistré ici et envoyé automatiquement au retour de la connexion.',
+    sending: 'Envoi en cours…',
+    saved: 'Tout est enregistré',
+    updateReady: 'Une nouvelle version est prête',
+    updateNow: 'Mettre à jour',
   },
   money: {
     symbol: 'DT',

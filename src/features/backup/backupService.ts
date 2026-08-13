@@ -43,6 +43,43 @@ export function countDocs(backup: BackupFile): number {
   return Object.values(backup.collections).reduce((n, rows) => n + rows.length, 0)
 }
 
+/** One line per collection, so a restore can be checked before it happens. */
+export function summarise(backup: BackupFile): { name: string; count: number }[] {
+  return BACKUP_COLLECTIONS.map((name) => ({
+    name,
+    count: backup.collections[name]?.length ?? 0,
+  }))
+}
+
+/**
+ * When a backup was last downloaded, remembered on this machine. A shop that
+ * has never been backed up should be told so, loudly and often — the whole
+ * point of the feature is the day the account is lost.
+ */
+const LAST_BACKUP_KEY = 'backup.lastAt'
+
+/** Past this many days without a backup, the screen starts nagging. */
+export const STALE_BACKUP_DAYS = 7
+
+export function readLastBackupAt(): number | null {
+  try {
+    const raw = localStorage.getItem(LAST_BACKUP_KEY)
+    if (!raw) return null
+    const at = Number(raw)
+    return Number.isFinite(at) && at > 0 ? at : null
+  } catch {
+    return null
+  }
+}
+
+export function writeLastBackupAt(at: number) {
+  try {
+    localStorage.setItem(LAST_BACKUP_KEY, String(at))
+  } catch {
+    /* private mode — the reminder simply does not persist */
+  }
+}
+
 function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

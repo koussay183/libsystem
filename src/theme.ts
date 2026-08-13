@@ -26,6 +26,33 @@ const config = defineConfig({
     // so no global utility class is needed here.
   },
   theme: {
+    slotRecipes: {
+      // Chakra pins a segmented control to `minW: max-content`, so the two- and
+      // three-option switches in this app simply run off the side of a phone
+      // with no way to reach the hidden option. Let it shrink and scroll.
+      segmentGroup: {
+        slots: ['root', 'item'],
+        base: {
+          root: {
+            minW: 0,
+            maxW: 'full',
+            overflowX: 'auto',
+            scrollbarWidth: 'none',
+            '&::-webkit-scrollbar': { display: 'none' },
+          },
+          item: { flexShrink: 0 },
+        },
+      },
+      // Dialogs had no gutter, so on a narrow screen they ran edge to edge and
+      // a footer with three buttons pushed the last one out of reach.
+      dialog: {
+        slots: ['positioner', 'footer'],
+        base: {
+          positioner: { paddingInline: { base: 3, sm: 4 } },
+          footer: { flexWrap: 'wrap' },
+        },
+      },
+    },
     tokens: {
       colors: {
         brand: {

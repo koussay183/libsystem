@@ -21,7 +21,17 @@ import {
   Alert,
   Spinner,
 } from '@chakra-ui/react'
-import { Settings as SettingsIcon, Store, Tags, Plus, Pencil, Trash2, X } from 'lucide-react'
+import {
+  Settings as SettingsIcon,
+  Store,
+  Tags,
+  Plus,
+  Pencil,
+  Trash2,
+  X,
+  DatabaseBackup,
+} from 'lucide-react'
+import { BackupPanel } from '@/features/backup/BackupPanel'
 import { useAlive } from '@/lib/useAlive'
 import {
   useCategories,
@@ -410,6 +420,12 @@ export function SettingsPage() {
               {t('settings.categoriesTab')}
             </HStack>
           </Tabs.Trigger>
+          <Tabs.Trigger value="backup">
+            <HStack gap={2}>
+              <DatabaseBackup size={18} />
+              {t('settings.backupTab')}
+            </HStack>
+          </Tabs.Trigger>
         </Tabs.List>
 
         <Tabs.Content value="shop">
@@ -417,6 +433,9 @@ export function SettingsPage() {
         </Tabs.Content>
         <Tabs.Content value="categories">
           <CategoriesTab />
+        </Tabs.Content>
+        <Tabs.Content value="backup">
+          <BackupPanel />
         </Tabs.Content>
       </Tabs.Root>
     </Box>

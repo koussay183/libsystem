@@ -36,7 +36,7 @@ interface Tile {
 
 export function HomePage() {
   const { t } = useTranslation()
-  const { sales } = useTodaySales()
+  const { sales, loading } = useTodaySales()
   const symbol = t('money.symbol')
 
   // "How did today go?" is the first thing the owner wants when he walks in.
@@ -142,7 +142,7 @@ export function HomePage() {
             <Stat.Root>
               <Stat.Label>{t('home.todaySales')}</Stat.Label>
               <Stat.ValueText fontSize="3xl">
-                {formatMoney(today.total, { symbol })}
+                {loading ? '…' : formatMoney(today.total, { symbol })}
               </Stat.ValueText>
             </Stat.Root>
           </Card.Body>
@@ -151,7 +151,7 @@ export function HomePage() {
           <Card.Body>
             <Stat.Root>
               <Stat.Label>{t('home.todayTickets')}</Stat.Label>
-              <Stat.ValueText fontSize="3xl">{today.count}</Stat.ValueText>
+              <Stat.ValueText fontSize="3xl">{loading ? '…' : today.count}</Stat.ValueText>
             </Stat.Root>
           </Card.Body>
         </Card.Root>

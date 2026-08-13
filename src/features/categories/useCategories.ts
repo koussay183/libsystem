@@ -32,7 +32,9 @@ export function useCategories() {
     categoriesStore.getSnapshot,
     categoriesStore.getSnapshot,
   )
-  return { categories: state.data, loading: state.loading }
+  // The error is surfaced, not swallowed: a permissions failure used to render
+  // as "no categories yet", and the owner would retype the ones he already had.
+  return { categories: state.data, loading: state.loading, error: state.error }
 }
 
 export async function createCategory(name: string): Promise<string> {

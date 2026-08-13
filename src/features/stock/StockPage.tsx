@@ -40,6 +40,7 @@ import { formatMoney } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts, removeProduct } from './useProducts'
 import { groupByFamily } from './naming'
+import { codeOf, loose, sharedCodes, looksLikeCode } from './barcode'
 import { ProductForm } from './ProductForm'
 import { VariantsDialog } from './VariantsDialog'
 import { StockAdjustDialog } from './StockAdjustDialog'
@@ -68,6 +69,7 @@ export function StockPage() {
   const [template, setTemplate] = useState<Product | null>(null)
   const [quick, setQuick] = useState(false)
   const [scanBarcode, setScanBarcode] = useState<string | undefined>(undefined)
+  const [scanName, setScanName] = useState<string | undefined>(undefined)
   const [variantsOpen, setVariantsOpen] = useState(false)
   const [adjusting, setAdjusting] = useState<Product | null>(null)
   const [notice, setNotice] = useState('')
@@ -92,7 +94,15 @@ export function StockPage() {
 
   const { families, loners } = useMemo(() => groupByFamily(filtered), [filtered])
 
-  const lowCount = products.filter((p) => p.quantity <= p.lowStockThreshold).length
+  // Counted exactly the way the per-row badge decides, so the tile and the
+  // rows it summarises can never disagree. Without the threshold check every
+  // out-of-stock article with no threshold set was counted as "stock bas" too.
+  const lowCount = products.filter(
+    (p) => p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold,
+  ).length
+
+  /** Codes carried by more than one article, so the pairs can be marked. */
+  const shared = useMemo(() => sharedCodes(products), [products])
   const stockValue = products.reduce((sum, p) => sum + p.costPrice * p.quantity, 0)
 
   const status = (p: Product): { tone: StatusTone; label: string } => {
@@ -113,11 +123,13 @@ export function StockPage() {
     product?: Product | null
     template?: Product | null
     barcode?: string
+    name?: string
     quick?: boolean
   }) => {
     setEditing(options.product ?? null)
     setTemplate(options.template ?? null)
     setScanBarcode(options.barcode)
+    setScanName(options.name)
     setQuick(options.quick ?? false)
     setNotice('')
     setFormOpen(true)
@@ -128,7 +140,6 @@ export function StockPage() {
   const openEdit = (p: Product) => openForm({ product: p })
   /** The fastest way to add a sibling kind: same everything, empty barcode. */
   const openDuplicate = (p: Product) => openForm({ template: p })
-  const openAddWithCode = (code: string) => openForm({ barcode: code })
   const openVariants = () => {
     setNotice('')
     setVariantsOpen(true)
@@ -163,10 +174,23 @@ export function StockPage() {
             </Badge>
           </Flex>
         </Table.Cell>
-        <Table.Cell fontFamily="mono" color="fg.muted">
-          {p.barcode}
+        <Table.Cell
+          fontFamily="mono"
+          color="fg.muted"
+          display={{ base: 'none', lg: 'table-cell' }}
+        >
+          <Flex align="center" gap={2} wrap="wrap">
+            <Text as="span">{p.barcode}</Text>
+            {p.barcode && shared.has(loose(codeOf(p.barcode))) && (
+              <Badge colorPalette="purple" variant="subtle" size="sm">
+                {t('stock.sharedCode')}
+              </Badge>
+            )}
+          </Flex>
         </Table.Cell>
-        <Table.Cell color="fg.muted">{p.category}</Table.Cell>
+        <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
+          {p.category}
+        </Table.Cell>
         <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
           {formatMoney(p.salePrice, { symbol })}
         </Table.Cell>
@@ -190,6 +214,7 @@ export function StockPage() {
               title={t('stock.duplicate')}
               size="md"
               variant="outline"
+              display={{ base: 'none', md: 'inline-flex' }}
               onClick={() => openDuplicate(p)}
             >
               <Copy size={18} />
@@ -406,12 +431,25 @@ export function StockPage() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : filtered.length === 0 ? (
+        /* A scanned code pre-fills the barcode; typed words pre-fill the name.
+           Putting "cahier bleu" in the barcode field poisons the till index. */
         <Alert.Root status="warning">
           <Alert.Indicator />
           <Alert.Content>
-            <Alert.Title>{t('stock.scanNotFound')}</Alert.Title>
+            <Alert.Title>
+              {looksLikeCode(search) ? t('stock.scanNotFound') : t('stock.noResults')}
+            </Alert.Title>
           </Alert.Content>
-          <Button size="lg" colorPalette="brand" onClick={() => openAddWithCode(search.trim())}>
+          <Button
+            size="lg"
+            colorPalette="brand"
+            flexShrink={0}
+            onClick={() =>
+              looksLikeCode(search)
+                ? openForm({ barcode: search.trim() })
+                : openForm({ name: search.trim(), quick: true })
+            }
+          >
             <Plus size={20} />
             {t('stock.addProduct')}
           </Button>
@@ -424,8 +462,12 @@ export function StockPage() {
                 <Table.Header>
                   <Table.Row>
                     <Table.ColumnHeader>{t('stock.name')}</Table.ColumnHeader>
-                    <Table.ColumnHeader>{t('stock.barcode')}</Table.ColumnHeader>
-                    <Table.ColumnHeader>{t('stock.category')}</Table.ColumnHeader>
+                    <Table.ColumnHeader display={{ base: 'none', lg: 'table-cell' }}>
+                      {t('stock.barcode')}
+                    </Table.ColumnHeader>
+                    <Table.ColumnHeader display={{ base: 'none', xl: 'table-cell' }}>
+                      {t('stock.category')}
+                    </Table.ColumnHeader>
                     <Table.ColumnHeader textAlign="end">
                       {t('stock.salePrice')}
                     </Table.ColumnHeader>
@@ -442,7 +484,11 @@ export function StockPage() {
                     ? filtered.map((p) => productRow(p, false))
                     : [
                         ...families.map((group) => {
-                          const isOpen = expanded.includes(group.family)
+                          // While searching, every family is open: the match is
+                          // usually a variant, and a collapsed family showed
+                          // nothing but the family name — which is exactly how
+                          // "I searched and my product is not there" happens.
+                          const isOpen = q !== '' || expanded.includes(group.family)
                           const prices = group.items.map((p) => p.salePrice)
                           const min = Math.min(...prices)
                           const max = Math.max(...prices)
@@ -484,8 +530,11 @@ export function StockPage() {
                                     </Badge>
                                   </Flex>
                                 </Table.Cell>
-                                <Table.Cell />
-                                <Table.Cell color="fg.muted">
+                                <Table.Cell display={{ base: 'none', lg: 'table-cell' }} />
+                                <Table.Cell
+                                  color="fg.muted"
+                                  display={{ base: 'none', xl: 'table-cell' }}
+                                >
                                   {categories.length === 1 ? categories[0] : ''}
                                 </Table.Cell>
                                 <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
@@ -522,6 +571,7 @@ export function StockPage() {
           product={editing}
           template={template}
           initialBarcode={scanBarcode}
+          initialName={scanName}
           quick={quick}
         />
       )}

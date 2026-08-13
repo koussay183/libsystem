@@ -95,6 +95,8 @@ export const ar: Dict = {
     saveFailed: 'فشل الحفظ — لم يُسجَّل شيء. التذكرة سليمة، أعد المحاولة.',
     manyMatches: 'عدة منتجات تطابق «{{term}}»',
     chooseProduct: 'أي منتج؟',
+    sameCode: 'مادتان تحملان هذا الرمز — أيّهما؟',
+    pickNumber: 'اضغط، أو اكتب 1، 2، 3…',
     notFound: 'لا يوجد منتج لـ «{{term}}»',
     createFromScan: 'إنشاء هذا المنتج',
     outOfStock: 'نفد المخزون',
@@ -246,7 +248,11 @@ export const ar: Dict = {
     addStock: 'إضافة مخزون',
     adjustStock: 'تصحيح المخزون',
     adjustReason: 'السبب (كسر، جرد، ضياع…)',
-    barcodeTaken: 'هذا الرمز مستعمل من طرف «{{name}}»',
+    barcodeShared: 'هذا الرمز مستعمل من طرف «{{name}}»',
+    sharedCodeHint:
+      'يمكن لمادتين مختلفتين أن تحملا نفس الرمز. في الصندوق سيُسأل عن أيّهما. اضغط مرة أخرى للحفظ.',
+    saveAnyway: 'احفظ على أي حال',
+    sharedCode: 'رمز مشترك',
     priceBelowCost: 'سعر البيع أقل من سعر الشراء',
   },
   customer: {
@@ -475,6 +481,15 @@ export const ar: Dict = {
     restored: 'تمت الاستعادة: {{count}} وثيقة',
     invalidFile: 'ملف نسخة احتياطية غير صالح',
     records: 'وثيقة',
+    lastBackup: 'آخر نسخة احتياطية: {{when}}',
+    neverBackedUp: 'لم تقم بأي نسخة احتياطية بعد',
+    backupOld:
+      'مرّ أكثر من {{days}} أيام دون نسخة احتياطية. حمّل الملف واحتفظ به على مفتاح USB أو في بريدك.',
+    exportHint: 'يعمل أيضًا بدون إنترنت، انطلاقًا من بيانات هذا الحاسوب.',
+    reviewTitle: 'تحقّق قبل الاسترجاع',
+    fileFrom: 'ملف أُنشئ في {{date}}',
+    restoreNow: 'استرجع الآن',
+    keepSafe: 'احتفظ بنسخة في مكان آخر غير هذا الحاسوب.',
   },
   supplier: {
     title: 'المزوّدون',
@@ -502,6 +517,7 @@ export const ar: Dict = {
     subtitle: 'هوية المحل وقوائمك',
     shopTab: 'المحل',
     categoriesTab: 'الأصناف',
+    backupTab: 'نسخة احتياطية',
     shopName: 'اسم المحل',
     shopNameHint: 'يُطبع أعلى كل تذكرة',
     address: 'العنوان',
@@ -532,6 +548,16 @@ export const ar: Dict = {
   placeholder: {
     comingSoon: 'قريبًا',
     comingSoonHint: 'هذه الوحدة ستصل في المرحلة القادمة.',
+  },
+  sync: {
+    online: 'متصل',
+    offline: 'غير متصل',
+    offlineHint:
+      'لا يوجد إنترنت. يمكنك مواصلة البيع: كل شيء يُحفظ هنا ويُرسل تلقائيًا عند عودة الاتصال.',
+    sending: 'جارٍ الإرسال…',
+    saved: 'تم حفظ كل شيء',
+    updateReady: 'نسخة جديدة جاهزة',
+    updateNow: 'تحديث',
   },
   money: {
     symbol: 'د.ت',
