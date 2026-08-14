@@ -34,6 +34,9 @@ const CustomerDetailPage = lazy(() =>
 const DashboardPage = lazy(() =>
   import('@/features/dashboard/DashboardPage').then((m) => ({ default: m.DashboardPage })),
 )
+const PacksPage = lazy(() =>
+  import('@/features/packs/PacksPage').then((m) => ({ default: m.PacksPage })),
+)
 const SuppliersPage = lazy(() =>
   import('@/features/suppliers/SuppliersPage').then((m) => ({ default: m.SuppliersPage })),
 )
@@ -115,6 +118,14 @@ export function App() {
               element={
                 <Suspense fallback={<PageFallback />}>
                   <StockPage />
+                </Suspense>
+              }
+            />
+            <Route
+              path="/packs"
+              element={
+                <Suspense fallback={<PageFallback />}>
+                  <PacksPage />
                 </Suspense>
               }
             />

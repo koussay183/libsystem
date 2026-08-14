@@ -111,6 +111,12 @@ export interface BarcodeScannerOptions {
    */
   targetRef: { current: HTMLInputElement | null }
   minLength?: number
+  /**
+   * Fired once, the moment a burst is long enough to be certainly a machine.
+   * The suggestion list uses it to close: a scan must never leave a dropdown
+   * flickering under the cashier's hand.
+   */
+  onBurstStart?: () => void
 }
 
 export interface BarcodeScanner {
@@ -126,9 +132,15 @@ export function useBarcodeScanner({
   onScan,
   targetRef,
   minLength = DEFAULT_MIN_LENGTH,
+  onBurstStart,
 }: BarcodeScannerOptions): BarcodeScanner {
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
+
+  // Held in a ref so a caller that re-creates the callback every render does
+  // not re-arm the window listener under a scan in progress.
+  const onBurstStartRef = useRef(onBurstStart)
+  onBurstStartRef.current = onBurstStart
 
   /** What the layout typed, and what the physical keys say. */
   const typed = useRef('')
@@ -233,6 +245,9 @@ export function useBarcodeScanner({
 
       typed.current += e.key
       physical.current += PHYSICAL[e.code] ?? e.key
+
+      // Exactly at the threshold, not past it, so this fires once per burst.
+      if (typed.current.length === minLength) onBurstStartRef.current?.()
 
       // Restart the "code complete" countdown on every character. This is what
       // removes the Enter key: the burst ends by simply going quiet.

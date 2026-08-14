@@ -13,6 +13,7 @@ import {
 } from '@chakra-ui/react'
 import {
   Package,
+  Boxes,
   ReceiptText,
   HandCoins,
   Wallet,
@@ -55,6 +56,13 @@ export function HomePage() {
       title: t('home.stockTitle'),
       desc: t('home.stockDesc'),
       palette: 'brand',
+    },
+    {
+      to: '/packs',
+      icon: Boxes,
+      title: t('packs.title'),
+      desc: t('packs.subtitle'),
+      palette: 'cyan',
     },
     {
       to: '/invoices',

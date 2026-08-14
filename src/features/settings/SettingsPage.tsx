@@ -16,6 +16,7 @@ import {
   Portal,
   SimpleGrid,
   Stack,
+  SegmentGroup,
   Tabs,
   Text,
   Alert,
@@ -32,6 +33,12 @@ import {
   DatabaseBackup,
 } from 'lucide-react'
 import { BackupPanel } from '@/features/backup/BackupPanel'
+import {
+  VAT_RATES,
+  FALLBACK_MARGIN,
+  defaultVatFor,
+  parsePercent,
+} from '@/features/stock/pricing'
 import { useAlive } from '@/lib/useAlive'
 import {
   useCategories,
@@ -47,6 +54,7 @@ function ShopTab() {
   const { t } = useTranslation()
   const alive = useAlive()
   const { shop, loading } = useShopSettings()
+  const { categories } = useCategories()
 
   const [form, setForm] = useState<ShopSettings>(shop)
   const [busy, setBusy] = useState(false)
@@ -112,6 +120,102 @@ function ShopTab() {
                   <Input size="lg" value={form.taxId ?? ''} onChange={set('taxId')} />
                 </Field.Root>
               </SimpleGrid>
+
+              {/* ------------------------------------------------------------
+                  Prices. The owner types a purchase price and the shelf price
+                  works itself out; these are the numbers that make it do so.
+              ------------------------------------------------------------ */}
+              <Box borderTopWidth="1px" borderColor="border" pt={4}>
+                <Text fontWeight="bold" mb={1}>
+                  {t('settings.pricing')}
+                </Text>
+                <Text color="fg.muted" fontSize="sm" mb={3}>
+                  {t('settings.pricingHint')}
+                </Text>
+
+                <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
+                  <Field.Root>
+                    <Field.Label>{t('settings.defaultMargin')}</Field.Label>
+                    <Input
+                      size="lg"
+                      inputMode="decimal"
+                      placeholder={String(FALLBACK_MARGIN)}
+                      value={form.defaultMargin === undefined ? '' : String(form.defaultMargin)}
+                      onChange={(e) => {
+                        setDone(false)
+                        setForm((f) => ({
+                          ...f,
+                          defaultMargin: parsePercent(e.target.value) ?? undefined,
+                        }))
+                      }}
+                    />
+                    <Field.HelperText>{t('settings.defaultMarginHint')}</Field.HelperText>
+                  </Field.Root>
+
+                  <Field.Root>
+                    <Field.Label>{t('settings.defaultVat')}</Field.Label>
+                    <SegmentGroup.Root
+                      size="lg"
+                      colorPalette="brand"
+                      value={String(defaultVatFor(form))}
+                      onValueChange={(e: { value: string | null }) => {
+                        setDone(false)
+                        setForm((f) => ({ ...f, defaultVat: Number(e.value ?? 0) }))
+                      }}
+                    >
+                      <SegmentGroup.Indicator />
+                      {VAT_RATES.map((rate) => (
+                        <SegmentGroup.Item key={rate} value={String(rate)}>
+                          <SegmentGroup.ItemText>{`${rate} %`}</SegmentGroup.ItemText>
+                          <SegmentGroup.ItemHiddenInput />
+                        </SegmentGroup.Item>
+                      ))}
+                    </SegmentGroup.Root>
+                  </Field.Root>
+                </SimpleGrid>
+
+                {/* Paper goods carry a thinner margin than the rest, and the
+                    owner should never have to remember which is which. */}
+                {categories.length > 0 && (
+                  <Box mt={4}>
+                    <Text fontWeight="semibold" mb={2}>
+                      {t('settings.categoryMargins')}
+                    </Text>
+                    <Stack gap={2}>
+                      {categories.map((c) => (
+                        <Flex key={c.id} align="center" gap={3}>
+                          <Text minW={0} flex="1" truncate>
+                            {c.name}
+                          </Text>
+                          <Input
+                            size="md"
+                            w="7rem"
+                            textAlign="center"
+                            inputMode="decimal"
+                            placeholder={String(form.defaultMargin ?? FALLBACK_MARGIN)}
+                            value={
+                              form.categoryMargins?.[c.name] === undefined
+                                ? ''
+                                : String(form.categoryMargins[c.name])
+                            }
+                            onChange={(e) => {
+                              setDone(false)
+                              const pct = parsePercent(e.target.value)
+                              setForm((f) => {
+                                const next = { ...(f.categoryMargins ?? {}) }
+                                if (pct === null) delete next[c.name]
+                                else next[c.name] = pct
+                                return { ...f, categoryMargins: next }
+                              })
+                            }}
+                          />
+                          <Text color="fg.muted">%</Text>
+                        </Flex>
+                      ))}
+                    </Stack>
+                  </Box>
+                )}
+              </Box>
 
               <Field.Root>
                 <Field.Label>{t('settings.footer')}</Field.Label>

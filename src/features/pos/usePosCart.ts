@@ -16,6 +16,18 @@ export interface PosLine {
   stock: number
   /** True once the cashier typed a different price, so the UI can show it. */
   priceEdited?: boolean
+
+  /**
+   * Set on every line that came from one insertion of a pack. The lines are
+   * real article lines — they move stock and carry revenue like any other —
+   * and this only ties them together so the ticket can show them as a group
+   * and remove them as a group.
+   */
+  packUid?: string
+  packId?: string
+  packName?: string
+  /** What the pack was sold for, so the group can show it without re-deriving. */
+  packPrice?: number
 }
 
 export interface ParkedSession {
@@ -71,8 +83,11 @@ export function usePosCart() {
    */
   const addProduct = useCallback((p: Product) => {
     setLines((prev) => {
+      // A pack line is deliberately excluded: it carries a prorated price, and
+      // merging a loose unit into it would quietly change what the pack costs
+      // with nothing on screen to explain the new total.
       const found = prev.find(
-        (l) => l.productId === p.id && l.qty > 0 && !l.priceEdited,
+        (l) => l.productId === p.id && l.qty > 0 && !l.priceEdited && !l.packUid,
       )
       if (found)
         return prev.map((l) => (l.id === found.id ? { ...l, qty: l.qty + 1 } : l))
@@ -91,6 +106,39 @@ export function usePosCart() {
       ]
     })
   }, [])
+
+  /**
+   * Puts a pack on the ticket as one line per article, already priced so the
+   * group adds up to the pack price. Each insertion gets its own id, so adding
+   * the same pack twice gives two groups the cashier can remove separately.
+   */
+  const addPack = useCallback(
+    (
+      members: { product: Product; qty: number; unitPrice: number }[],
+      meta: { packId: string; packName: string; packPrice: number },
+    ) => {
+      if (members.length === 0) return
+      const packUid = nextId()
+      setLines((prev) => [
+        ...prev,
+        ...members.map((m) => ({
+          id: nextId(),
+          productId: m.product.id,
+          barcode: m.product.barcode,
+          name: m.product.name,
+          qty: m.qty,
+          unitPrice: m.unitPrice,
+          unitCost: m.product.costPrice,
+          stock: m.product.quantity,
+          packUid,
+          packId: meta.packId,
+          packName: meta.packName,
+          packPrice: meta.packPrice,
+        })),
+      ])
+    },
+    [],
+  )
 
   /** A photocopy, a repair, anything with no barcode and no stock to move. */
   const addMisc = useCallback((name: string, unitPrice: number) => {
@@ -129,13 +177,43 @@ export function usePosCart() {
     )
   }, [])
 
-  /** Flips a line between "sold" and "brought back", keeping the quantity. */
+  /**
+   * Flips a line between "sold" and "brought back", keeping the quantity. A
+   * pack comes back as a whole: returning three of its six articles would leave
+   * a group that no longer adds up to any price the shop ever charged.
+   */
   const toggleReturn = useCallback((id: string) => {
-    setLines((prev) => prev.map((l) => (l.id === id ? { ...l, qty: -l.qty } : l)))
+    setLines((prev) => {
+      const target = prev.find((l) => l.id === id)
+      if (!target) return prev
+      const group = target.packUid
+      return prev.map((l) =>
+        (group ? l.packUid === group : l.id === id) ? { ...l, qty: -l.qty } : l,
+      )
+    })
   }, [])
 
+  /** Removes the line — or the whole pack it belongs to. */
   const removeLine = useCallback((id: string) => {
-    setLines((prev) => prev.filter((l) => l.id !== id))
+    setLines((prev) => {
+      const target = prev.find((l) => l.id === id)
+      if (!target) return prev
+      const group = target.packUid
+      return prev.filter((l) => (group ? l.packUid !== group : l.id !== id))
+    })
+  }, [])
+
+  /** Drops several lines at once, expanding any pack they belong to. */
+  const removeLines = useCallback((ids: string[]) => {
+    setLines((prev) => {
+      const dropIds = new Set(ids)
+      const dropPacks = new Set(
+        prev.filter((l) => dropIds.has(l.id) && l.packUid).map((l) => l.packUid),
+      )
+      return prev.filter(
+        (l) => !dropIds.has(l.id) && !(l.packUid && dropPacks.has(l.packUid)),
+      )
+    })
   }, [])
 
   const clear = useCallback(() => {
@@ -198,11 +276,13 @@ export function usePosCart() {
     rawDiscount: discount,
     setDiscount,
     addProduct,
+    addPack,
     addMisc,
     setQty,
     setPrice,
     toggleReturn,
     removeLine,
+    removeLines,
     clear,
     park,
     resume,

@@ -4,6 +4,9 @@ import { db } from '@/lib/firebase'
 /** Every collection the app owns — the whole shop lives in these. */
 export const BACKUP_COLLECTIONS = [
   'products',
+  // Without this line the owner's packs are silently absent from the one
+  // artefact that survives losing the account.
+  'packs',
   'categories',
   'suppliers',
   'customers',

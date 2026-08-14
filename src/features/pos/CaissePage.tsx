@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -36,13 +36,14 @@ import {
   Undo2,
   PackagePlus,
   Percent,
-  Keyboard,
   AlertTriangle,
   CheckCircle2,
   Volume2,
   VolumeX,
   Banknote,
   Coins,
+  Boxes,
+  MoreHorizontal,
 } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
@@ -60,6 +61,10 @@ import { useShopSettings } from '@/features/settings/useShopSettings'
 import { recordSale } from '@/features/sales/useSales'
 import { usePosCart } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
+import { ScanSuggestions } from './ScanSuggestions'
+import { searchProducts, fold } from './posSearch'
+import { usePacks, resolvePack, packToLines } from '@/features/packs/usePacks'
+import type { Pack } from '@/types/models'
 import type { PosLine } from './usePosCart'
 import { Ticket } from './Ticket'
 import type { TicketData } from './Ticket'
@@ -205,6 +210,7 @@ export function CaissePage() {
   const alive = useAlive()
   const { products, loading: productsLoading } = useProducts()
   const { customers } = useCustomers()
+  const { packs } = usePacks()
   const { shop } = useShopSettings()
   const cart = usePosCart()
 
@@ -239,6 +245,26 @@ export function CaissePage() {
   } | null>(null)
 
   const [sound, setSound] = useState(soundEnabled)
+
+  /** The ticket list scrolls inside its own box, so it has to follow itself. */
+  const ticketScrollRef = useRef<HTMLDivElement>(null)
+
+  /**
+   * The typed-search list. `query` lags `scan` by a debounce, which is what
+   * keeps a scan from ever painting a dropdown: every path that consumes a
+   * scan clears the field 65ms after the burst ends, well inside the wait.
+   */
+  const [query, setQuery] = useState('')
+  const [highlight, setHighlight] = useState(-1)
+
+  const [packOpen, setPackOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+
+  /** Declared here because the scanner, created below, closes the list. */
+  const closeSuggestions = useCallback(() => {
+    setQuery('')
+    setHighlight(-1)
+  }, [])
 
   /**
    * Codes scanned before the stock finished loading, in the order they came,
@@ -308,7 +334,14 @@ export function CaissePage() {
    * find between two customers.
    */
   const dialogBlocking =
-    payOpen || miscOpen || newOpen || discountOpen || !!matches || !!priceLine
+    payOpen ||
+    miscOpen ||
+    newOpen ||
+    discountOpen ||
+    packOpen ||
+    moreOpen ||
+    !!matches ||
+    !!priceLine
   const anyDialogOpen = dialogBlocking || !!ticket
 
   /**
@@ -334,9 +367,11 @@ export function CaissePage() {
     // Only skip the check while the list is still loading. An empty collection
     // is a real answer: every line on a resumed ticket is genuinely stale.
     if (productsLoading) return []
-    return cart.lines.filter(
-      (l) => l.productId && !products.some((p) => p.id === l.productId),
-    )
+    // A Set, not products.some(): this runs on every Firestore snapshot, and
+    // every sale triggers one, so the linear scan per line was ~36k string
+    // comparisons per sale on a shop with a few thousand articles.
+    const live = new Set(products.map((p) => p.id))
+    return cart.lines.filter((l) => l.productId && !live.has(l.productId))
   }, [cart.lines, products, productsLoading])
 
   const canSettle = cart.lines.length > 0 && staleLines.length === 0 && !busy
@@ -468,13 +503,15 @@ export function CaissePage() {
       }
 
       const sharedCode = !!exact && exact.length > 1
-      const needle = term.toLowerCase()
+      // Folded the same way the suggestion list folds, or Enter would answer
+      // "no such article" for the very row the cashier is looking at.
+      const needle = fold(term)
       const found = sharedCode
         ? exact
         : products.filter(
             (p) =>
-              p.name.toLowerCase().includes(needle) ||
-              (p.family ?? '').toLowerCase().includes(needle),
+              fold(p.name).includes(needle) ||
+              fold(`${p.family ?? ''} ${p.variant ?? ''}`).includes(needle),
           )
 
       if (found.length === 1) {
@@ -507,7 +544,12 @@ export function CaissePage() {
    * wedge recognises the burst by its speed and rings the article up on its
    * own, from anywhere on the page.
    */
-  const scanner = useBarcodeScanner({ targetRef: scanRef, onScan: lookup })
+  const scanner = useBarcodeScanner({
+    targetRef: scanRef,
+    onScan: lookup,
+    // A machine is typing: whatever list was open is not what it is after.
+    onBurstStart: closeSuggestions,
+  })
 
   /**
    * A complete barcode sitting in the field IS an article - no key to press.
@@ -583,6 +625,101 @@ export function CaissePage() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [matches])
+
+  // ---- typed search -----------------------------------------------------
+
+  /**
+   * A scan is over in a few tens of milliseconds and clears the field; a human
+   * pauses. Waiting for that pause is what tells the two apart without having
+   * to classify keystrokes.
+   */
+  const SUGGEST_DEBOUNCE_MS = 180
+  useEffect(() => {
+    const term = scan.trim()
+    if (term === '') {
+      setQuery('')
+      return
+    }
+    const id = setTimeout(() => setQuery(term), SUGGEST_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [scan])
+
+  useEffect(() => setHighlight(-1), [query])
+
+  const suggestions = useMemo(
+    () => (dialogBlocking || busy ? [] : searchProducts(products, query, 8)),
+    [products, query, dialogBlocking, busy],
+  )
+  const suggestOpen = suggestions.length > 0
+
+  const onScanInput = (value: string) => setScan(value)
+
+  const pickSuggestion = (p: Product) => {
+    closeSuggestions()
+    consumed.current = { term: codeOf(scan), at: performance.now() }
+    scanner.reset()
+    setScan('')
+    addToCart(p)
+  }
+
+  const onScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!suggestOpen) return
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      setHighlight((h) => Math.min(h + 1, suggestions.length - 1))
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlight((h) => Math.max(h - 1, -1))
+    } else if (e.key === 'Escape') {
+      // Only the list closes; a second Escape reaches the global handler that
+      // sends the cursor back to the scan field.
+      e.preventDefault()
+      e.stopPropagation()
+      closeSuggestions()
+    } else if (e.key === 'Enter' && highlight >= 0) {
+      // With nothing highlighted this falls through to the form submit, which
+      // is the behaviour the scanner and the F-keys already depend on.
+      e.preventDefault()
+      const picked = suggestions[highlight]
+      if (picked) pickSuggestion(picked)
+    }
+  }
+
+  // ---- packs ------------------------------------------------------------
+
+  const activePacks = useMemo(
+    () => packs.filter((p) => p.active !== false),
+    [packs],
+  )
+
+  const openPacks = () => {
+    closeSuggestions()
+    setPackOpen(true)
+  }
+
+  const addPack = useCallback(
+    (pack: Pack) => {
+      const lines = packToLines(pack, products)
+      if (lines.length === 0) return
+      cart.addPack(
+        lines.map((l) => ({ product: l.product, qty: l.qty, unitPrice: l.unitPrice })),
+        { packId: pack.id, packName: pack.name, packPrice: pack.price },
+      )
+      setLastAdded({ productId: null, name: pack.name, price: pack.price })
+      setNotice('')
+      setCanCreate(false)
+      beepOk()
+      setPackOpen(false)
+      focusScan()
+    },
+    [cart.addPack, products],
+  )
+
+  /** The newest line has to be the one on screen, or the box hides the work. */
+  useEffect(() => {
+    const el = ticketScrollRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [cart.lines.length])
 
   /** The confirmation fades by itself; it must not outlive the next customer. */
   useEffect(() => {
@@ -857,6 +994,9 @@ export function CaissePage() {
       } else if (e.key === 'F6') {
         e.preventDefault()
         setMiscOpen(true)
+      } else if (e.key === 'F7') {
+        e.preventDefault()
+        openPacks()
       } else if (e.key === 'Escape') {
         focusScan()
       }
@@ -883,343 +1023,452 @@ export function CaissePage() {
   const remainingAfter = Math.max(0, cart.total - receivedMinor)
 
   return (
-    <Box>
-      <Flex align="center" gap={3} mb={5} wrap="wrap">
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
-          <ShoppingCart size={26} />
-        </Box>
-        <Heading size="2xl">{t('pos.title')}</Heading>
-        <Box flex="1" />
-        {/* The beep is the confirmation the cashier actually notices, so it
-            has to be switchable from the till itself, not buried in settings. */}
-        <IconButton
-          aria-label={sound ? t('pos.soundOn') : t('pos.soundOff')}
-          title={sound ? t('pos.soundOn') : t('pos.soundOff')}
-          variant="outline"
-          size="lg"
-          onClick={toggleSound}
-        >
-          {sound ? <Volume2 size={20} /> : <VolumeX size={20} />}
-        </IconButton>
-        {lastTicket && (
-          <Button variant="outline" size="lg" onClick={reprintLast}>
-            <Printer size={18} />
-            {t('pos.reprint')}
-          </Button>
-        )}
-      </Flex>
+    <Flex
+      direction="column"
+      flex="1"
+      minH={0}
+      minW={0}
+      gap={{ base: 2, md: 3 }}
+      // On a short screen — a 1366x768 laptop with a bookmarks bar leaves
+      // ~418px for the ticket and the totals together — the total and the pay
+      // button give up some height so the buttons under them stay reachable.
+      css={{
+        '@media (max-height: 780px)': {
+          '--pos-total-size': '2.25rem',
+          '--pos-pay-h': '3.5rem',
+        },
+      }}
+    >
+      {/* ------------------------------------------------------------------
+          Row 1 — the scan field. Never scrolls, never moves, always first.
+          The page title is gone on purpose: the shell header already says
+          "Caisse", and on a 1366x768 laptop that heading was costing the
+          ticket three lines.
+      ------------------------------------------------------------------ */}
+      <Card.Root flexShrink={0}>
+        <Card.Body p={{ base: 3, md: 4 }}>
+          <form onSubmit={submitScan}>
+            <Flex gap={2} align="center">
+              <Box color="fg.subtle" flexShrink={0} display={{ base: 'none', sm: 'block' }}>
+                <ScanLine size={28} />
+              </Box>
 
-      <Grid templateColumns={{ base: '1fr', xl: '1fr 24rem' }} gap={5} alignItems="start">
-        {/* ---------------- Left: scan + ticket lines ---------------- */}
-        <Stack gap={4} minW={0}>
-          <Card.Root>
-            <Card.Body>
-              <form onSubmit={submitScan}>
-                <Flex gap={3} align="center">
-                  <Box color="fg.subtle" flexShrink={0}>
-                    <ScanLine size={28} />
-                  </Box>
-                  <Input
-                    ref={scanRef}
-                    size="xl"
-                    autoFocus
-                    value={scan}
-                    onChange={(e) => setScan(e.target.value)}
-                    onPaste={(e) => {
-                      if (pasteScan(e.clipboardData.getData('text'))) e.preventDefault()
-                    }}
-                    placeholder={t('pos.scanPlaceholder')}
-                    fontSize="lg"
-                  />
-                  <Button
-                    type="button"
-                    size="xl"
-                    variant="outline"
-                    flexShrink={0}
-                    onClick={() => setMiscOpen(true)}
-                  >
-                    <PackagePlus size={20} />
-                    <Text as="span" display={{ base: 'none', md: 'inline' }}>
-                      {t('pos.misc')}
-                    </Text>
-                  </Button>
-                </Flex>
-              </form>
+              {/* The suggestion list hangs off this box, so it lines up with
+                  the field and not with the card. */}
+              <Box position="relative" flex="1" minW={0}>
+                <Input
+                  ref={scanRef}
+                  size="xl"
+                  autoFocus
+                  value={scan}
+                  onChange={(e) => onScanInput(e.target.value)}
+                  onKeyDown={onScanKeyDown}
+                  onPaste={(e) => {
+                    if (pasteScan(e.clipboardData.getData('text'))) e.preventDefault()
+                  }}
+                  onBlur={closeSuggestions}
+                  placeholder={t('pos.scanPlaceholder')}
+                  fontSize="lg"
+                  autoComplete="off"
+                  role="combobox"
+                  aria-expanded={suggestOpen}
+                  aria-controls="pos-suggestions"
+                />
+                <ScanSuggestions
+                  open={suggestOpen}
+                  items={suggestions}
+                  highlight={highlight}
+                  term={scan}
+                  symbol={symbol}
+                  onPick={pickSuggestion}
+                  onHighlight={setHighlight}
+                />
+              </Box>
 
-              <Text mt={2} color="fg.subtle" fontSize="sm">
-                {t('pos.scanHint')}
-              </Text>
+              <Button
+                type="button"
+                size="xl"
+                variant="outline"
+                colorPalette="brand"
+                flexShrink={0}
+                onClick={openPacks}
+                title={`${t('packs.title')} · F7`}
+              >
+                <Boxes size={20} />
+                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                  {t('packs.title')}
+                </Text>
+              </Button>
 
-              {/* The loud, unmissable "it went in". Big enough to read from
-                  arm's length, and undoable without hunting for a small icon. */}
-              {lastAdded && (
-                <Flex
-                  mt={3}
-                  align="center"
-                  gap={3}
-                  p={3}
-                  borderWidth="2px"
-                  borderColor="green.400"
-                  bg="green.50"
-                  borderRadius="lg"
+              <Button
+                type="button"
+                size="xl"
+                variant="outline"
+                flexShrink={0}
+                onClick={() => setMiscOpen(true)}
+                title={`${t('pos.misc')} · F6`}
+              >
+                <PackagePlus size={20} />
+                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                  {t('pos.misc')}
+                </Text>
+              </Button>
+
+              <IconButton
+                type="button"
+                aria-label={sound ? t('pos.soundOn') : t('pos.soundOff')}
+                title={sound ? t('pos.soundOn') : t('pos.soundOff')}
+                variant="ghost"
+                size="lg"
+                flexShrink={0}
+                onClick={toggleSound}
+              >
+                {sound ? <Volume2 size={20} /> : <VolumeX size={20} />}
+              </IconButton>
+
+              {lastTicket && (
+                <IconButton
+                  type="button"
+                  aria-label={t('pos.reprint')}
+                  title={t('pos.reprint')}
+                  variant="ghost"
+                  size="lg"
+                  flexShrink={0}
+                  onClick={reprintLast}
                 >
-                  <Box color="green.600" flexShrink={0}>
-                    <CheckCircle2 size={34} />
-                  </Box>
-                  <Box minW={0} flex="1">
-                    <Text fontSize="xl" fontWeight="bold" color="green.900" truncate>
-                      {lastAdded.name}
-                    </Text>
-                    <Text fontSize="lg" color="green.700">
-                      {money(lastAdded.price)} · {t('pos.added')}
-                    </Text>
-                  </Box>
-                  <Button
-                    size="lg"
-                    variant="outline"
-                    colorPalette="red"
-                    flexShrink={0}
-                    onClick={undoLastAdded}
-                  >
-                    <Undo2 size={18} />
-                    {t('pos.undoAdd')}
-                  </Button>
-                </Flex>
+                  <Printer size={20} />
+                </IconButton>
               )}
+            </Flex>
+          </form>
 
-              {notice && (
-                <Alert.Root status={noticeStatus} mt={3} size="lg">
-                  <Alert.Indicator />
-                  <Alert.Content>
-                    <Alert.Title fontSize="lg">{notice}</Alert.Title>
-                  </Alert.Content>
-                  {canCreate && !matches && (
-                    <Button size="lg" colorPalette="brand" onClick={openNewProduct}>
-                      {t('pos.createFromScan')}
-                    </Button>
-                  )}
-                </Alert.Root>
+          {/* The loud, unmissable "it went in". Big enough to read from
+              arm's length, and undoable without hunting for a small icon. */}
+          {lastAdded && (
+            <Flex
+              mt={3}
+              align="center"
+              gap={3}
+              p={2}
+              ps={3}
+              borderWidth="2px"
+              borderColor="green.emphasized"
+              bg="green.subtle"
+              borderRadius="lg"
+            >
+              <Box color="green.fg" flexShrink={0}>
+                <CheckCircle2 size={30} />
+              </Box>
+              <Box minW={0} flex="1">
+                <Text fontSize="lg" fontWeight="bold" color="green.fg" truncate>
+                  {lastAdded.name}
+                </Text>
+                <Text color="green.fg">
+                  {money(lastAdded.price)} · {t('pos.added')}
+                </Text>
+              </Box>
+              <Button
+                size="md"
+                variant="outline"
+                colorPalette="red"
+                flexShrink={0}
+                onClick={undoLastAdded}
+              >
+                <Undo2 size={18} />
+                {t('pos.undoAdd')}
+              </Button>
+            </Flex>
+          )}
+
+          {notice && (
+            <Alert.Root status={noticeStatus} mt={3}>
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title fontSize="lg">{notice}</Alert.Title>
+              </Alert.Content>
+              {canCreate && !matches && (
+                <Button size="lg" colorPalette="brand" flexShrink={0} onClick={openNewProduct}>
+                  {t('pos.createFromScan')}
+                </Button>
               )}
+            </Alert.Root>
+          )}
 
-              {/* Until now this alert blocked the sale with no way out of it:
-                  the article no longer exists, so the only move is dropping the
-                  lines — which is now the button next to the message. */}
-              {staleLines.length > 0 && (
-                <Alert.Root status="error" mt={3} size="lg">
-                  <Alert.Indicator />
-                  <Alert.Content>
-                    <Alert.Title fontSize="lg">{t('pos.productDeleted')}</Alert.Title>
-                    <Alert.Description>
-                      {staleLines.map((l) => l.name).join(', ')}
-                    </Alert.Description>
-                  </Alert.Content>
-                  <Button
-                    size="lg"
-                    colorPalette="red"
-                    flexShrink={0}
-                    onClick={() => {
-                      for (const l of staleLines) cart.removeLine(l.id)
-                      focusScan()
-                    }}
-                  >
-                    <Trash2 size={18} />
-                    {t('pos.removeStale')}
-                  </Button>
-                </Alert.Root>
-              )}
-            </Card.Body>
-          </Card.Root>
+          {/* The article no longer exists, so the only move is dropping the
+              lines — which is the button next to the message. */}
+          {staleLines.length > 0 && (
+            <Alert.Root status="error" mt={3}>
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title fontSize="lg">{t('pos.productDeleted')}</Alert.Title>
+                <Alert.Description>
+                  {staleLines.map((l) => l.name).join(', ')}
+                </Alert.Description>
+              </Alert.Content>
+              <Button
+                size="lg"
+                colorPalette="red"
+                flexShrink={0}
+                onClick={() => {
+                  cart.removeLines(staleLines.map((l) => l.id))
+                  focusScan()
+                }}
+              >
+                <Trash2 size={18} />
+                {t('pos.removeStale')}
+              </Button>
+            </Alert.Root>
+          )}
+        </Card.Body>
+      </Card.Root>
 
-          <Card.Root>
-            <Card.Body p={0}>
-              {cart.lines.length === 0 ? (
-                <EmptyState.Root size="lg" py={12}>
-                  <EmptyState.Content>
-                    <EmptyState.Indicator>
-                      <ScanLine size={48} />
-                    </EmptyState.Indicator>
-                    <EmptyState.Title>{t('pos.emptyTicket')}</EmptyState.Title>
-                    <EmptyState.Description>
-                      {t('pos.emptyTicketHint')}
-                    </EmptyState.Description>
-                  </EmptyState.Content>
-                </EmptyState.Root>
-              ) : (
-                <Box overflowX="auto">
-                  <Table.Root size="lg">
-                    <Table.Header>
-                      <Table.Row>
-                        <Table.ColumnHeader>{t('pos.product')}</Table.ColumnHeader>
-                        <Table.ColumnHeader textAlign="end">
-                          {t('pos.unitPrice')}
-                        </Table.ColumnHeader>
-                        <Table.ColumnHeader textAlign="center">
-                          {t('pos.qty')}
-                        </Table.ColumnHeader>
-                        <Table.ColumnHeader textAlign="end">
-                          {t('pos.lineTotal')}
-                        </Table.ColumnHeader>
-                        <Table.ColumnHeader />
-                      </Table.Row>
-                    </Table.Header>
-                    <Table.Body>
-                      {cart.lines.map((l) => {
-                        const isReturn = l.qty < 0
-                        const stale = staleLines.some((s) => s.id === l.id)
-                        return (
-                          <Table.Row key={l.id} bg={isReturn ? 'red.50' : undefined}>
-                            <Table.Cell>
-                              <Text fontWeight="semibold">{l.name}</Text>
-                              <HStack gap={2} mt={1} wrap="wrap">
-                                {isReturn && (
-                                  <Badge colorPalette="red">{t('pos.returnBadge')}</Badge>
-                                )}
-                                {l.priceEdited && (
-                                  <Badge colorPalette="purple" variant="subtle">
-                                    {t('pos.priceChanged')}
-                                  </Badge>
-                                )}
-                                {stale && (
-                                  <Badge colorPalette="red" variant="subtle">
-                                    {t('pos.deletedBadge')}
-                                  </Badge>
-                                )}
-                                {!isReturn && l.productId && l.qty > l.stock && (
-                                  <Badge colorPalette="orange" variant="subtle">
-                                    {l.stock <= 0
-                                      ? t('pos.outOfStock')
-                                      : t('pos.stockLeft', { count: l.stock })}
-                                  </Badge>
-                                )}
-                              </HStack>
-                            </Table.Cell>
-                            <Table.Cell textAlign="end" whiteSpace="nowrap">
-                              {money(l.unitPrice)}
-                            </Table.Cell>
-                            <Table.Cell>
-                              <HStack justify="center" gap={1}>
-                                <IconButton
-                                  aria-label={t('common.decrease')}
-                                  size="lg"
-                                  variant="outline"
-                                  onClick={() => cart.setQty(l.id, l.qty - 1)}
-                                >
-                                  <Minus size={20} />
-                                </IconButton>
-                                <QtyCell
-                                  value={l.qty}
-                                  label={t('pos.editQty')}
-                                  onCommit={(n) => cart.setQty(l.id, n)}
-                                />
-                                <IconButton
-                                  aria-label={t('common.increase')}
-                                  size="lg"
-                                  variant="outline"
-                                  onClick={() => cart.setQty(l.id, l.qty + 1)}
-                                >
-                                  <Plus size={20} />
-                                </IconButton>
-                              </HStack>
-                            </Table.Cell>
-                            <Table.Cell
-                              textAlign="end"
-                              fontWeight="bold"
-                              whiteSpace="nowrap"
-                              color={isReturn ? 'red.600' : undefined}
-                            >
-                              {money(l.qty * l.unitPrice)}
-                            </Table.Cell>
-                            <Table.Cell>
-                              <HStack gap={1} justify="flex-end">
-                                <IconButton
-                                  aria-label={t('pos.editPrice')}
-                                  title={t('pos.editPrice')}
-                                  size="lg"
-                                  variant="ghost"
-                                  onClick={() => {
-                                    setPriceLine(l)
-                                    setPriceText(String(fromMinor(l.unitPrice)))
-                                  }}
-                                >
-                                  <Pencil size={20} />
-                                </IconButton>
-                                <IconButton
-                                  aria-label={
-                                    isReturn ? t('pos.undoReturn') : t('pos.returnLine')
-                                  }
-                                  title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
-                                  size="lg"
-                                  variant="ghost"
-                                  colorPalette={isReturn ? 'gray' : 'orange'}
-                                  onClick={() => cart.toggleReturn(l.id)}
-                                >
-                                  <Undo2 size={20} />
-                                </IconButton>
-                                <IconButton
-                                  aria-label={t('common.remove')}
-                                  title={t('common.remove')}
-                                  size="lg"
-                                  variant="ghost"
-                                  colorPalette="red"
-                                  onClick={() => cart.removeLine(l.id)}
-                                >
-                                  <Trash2 size={20} />
-                                </IconButton>
-                              </HStack>
+      {/* Parked tickets as a one-line strip: they used to be a card that only
+          existed on the wide layout, where they pushed the totals down. */}
+      {cart.parked.length > 0 && (
+        <HStack flexShrink={0} gap={2} overflowX="auto" pb={1}>
+          <Box color="fg.subtle" flexShrink={0}>
+            <PauseCircle size={18} />
+          </Box>
+          {cart.parked.map((s) => (
+            <HStack
+              key={s.id}
+              flexShrink={0}
+              gap={0}
+              borderWidth="1px"
+              borderColor="border"
+              borderRadius="full"
+              bg="bg.panel"
+            >
+              <Button
+                size="sm"
+                variant="ghost"
+                borderRadius="full"
+                maxW="16rem"
+                onClick={() => cart.resume(s.id)}
+              >
+                <PlayCircle size={16} />
+                <Text truncate>{s.label}</Text>
+              </Button>
+              <IconButton
+                aria-label={t('common.delete')}
+                size="sm"
+                variant="ghost"
+                borderRadius="full"
+                onClick={() => cart.dropParked(s.id)}
+              >
+                <X size={14} />
+              </IconButton>
+            </HStack>
+          ))}
+        </HStack>
+      )}
+
+      {/* ------------------------------------------------------------------
+          Row 2 — the only region that flexes. The ticket scrolls INSIDE its
+          own box, so the total below it can never be pushed off screen.
+      ------------------------------------------------------------------ */}
+      <Flex flex="1" minH={0} minW={0} gap={{ base: 3, xl: 4 }}>
+        <Card.Root flex="1" minW={0} minH={0} overflow="hidden" display="flex" flexDirection="column">
+          {cart.lines.length === 0 ? (
+            <Flex flex="1" minH={0} align="center" justify="center" p={6}>
+              <EmptyState.Root size="lg">
+                <EmptyState.Content>
+                  <EmptyState.Indicator>
+                    <ScanLine size={48} />
+                  </EmptyState.Indicator>
+                  <EmptyState.Title>{t('pos.emptyTicket')}</EmptyState.Title>
+                  <EmptyState.Description>{t('pos.emptyTicketHint')}</EmptyState.Description>
+                </EmptyState.Content>
+              </EmptyState.Root>
+            </Flex>
+          ) : (
+            <Box
+              ref={ticketScrollRef}
+              flex="1"
+              minH={0}
+              overflowY="auto"
+              overflowX="auto"
+              overscrollBehavior="contain"
+            >
+              <Table.Root size="md" stickyHeader>
+                <Table.Header>
+                  <Table.Row bg="bg.panel">
+                    <Table.ColumnHeader>{t('pos.product')}</Table.ColumnHeader>
+                    <Table.ColumnHeader textAlign="center">{t('pos.qty')}</Table.ColumnHeader>
+                    <Table.ColumnHeader textAlign="end">
+                      {t('pos.lineTotal')}
+                    </Table.ColumnHeader>
+                    <Table.ColumnHeader />
+                  </Table.Row>
+                </Table.Header>
+                <Table.Body>
+                  {cart.lines.map((l, i) => {
+                    const isReturn = l.qty < 0
+                    const stale = staleLines.some((s) => s.id === l.id)
+                    // The first line of a pack carries the group's heading.
+                    const packHead =
+                      !!l.packUid && cart.lines[i - 1]?.packUid !== l.packUid
+                    return (
+                      <Fragment key={l.id}>
+                        {packHead && (
+                          <Table.Row bg="bg.subtle">
+                            <Table.Cell colSpan={4} py={2}>
+                              <Flex align="center" gap={2} wrap="wrap">
+                                <Boxes size={16} />
+                                <Text fontWeight="bold">{l.packName}</Text>
+                                <Badge colorPalette="brand" variant="subtle">
+                                  {money(l.packPrice ?? 0)}
+                                </Badge>
+                              </Flex>
                             </Table.Cell>
                           </Table.Row>
-                        )
-                      })}
-                    </Table.Body>
-                  </Table.Root>
-                </Box>
-              )}
-            </Card.Body>
-          </Card.Root>
+                        )}
+                        <Table.Row bg={isReturn ? 'red.subtle' : undefined}>
+                          <Table.Cell py={2} ps={l.packUid ? 6 : undefined}>
+                            <Text fontWeight="semibold" lineClamp={1}>
+                              {l.name}
+                            </Text>
+                            <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
+                              <Text as="span">{money(l.unitPrice)}</Text>
+                              {isReturn && (
+                                <Badge colorPalette="red" size="sm">
+                                  {t('pos.returnBadge')}
+                                </Badge>
+                              )}
+                              {l.priceEdited && (
+                                <Badge colorPalette="gray" variant="subtle" size="sm">
+                                  {t('pos.priceChanged')}
+                                </Badge>
+                              )}
+                              {stale && (
+                                <Badge colorPalette="red" variant="subtle" size="sm">
+                                  {t('pos.deletedBadge')}
+                                </Badge>
+                              )}
+                              {!isReturn && l.productId && l.qty > l.stock && (
+                                <Badge colorPalette="orange" variant="subtle" size="sm">
+                                  {l.stock <= 0
+                                    ? t('pos.outOfStock')
+                                    : t('pos.stockLeft', { count: l.stock })}
+                                </Badge>
+                              )}
+                            </HStack>
+                          </Table.Cell>
+                          <Table.Cell py={2}>
+                            <HStack justify="center" gap={1}>
+                              <IconButton
+                                aria-label={t('common.decrease')}
+                                size="md"
+                                variant="outline"
+                                onClick={() => cart.setQty(l.id, l.qty - 1)}
+                              >
+                                <Minus size={18} />
+                              </IconButton>
+                              <QtyCell
+                                value={l.qty}
+                                label={t('pos.editQty')}
+                                onCommit={(n) => cart.setQty(l.id, n)}
+                              />
+                              <IconButton
+                                aria-label={t('common.increase')}
+                                size="md"
+                                variant="outline"
+                                onClick={() => cart.setQty(l.id, l.qty + 1)}
+                              >
+                                <Plus size={18} />
+                              </IconButton>
+                            </HStack>
+                          </Table.Cell>
+                          <Table.Cell
+                            py={2}
+                            textAlign="end"
+                            fontWeight="bold"
+                            whiteSpace="nowrap"
+                            color={isReturn ? 'red.fg' : undefined}
+                          >
+                            {money(l.qty * l.unitPrice)}
+                          </Table.Cell>
+                          <Table.Cell py={2}>
+                            <HStack gap={0} justify="flex-end">
+                              <IconButton
+                                aria-label={t('pos.editPrice')}
+                                title={t('pos.editPrice')}
+                                size="md"
+                                variant="ghost"
+                                onClick={() => {
+                                  setPriceLine(l)
+                                  setPriceText(String(fromMinor(l.unitPrice)))
+                                }}
+                              >
+                                <Pencil size={18} />
+                              </IconButton>
+                              <IconButton
+                                aria-label={
+                                  isReturn ? t('pos.undoReturn') : t('pos.returnLine')
+                                }
+                                title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                                size="md"
+                                variant="ghost"
+                                colorPalette={isReturn ? 'gray' : 'orange'}
+                                onClick={() => cart.toggleReturn(l.id)}
+                              >
+                                <Undo2 size={18} />
+                              </IconButton>
+                              <IconButton
+                                aria-label={t('common.remove')}
+                                title={t('common.remove')}
+                                size="md"
+                                variant="ghost"
+                                colorPalette="red"
+                                onClick={() => cart.removeLine(l.id)}
+                              >
+                                <Trash2 size={18} />
+                              </IconButton>
+                            </HStack>
+                          </Table.Cell>
+                        </Table.Row>
+                      </Fragment>
+                    )
+                  })}
+                </Table.Body>
+              </Table.Root>
+            </Box>
+          )}
+        </Card.Root>
 
-          <HStack gap={2} color="fg.subtle" fontSize="sm" wrap="wrap">
-            <Keyboard size={16} />
-            <Text>{t('pos.shortcutPay')}</Text>
-            <Text>·</Text>
-            <Text>{t('pos.shortcutPark')}</Text>
-            <Text>·</Text>
-            <Text>{t('pos.shortcutMisc')}</Text>
-            <Text>·</Text>
-            <Text>{t('pos.shortcutSearch')}</Text>
-          </HStack>
-        </Stack>
-
-        {/* ---------------- Right: totals + actions ---------------- */}
-        <Stack gap={4} position={{ xl: 'sticky' }} top={4} minW={0}>
-          <Card.Root>
-            <Card.Body>
-              <Flex justify="space-between" color="fg.muted">
-                <Text>{cart.itemCount}</Text>
-                <Text>{t('pos.items')}</Text>
+        {/* ---------------- Totals, wide screens ---------------- */}
+        <Flex
+          direction="column"
+          display={{ base: 'none', xl: 'flex' }}
+          w={{ xl: '21rem', '2xl': '23rem' }}
+          flexShrink={0}
+          minH={0}
+          gap={3}
+        >
+          {/* Never clipped, whatever the viewport height. */}
+          <Card.Root flexShrink={0}>
+            <Card.Body p={4}>
+              <Flex justify="space-between" color="fg.muted" fontSize="sm">
+                <Text>{`${cart.itemCount} ${t('pos.items')}`}</Text>
+                {cart.discount > 0 && (
+                  <Text color="orange.fg">-{money(cart.discount)}</Text>
+                )}
               </Flex>
 
-              {cart.discount > 0 && (
-                <>
-                  <Separator my={3} />
-                  <Flex justify="space-between">
-                    <Text color="fg.muted">{t('pos.subtotal')}</Text>
-                    <Text>{money(cart.subtotal)}</Text>
-                  </Flex>
-                  <Flex justify="space-between" color="orange.600">
-                    <Text>{t('pos.discount')}</Text>
-                    <Text fontWeight="semibold">-{money(cart.discount)}</Text>
-                  </Flex>
-                </>
-              )}
-
-              <Separator my={3} />
-              <Text color="fg.muted">{isRefund ? t('pos.refundTotal') : t('pos.total')}</Text>
-              <Heading size="4xl" color={isRefund ? 'red.600' : 'brand.fg'} truncate>
+              <Text color="fg.muted" mt={2}>
+                {isRefund ? t('pos.refundTotal') : t('pos.total')}
+              </Text>
+              <Heading
+                fontSize="var(--pos-total-size, 3rem)"
+                lineHeight="1.1"
+                color={isRefund ? 'red.fg' : 'brand.fg'}
+                truncate
+              >
                 {money(Math.abs(cart.total))}
               </Heading>
 
               {saveError && (
-                <Alert.Root status="error" mt={4}>
+                <Alert.Root status="error" mt={3}>
                   <Alert.Indicator>
                     <AlertTriangle size={20} />
                   </Alert.Indicator>
@@ -1229,12 +1478,9 @@ export function CaissePage() {
                 </Alert.Root>
               )}
 
-              <Stack gap={3} mt={5}>
-                {/* Two ways to finish, both big enough to hit without aiming:
-                    the customer hands over a round note (change to work out),
-                    or he hands over the exact amount and it is done in one tap. */}
+              <Stack gap={2} mt={4}>
                 <Button
-                  h="4.5rem"
+                  h="var(--pos-pay-h, 4.25rem)"
                   fontSize="2xl"
                   colorPalette="green"
                   disabled={!canSettle}
@@ -1245,114 +1491,132 @@ export function CaissePage() {
                   {isRefund ? t('pos.refundButton') : t('pos.pay')} · F2
                 </Button>
                 <Button
-                  h="3.75rem"
-                  fontSize="xl"
+                  size="lg"
                   variant="outline"
                   colorPalette="green"
                   disabled={!canSettle || isRefund}
                   loading={busy}
                   onClick={() => finish('paid', cart.total, cart.total, null)}
                 >
-                  <Coins size={24} />
-                  {t('pos.payExact')} · {money(cart.total)}
-                </Button>
-                <HStack gap={2}>
-                  <Button
-                    flex="1"
-                    size="lg"
-                    colorPalette="orange"
-                    variant="subtle"
-                    disabled={!canSettle || cart.total <= 0}
-                    onClick={() => openPay('partial')}
-                  >
-                    {t('pos.partial')}
-                  </Button>
-                  <Button
-                    flex="1"
-                    size="lg"
-                    colorPalette="red"
-                    variant="subtle"
-                    disabled={!canSettle || cart.total <= 0}
-                    onClick={() => openPay('credit')}
-                  >
-                    {t('pos.credit')}
-                  </Button>
-                </HStack>
-              </Stack>
-
-              <HStack mt={4} gap={2}>
-                <Button
-                  flex="1"
-                  variant="outline"
-                  disabled={cart.lines.length === 0}
-                  onClick={() => {
-                    setDiscountText(cart.discount ? String(fromMinor(cart.discount)) : '')
-                    setDiscountOpen(true)
-                  }}
-                >
-                  <Percent size={18} />
-                  {t('pos.discount')}
+                  <Coins size={20} />
+                  {t('pos.payExact')}
                 </Button>
                 <Button
-                  flex="1"
-                  variant="outline"
-                  disabled={cart.lines.length === 0}
-                  onClick={() => cart.park(parkLabel())}
-                >
-                  <PauseCircle size={18} />
-                  {t('pos.park')}
-                </Button>
-                <IconButton
-                  aria-label={t('pos.clear')}
-                  variant="ghost"
+                  size="lg"
                   colorPalette="red"
-                  disabled={cart.lines.length === 0}
-                  onClick={() => {
-                    if (window.confirm(t('pos.clearConfirm'))) cart.clear()
-                  }}
+                  variant="subtle"
+                  disabled={!canSettle || cart.total <= 0}
+                  onClick={() => openPay('credit')}
                 >
-                  <Trash2 size={18} />
-                </IconButton>
-              </HStack>
+                  {t('pos.credit')}
+                </Button>
+              </Stack>
             </Card.Body>
           </Card.Root>
 
-          {cart.parked.length > 0 && (
-            <Card.Root>
-              <Card.Body>
-                <Text fontWeight="bold" mb={2}>
-                  {t('pos.parked')}
-                </Text>
-                <Stack gap={2}>
-                  {cart.parked.map((s) => (
-                    <Flex key={s.id} align="center" gap={2}>
-                      <Button
-                        flex="1"
-                        minW={0}
-                        size="lg"
-                        variant="outline"
-                        justifyContent="flex-start"
-                        onClick={() => cart.resume(s.id)}
-                      >
-                        <PlayCircle size={18} />
-                        <Text truncate>{s.label}</Text>
-                      </Button>
-                      <IconButton
-                        aria-label={t('common.delete')}
-                        variant="ghost"
-                        colorPalette="red"
-                        onClick={() => cart.dropParked(s.id)}
-                      >
-                        <X size={16} />
-                      </IconButton>
-                    </Flex>
-                  ))}
-                </Stack>
-              </Card.Body>
-            </Card.Root>
-          )}
-        </Stack>
-      </Grid>
+          {/* Everything a cashier reaches for less often — allowed to scroll. */}
+          <Box flex="1" minH={0} overflowY="auto">
+            <HStack gap={2}>
+              <Button
+                flex="1"
+                variant="outline"
+                disabled={cart.lines.length === 0}
+                onClick={() => {
+                  setDiscountText(cart.discount ? String(fromMinor(cart.discount)) : '')
+                  setDiscountOpen(true)
+                }}
+              >
+                <Percent size={18} />
+                {t('pos.discount')}
+              </Button>
+              <Button
+                flex="1"
+                variant="outline"
+                disabled={cart.lines.length === 0}
+                onClick={() => cart.park(parkLabel())}
+              >
+                <PauseCircle size={18} />
+                {t('pos.park')}
+              </Button>
+              <IconButton
+                aria-label={t('pos.clear')}
+                title={t('pos.clear')}
+                variant="ghost"
+                colorPalette="red"
+                disabled={cart.lines.length === 0}
+                onClick={() => {
+                  if (window.confirm(t('pos.clearConfirm'))) cart.clear()
+                }}
+              >
+                <Trash2 size={18} />
+              </IconButton>
+            </HStack>
+          </Box>
+        </Flex>
+      </Flex>
+
+      {/* ------------------------------------------------------------------
+          Row 3 — the settle bar below xl. Pinned by being the last row of a
+          container that is exactly viewport height, so it needs no sticky
+          positioning and cannot detach or overlap.
+      ------------------------------------------------------------------ */}
+      <Flex
+        display={{ base: 'flex', xl: 'none' }}
+        flexShrink={0}
+        align="center"
+        gap={3}
+        p={3}
+        borderWidth="1px"
+        borderColor="border"
+        borderRadius="l3"
+        bg="bg.panel"
+        boxShadow="md"
+      >
+        <Box minW={0} flex="1">
+          <Text fontSize="xs" color="fg.muted">
+            {`${cart.itemCount} ${t('pos.items')}`}
+          </Text>
+          <Text
+            fontSize="2xl"
+            fontWeight="bold"
+            color={isRefund ? 'red.fg' : 'brand.fg'}
+            truncate
+          >
+            {money(Math.abs(cart.total))}
+          </Text>
+        </Box>
+        <Button
+          size="lg"
+          colorPalette="red"
+          variant="subtle"
+          display={{ base: 'none', md: 'inline-flex' }}
+          disabled={!canSettle || cart.total <= 0}
+          onClick={() => openPay('credit')}
+        >
+          {t('pos.credit')}
+        </Button>
+        <Button
+          h="3.5rem"
+          fontSize="xl"
+          colorPalette="green"
+          flexShrink={0}
+          disabled={!canSettle}
+          loading={busy}
+          onClick={() => openPay('cash')}
+        >
+          <Banknote size={24} />
+          {isRefund ? t('pos.refundButton') : t('pos.pay')}
+        </Button>
+        <IconButton
+          aria-label={t('common.actions')}
+          size="lg"
+          variant="outline"
+          flexShrink={0}
+          onClick={() => setMoreOpen(true)}
+        >
+          <MoreHorizontal size={20} />
+        </IconButton>
+      </Flex>
 
       {/* ---------------- Ambiguous scan: choose the product ---------------- */}
       <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={!!matches} onOpenChange={(e) => !e.open && setMatches(null)}>
@@ -1890,8 +2154,186 @@ export function CaissePage() {
         </Portal>
       </Dialog.Root>
 
+      {/* ---------------- Packs ---------------- */}
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        scrollBehavior="inside"
+        open={packOpen}
+        onOpenChange={(e) => setPackOpen(e.open)}
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content maxH="92dvh">
+              <Dialog.Header>
+                <Box minW={0}>
+                  <Dialog.Title fontSize="xl">{t('packs.pick')}</Dialog.Title>
+                  <Text color="fg.muted" fontSize="sm" mt={1}>
+                    {t('packs.pickHint')}
+                  </Text>
+                </Box>
+                <Dialog.CloseTrigger asChild>
+                  <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
+                    <X size={18} />
+                  </IconButton>
+                </Dialog.CloseTrigger>
+              </Dialog.Header>
+              <Dialog.Body overflowY="auto">
+                {activePacks.length === 0 ? (
+                  <EmptyState.Root size="lg">
+                    <EmptyState.Content>
+                      <EmptyState.Indicator>
+                        <Boxes size={44} />
+                      </EmptyState.Indicator>
+                      <EmptyState.Title>{t('packs.empty')}</EmptyState.Title>
+                      <EmptyState.Description>{t('packs.emptyHint')}</EmptyState.Description>
+                    </EmptyState.Content>
+                  </EmptyState.Root>
+                ) : (
+                  <Stack gap={3}>
+                    {activePacks.map((pack) => {
+                      const info = resolvePack(pack, products)
+                      // While the stock is still arriving every member looks
+                      // missing; that is not a broken pack, it is an empty list.
+                      const broken = !productsLoading && info.missing.length > 0
+                      return (
+                        <Button
+                          key={pack.id}
+                          h="auto"
+                          py={3}
+                          px={4}
+                          variant="outline"
+                          colorPalette={broken ? 'red' : 'brand'}
+                          disabled={broken}
+                          onClick={() => addPack(pack)}
+                        >
+                          <Flex align="center" gap={3} w="full" minW={0} textAlign="start">
+                            <Box minW={0} flex="1">
+                              <Text fontSize="lg" fontWeight="bold" lineClamp={1}>
+                                {pack.name}
+                              </Text>
+                              <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
+                                <Text>
+                                  {t('packs.itemsCount', { count: pack.items.length })}
+                                </Text>
+                                {broken ? (
+                                  <Badge colorPalette="red" variant="subtle" size="sm">
+                                    {t('packs.brokenShort')}
+                                  </Badge>
+                                ) : (
+                                  info.saving > 0 && (
+                                    <Badge colorPalette="green" variant="subtle" size="sm">
+                                      -{money(info.saving)}
+                                    </Badge>
+                                  )
+                                )}
+                              </HStack>
+                            </Box>
+                            <Text
+                              flexShrink={0}
+                              fontSize="xl"
+                              fontWeight="bold"
+                              color="brand.fg"
+                              whiteSpace="nowrap"
+                            >
+                              {money(pack.price)}
+                            </Text>
+                          </Flex>
+                        </Button>
+                      )
+                    })}
+                  </Stack>
+                )}
+              </Dialog.Body>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+
+      {/* ---------------- The rest of the actions, on a narrow screen ---------------- */}
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        scrollBehavior="inside"
+        open={moreOpen}
+        onOpenChange={(e) => setMoreOpen(e.open)}
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content maxH="92dvh">
+              <Dialog.Header>
+                <Dialog.Title>{t('common.actions')}</Dialog.Title>
+                <Dialog.CloseTrigger asChild>
+                  <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
+                    <X size={18} />
+                  </IconButton>
+                </Dialog.CloseTrigger>
+              </Dialog.Header>
+              <Dialog.Body>
+                <Stack gap={3}>
+                  <Button
+                    size="xl"
+                    variant="outline"
+                    colorPalette="green"
+                    disabled={!canSettle || isRefund}
+                    onClick={() => {
+                      setMoreOpen(false)
+                      finish('paid', cart.total, cart.total, null)
+                    }}
+                  >
+                    <Coins size={20} />
+                    {t('pos.payExact')}
+                  </Button>
+                  <Button
+                    size="xl"
+                    variant="outline"
+                    disabled={cart.lines.length === 0}
+                    onClick={() => {
+                      setMoreOpen(false)
+                      setDiscountText(cart.discount ? String(fromMinor(cart.discount)) : '')
+                      setDiscountOpen(true)
+                    }}
+                  >
+                    <Percent size={20} />
+                    {t('pos.discount')}
+                  </Button>
+                  <Button
+                    size="xl"
+                    variant="outline"
+                    disabled={cart.lines.length === 0}
+                    onClick={() => {
+                      setMoreOpen(false)
+                      cart.park(parkLabel())
+                    }}
+                  >
+                    <PauseCircle size={20} />
+                    {t('pos.park')}
+                  </Button>
+                  <Button
+                    size="xl"
+                    variant="outline"
+                    colorPalette="red"
+                    disabled={cart.lines.length === 0}
+                    onClick={() => {
+                      if (!window.confirm(t('pos.clearConfirm'))) return
+                      setMoreOpen(false)
+                      cart.clear()
+                    }}
+                  >
+                    <Trash2 size={20} />
+                    {t('pos.clear')}
+                  </Button>
+                </Stack>
+              </Dialog.Body>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+
       {/* Hidden on screen; revealed by the print stylesheet */}
       {ticket && <Ticket data={ticket} shop={shop} symbol={symbol} paper={paper} />}
-    </Box>
+    </Flex>
   )
 }

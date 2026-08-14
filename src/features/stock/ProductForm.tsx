@@ -15,6 +15,7 @@ import {
   Portal,
   SimpleGrid,
   Stack,
+  SegmentGroup,
   Switch,
   Text,
 } from '@chakra-ui/react'
@@ -23,6 +24,17 @@ import { useAlive } from '@/lib/useAlive'
 import { fromMinor, parseMoney, parseQuantity, marginPercent } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
 import { createProduct, updateProduct, findProductByBarcode } from './useProducts'
+import {
+  VAT_RATES,
+  ttcFromHt,
+  htFromTtc,
+  saleFromCost,
+  marginFromPrices,
+  defaultMarginFor,
+  defaultVatFor,
+  parsePercent,
+} from './pricing'
+import { useShopSettings } from '@/features/settings/useShopSettings'
 import { composeName } from './naming'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
@@ -60,6 +72,7 @@ export function ProductForm({
   const nameRef = useRef<HTMLInputElement>(null)
   const { categories } = useCategories()
   const { suppliers } = useSuppliers()
+  const { shop } = useShopSettings()
 
   const [barcode, setBarcode] = useState('')
   const [name, setName] = useState('')
@@ -68,8 +81,23 @@ export function ProductForm({
   const [unit, setUnit] = useState('')
   const [category, setCategory] = useState('')
   const [supplier, setSupplier] = useState('')
+  /**
+   * Four numbers that describe one thing, so they are kept in step instead of
+   * being worked out on paper:
+   *
+   *   achat HT  --+ TVA -->  achat TTC  --+ marge -->  prix de vente
+   *
+   * Typing in any of them recomputes the ones downstream, and typing a sale
+   * price works backwards to the margin it implies. Nothing is locked: the
+   * owner can always overrule the arithmetic.
+   */
+  const [costHT, setCostHT] = useState('')
+  const [vat, setVat] = useState<number>(() => defaultVatFor(shop))
   const [costPrice, setCostPrice] = useState('')
+  const [marginText, setMarginText] = useState('')
   const [salePrice, setSalePrice] = useState('')
+  /** Once he sets a margin himself, the category stops overriding it. */
+  const marginTouched = useRef(false)
   const [quantity, setQuantity] = useState('')
   const [threshold, setThreshold] = useState('')
   const [nameError, setNameError] = useState('')
@@ -103,8 +131,21 @@ export function ProductForm({
     setUnit(source?.unit ?? '')
     setCategory(source?.category ?? '')
     setSupplier(source?.supplier ?? '')
-    setCostPrice(money(source?.costPrice ?? 0))
-    setSalePrice(money(source?.salePrice ?? 0))
+    const cost = source?.costPrice ?? 0
+    const sale = source?.salePrice ?? 0
+    const rate = source?.vatRate ?? defaultVatFor(shop)
+    setVat(rate)
+    setCostPrice(money(cost))
+    // No stored HT means the article predates the split — derive it from what
+    // the shop paid rather than showing an empty field.
+    setCostHT(money(source?.costPriceHT ?? (cost > 0 ? htFromTtc(cost, rate) : 0)))
+    setSalePrice(money(sale))
+    const known =
+      source?.margin ??
+      (cost > 0 && sale > 0 ? marginFromPrices(cost, sale) : null) ??
+      defaultMarginFor(source?.category, shop)
+    setMarginText(known === null ? '' : String(Math.round(known * 10) / 10))
+    marginTouched.current = source?.margin !== undefined
     setQuantity(product ? String(product.quantity) : '')
     setThreshold(source ? String(source.lowStockThreshold) : '')
     setNameError('')
@@ -117,12 +158,82 @@ export function ProductForm({
     setNewSupplier(false)
     autoName.current = source?.name ?? ''
     setTimeout(() => nameRef.current?.focus(), 50)
-  }, [open, product, template, initialBarcode, quick])
+  }, [open, product, template, initialBarcode, initialName, quick, shop])
 
   const symbol = t('money.symbol')
+
+  /**
+   * One handler per field. Each writes the fields DOWNSTREAM of itself and
+   * nothing else, so there is no effect loop and no field ever fights the
+   * hand that is typing in it.
+   */
+  const priceFrom = (ttcMinor: number, percentText: string) => {
+    const pct = parsePercent(percentText)
+    if (pct === null) return
+    setSalePrice(money(saleFromCost(ttcMinor, pct)))
+  }
+
+  const applyHt = (text: string) => {
+    setCostHT(text)
+    const ht = parseMoney(text)
+    if (ht === null) return
+    const ttc = ttcFromHt(ht, vat)
+    setCostPrice(money(ttc))
+    priceFrom(ttc, marginText)
+  }
+
+  const applyVat = (next: number) => {
+    setVat(next)
+    const ht = parseMoney(costHT)
+    if (ht === null) return
+    const ttc = ttcFromHt(ht, next)
+    setCostPrice(money(ttc))
+    priceFrom(ttc, marginText)
+  }
+
+  const applyTtc = (text: string) => {
+    setCostPrice(text)
+    const ttc = parseMoney(text)
+    if (ttc === null) return
+    setCostHT(money(htFromTtc(ttc, vat)))
+    priceFrom(ttc, marginText)
+  }
+
+  const applyMargin = (text: string) => {
+    setMarginText(text)
+    marginTouched.current = true
+    const ttc = parseMoney(costPrice)
+    if (ttc === null) return
+    priceFrom(ttc, text)
+  }
+
+  /** Typing the shelf price he wants works backwards to the margin it implies. */
+  const applySale = (text: string) => {
+    setSalePrice(text)
+    setPriceError('')
+    const sale = parseMoney(text)
+    const ttc = parseMoney(costPrice)
+    if (sale === null || ttc === null || ttc <= 0) return
+    const pct = marginFromPrices(ttc, sale)
+    if (pct !== null) setMarginText(String(Math.round(pct * 10) / 10))
+  }
+
+  /**
+   * Paper goods carry a thinner margin than the rest, so choosing the category
+   * sets it — until the owner overrules it, after which it is his.
+   */
+  const applyCategory = (next: string) => {
+    setCategory(next)
+    if (marginTouched.current) return
+    const pct = defaultMarginFor(next, shop)
+    setMarginText(String(pct))
+    const ttc = parseMoney(costPrice)
+    if (ttc !== null) priceFrom(ttc, String(pct))
+  }
+
   const costMinor = parseMoney(costPrice) ?? 0
   const saleMinor = parseMoney(salePrice) ?? 0
-  const margin = marginPercent(costMinor, saleMinor)
+  const actualMargin = marginPercent(costMinor, saleMinor)
   const belowCost = saleMinor > 0 && costMinor > 0 && saleMinor < costMinor
   const categoryNames = categories.map((c) => c.name)
   const supplierNames = suppliers.map((s) => s.name)
@@ -154,10 +265,10 @@ export function ProductForm({
     const value = e.currentTarget.value
     if (value === NEW) {
       setNewCategory(true)
-      setCategory('')
+      applyCategory('')
     } else {
       setNewCategory(false)
-      setCategory(value)
+      applyCategory(value)
     }
   }
 
@@ -217,7 +328,10 @@ export function ProductForm({
       unit: unit.trim() || undefined,
       category: category.trim() || undefined,
       supplier: supplier.trim() || undefined,
+      costPriceHT: parseMoney(costHT) ?? undefined,
+      vatRate: vat,
       costPrice: costMinor,
+      margin: parsePercent(marginText) ?? undefined,
       salePrice: saleMinor,
       quantity: parseQuantity(quantity) ?? 0,
       lowStockThreshold: parseQuantity(threshold) ?? 0,
@@ -421,7 +535,7 @@ export function ProductForm({
                             size="lg"
                             mt={2}
                             value={category}
-                            onChange={(e) => setCategory(e.target.value)}
+                            onChange={(e) => applyCategory(e.target.value)}
                             placeholder={t('stock.category')}
                           />
                         )}
@@ -459,28 +573,76 @@ export function ProductForm({
                     </SimpleGrid>
                   )}
 
-                  <SimpleGrid columns={2} gap={4}>
+                  {!short && (
+                    <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
+                      <Field.Root>
+                        <Field.Label>{`${t('stock.costPriceHT')} (${symbol})`}</Field.Label>
+                        <Input
+                          size="lg"
+                          value={costHT}
+                          onChange={(e) => applyHt(e.target.value)}
+                          inputMode="decimal"
+                          placeholder="0.000"
+                        />
+                        <Field.HelperText>{t('stock.costPriceHtHint')}</Field.HelperText>
+                      </Field.Root>
+
+                      <Field.Root>
+                        <Field.Label>{t('stock.vat')}</Field.Label>
+                        <SegmentGroup.Root
+                          size="lg"
+                          colorPalette="brand"
+                          value={String(vat)}
+                          onValueChange={(e: { value: string | null }) =>
+                            applyVat(Number(e.value ?? 0))
+                          }
+                        >
+                          <SegmentGroup.Indicator />
+                          {VAT_RATES.map((rate) => (
+                            <SegmentGroup.Item key={rate} value={String(rate)}>
+                              <SegmentGroup.ItemText>{`${rate} %`}</SegmentGroup.ItemText>
+                              <SegmentGroup.ItemHiddenInput />
+                            </SegmentGroup.Item>
+                          ))}
+                        </SegmentGroup.Root>
+                      </Field.Root>
+                    </SimpleGrid>
+                  )}
+
+                  <SimpleGrid columns={{ base: 1, sm: short ? 1 : 3 }} gap={4}>
                     {!short && (
                       <Field.Root>
                         <Field.Label>{`${t('stock.costPrice')} (${symbol})`}</Field.Label>
                         <Input
                           size="lg"
                           value={costPrice}
-                          onChange={(e) => setCostPrice(e.target.value)}
+                          onChange={(e) => applyTtc(e.target.value)}
                           inputMode="decimal"
                           placeholder="0.000"
                         />
+                        <Field.HelperText>{t('stock.costPriceHint')}</Field.HelperText>
+                      </Field.Root>
+                    )}
+                    {!short && (
+                      <Field.Root>
+                        <Field.Label>{t('stock.marginPercent')}</Field.Label>
+                        <Input
+                          size="lg"
+                          value={marginText}
+                          onChange={(e) => applyMargin(e.target.value)}
+                          inputMode="decimal"
+                          placeholder="35"
+                        />
+                        <Field.HelperText>{t('stock.marginHint')}</Field.HelperText>
                       </Field.Root>
                     )}
                     <Field.Root required={short} invalid={!!priceError}>
                       <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
                       <Input
                         size="lg"
+                        fontWeight="bold"
                         value={salePrice}
-                        onChange={(e) => {
-                          setSalePrice(e.target.value)
-                          setPriceError('')
-                        }}
+                        onChange={(e) => applySale(e.target.value)}
                         inputMode="decimal"
                         placeholder="0.000"
                       />
@@ -498,11 +660,11 @@ export function ProductForm({
                     </Alert.Root>
                   )}
 
-                  {margin !== null && !belowCost && (
+                  {actualMargin !== null && !belowCost && (
                     <Text fontSize="sm" color="fg.muted">
                       {t('stock.margin')}:{' '}
                       <Text as="span" fontWeight="semibold" color="green.600">
-                        {formatPercent(margin)}
+                        {formatPercent(actualMargin)}
                       </Text>
                     </Text>
                   )}

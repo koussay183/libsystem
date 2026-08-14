@@ -10,6 +10,7 @@
  *   credit_entries  — ledger lines per customer
  *   purchases       — stock bought in / factures d'achat
  *   sales           — sales / factures de vente
+ *   packs           — bundles of products sold together at one price
  *   settings        — single doc "shop": the shop identity printed on tickets
  */
 
@@ -47,8 +48,27 @@ export interface Product {
   /** What one unit is: pièce, paquet, boîte… Display only. */
   unit?: string
 
-  /** What the shop pays (millimes). */
+  /**
+   * The three prices, all in millimes.
+   *
+   * `costPriceHT` is what the supplier's invoice says before tax, `vatRate` is
+   * the rate that applies to this article (7% or 19% in Tunisia), and
+   * `costPrice` is the two of them combined — what the shop actually pays. Only
+   * `costPrice` is used for profit, everywhere, which is why it stays the
+   * required field: articles entered before the HT/TVA split simply have no
+   * `costPriceHT` and nothing about their figures changes.
+   */
+  costPriceHT?: number
+  /** VAT rate on the purchase, in percent (0, 7 or 19). */
+  vatRate?: number
+  /** What the shop pays, tax included (millimes). */
   costPrice: number
+  /**
+   * Margin taken on `costPrice`, in percent. Filled in from the shop's default
+   * (or the category's) and freely overridden — it is what makes the sale price
+   * compute itself instead of being worked out on paper every time.
+   */
+  margin?: number
   /** What the shop sells for (millimes). */
   salePrice: number
   /** Current units in stock. */
@@ -174,6 +194,43 @@ export interface Sale {
   createdAt: number
 }
 
+/** One article inside a pack, and how many of it the pack contains. */
+export interface PackItem {
+  productId: string
+  /**
+   * Denormalised: a pack has to keep reading correctly on an old ticket even
+   * after the article has been renamed or removed from the stock.
+   */
+  name: string
+  qty: number
+}
+
+/**
+ * Several articles sold together for one price — the "pack rentrée": three
+ * notebooks, two pens and a bag for 25 DT.
+ *
+ * The pack is NOT a product: it holds no stock of its own and never appears in
+ * the profitability report. At the till it becomes one line per article, priced
+ * so the lines add up to the pack price, so the stock and the per-article
+ * profit stay exactly as truthful as on any other ticket.
+ */
+export interface Pack {
+  id: string
+  name: string
+  /** Optional, so a printed pack label can be scanned like any article. */
+  barcode?: string | null
+  /** What the client pays for the whole pack, in millimes. */
+  price: number
+  items: PackItem[]
+  /** A seasonal pack is switched off rather than deleted. */
+  active: boolean
+  createdAt: number
+  updatedAt: number
+}
+
+/** Pack without the server-managed fields — what the form produces. */
+export type PackInput = Omit<Pack, 'id' | 'createdAt' | 'updatedAt'>
+
 /** Shop identity printed on the ticket. Stored as settings/shop. */
 export interface ShopSettings {
   name: string
@@ -181,4 +238,13 @@ export interface ShopSettings {
   phone?: string
   taxId?: string
   footer?: string
+  /** Margin applied to a new article when its category says nothing, percent. */
+  defaultMargin?: number
+  /**
+   * Margin per category, percent — paper goods carry less than the rest, and
+   * the owner should never have to remember which is which.
+   */
+  categoryMargins?: Record<string, number>
+  /** VAT rate pre-selected on a new article, percent. */
+  defaultVat?: number
 }

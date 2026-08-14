@@ -82,7 +82,10 @@ export async function updateProduct(id: string, input: ProductInput) {
     family: input.family ?? deleteField(),
     variant: input.variant ?? deleteField(),
     unit: input.unit ?? deleteField(),
+    costPriceHT: input.costPriceHT ?? deleteField(),
+    vatRate: input.vatRate ?? deleteField(),
     costPrice: input.costPrice,
+    margin: input.margin ?? deleteField(),
     salePrice: input.salePrice,
     // `quantity` is deliberately NOT written here. The form captured it when
     // the dialog opened, so saving would blind-write a stale count and undo

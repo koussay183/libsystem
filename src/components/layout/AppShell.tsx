@@ -6,6 +6,7 @@ import {
   LogOut,
   BookMarked,
   Package,
+  Boxes,
   ReceiptText,
   HandCoins,
   Wallet,
@@ -46,6 +47,16 @@ interface NavGroup {
 const SIDEBAR_W = '17rem'
 
 /**
+ * Routes that own the viewport instead of scrolling with the document.
+ *
+ * The till is the one screen where scrolling costs money: with a dozen lines on
+ * the ticket the total and the Encaisser button go below the fold, and the
+ * cashier scrolls with a customer waiting. Every other page is legitimately
+ * long and keeps normal document scrolling.
+ */
+const VIEWPORT_ROUTES = new Set(['/caisse'])
+
+/**
  * Two-part shell: a fixed sidebar from `lg` up, the same navigation inside a
  * drawer below that. The old single-row navbar could not fit eight modules —
  * it overflowed and pushed a horizontal scrollbar onto every page.
@@ -69,6 +80,7 @@ export function AppShell() {
       label: t('nav.manage'),
       items: [
         { to: '/stock', icon: Package, label: t('nav.stock') },
+        { to: '/packs', icon: Boxes, label: t('packs.title') },
         { to: '/invoices', icon: ReceiptText, label: t('nav.invoices') },
         { to: '/suppliers', icon: Truck, label: t('nav.suppliers') },
         { to: '/credit', icon: HandCoins, label: t('nav.credit') },
@@ -98,6 +110,8 @@ export function AppShell() {
     await logout()
     navigate('/login', { replace: true })
   }
+
+  const fullHeight = VIEWPORT_ROUTES.has(location.pathname)
 
   const currentLabel =
     [...groups.flatMap((g) => g.items), ...footerItems].find(
@@ -231,13 +245,27 @@ export function AppShell() {
       </Drawer.Root>
 
       {/* ---------------- Content column ---------------- */}
-      <Box ms={{ base: 0, lg: SIDEBAR_W }} minW={0}>
+      {/*
+        A flex column with a definite height lets the till simply say
+        `flex="1" minH={0}` and inherit whatever is left, instead of hard-coding
+        `calc(100dvh - 7.5rem)` — an arithmetic that would silently drift the
+        day the header gains a line or the update banner appears.
+        minH (not h) on every other route leaves those pages untouched.
+      */}
+      <Flex
+        direction="column"
+        ms={{ base: 0, lg: SIDEBAR_W }}
+        minW={0}
+        minH="100dvh"
+        h={fullHeight ? '100dvh' : undefined}
+      >
         <UpdateBanner />
         <Flex
           as="header"
           position="sticky"
           top={0}
           zIndex={20}
+          flexShrink={0}
           align="center"
           gap={3}
           minH="4.5rem"
@@ -279,12 +307,21 @@ export function AppShell() {
           w="full"
           maxW="100rem"
           px={{ base: 3, md: 6 }}
-          py={{ base: 4, md: 6 }}
+          py={fullHeight ? { base: 3, md: 4 } : { base: 4, md: 6 }}
           minW={0}
+          flex="1"
+          minH={0}
+          display="flex"
+          flexDirection="column"
+          // `clip`, not `hidden`: a hidden box is still programmatically
+          // scrollable, and the till calls focusScan() after every scan — one
+          // stray pixel and .focus() would scroll the scan field out of reach
+          // with no scrollbar to bring it back.
+          overflow={fullHeight ? 'clip' : undefined}
         >
           <Outlet />
         </Box>
-      </Box>
+      </Flex>
     </Box>
   )
 }

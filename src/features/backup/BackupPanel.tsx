@@ -35,6 +35,7 @@ import type { BackupFile } from './backupService'
 /** Firestore collection name → the words the owner uses for it. */
 const COLLECTION_LABEL: Record<string, string> = {
   products: 'stock.title',
+  packs: 'packs.title',
   categories: 'settings.categories',
   suppliers: 'supplier.title',
   customers: 'customer.title',
