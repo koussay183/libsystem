@@ -85,7 +85,7 @@ export function ReportsPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={1}>
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="pink.subtle" color="pink.fg" p={2} borderRadius="lg">
           <BarChart3 size={24} />
         </Box>
         <Heading size="2xl">{t('reports.title')}</Heading>

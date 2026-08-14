@@ -21,6 +21,7 @@ import {
   Portal,
   Alert,
   EmptyState,
+  SimpleGrid,
 } from '@chakra-ui/react'
 import {
   ScanLine,
@@ -44,6 +45,9 @@ import {
   Coins,
   Boxes,
   MoreHorizontal,
+  UserPlus,
+  Wallet,
+  HandCoins,
 } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
@@ -56,13 +60,21 @@ import {
   setSoundEnabled,
 } from '@/lib/beep'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
-import { useCustomers } from '@/features/customers/useCustomers'
+import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { recordSale } from '@/features/sales/useSales'
 import { usePosCart } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
 import { ScanSuggestions } from './ScanSuggestions'
-import { searchProducts, fold } from './posSearch'
+import {
+  searchChoices,
+  fold,
+  choiceId,
+  choiceName,
+  choicePrice,
+  choiceCode,
+} from './posSearch'
+import type { ScanChoice } from './posSearch'
 import { usePacks, resolvePack, packToLines } from '@/features/packs/usePacks'
 import type { Pack } from '@/types/models'
 import type { PosLine } from './usePosCart'
@@ -142,6 +154,151 @@ function QtyCell({
   )
 }
 
+/**
+ * Adding a client without leaving the sale.
+ *
+ * A client who buys on credit for the first time turns up mid-ticket, and
+ * sending the cashier off to the carnet page loses the basket. Three fields,
+ * one green button, and the new client is selected on the ticket he is
+ * standing in front of.
+ *
+ * The write is not awaited (see createCustomer): with the line down the client
+ * is durable on this machine straight away, and the sale still goes through.
+ */
+function QuickClientForm({
+  initialName,
+  onCreated,
+  onCancel,
+  existingNames,
+}: {
+  initialName: string
+  onCreated: (id: string) => void
+  onCancel: () => void
+  existingNames: string[]
+}) {
+  const { t } = useTranslation()
+  const [name, setName] = useState(initialName)
+  const [phone, setPhone] = useState('')
+  const [cin, setCin] = useState('')
+  const [error, setError] = useState('')
+  const nameRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    // The cursor belongs in the first field: the cashier types, he does not aim.
+    const id = setTimeout(() => nameRef.current?.focus(), 40)
+    return () => clearTimeout(id)
+  }, [])
+
+  const trimmed = name.trim()
+  const duplicate =
+    trimmed !== '' &&
+    existingNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())
+
+  const submit = () => {
+    if (trimmed === '') {
+      setError(t('customer.nameRequired'))
+      nameRef.current?.focus()
+      return
+    }
+    onCreated(
+      createCustomer({
+        name: trimmed,
+        phone: phone.trim() || undefined,
+        cin: cin.trim() || undefined,
+      }),
+    )
+  }
+
+  // Enter finishes the client from any of the three fields.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== 'Enter') return
+    e.preventDefault()
+    submit()
+  }
+
+  return (
+    <Stack
+      gap={3}
+      borderWidth="2px"
+      borderColor="green.emphasized"
+      bg="green.subtle"
+      borderRadius="l3"
+      p={4}
+    >
+      <Flex align="center" gap={2} color="green.fg">
+        <UserPlus size={22} />
+        <Text fontSize="lg" fontWeight="bold">
+          {t('customer.quickAdd')}
+        </Text>
+      </Flex>
+
+      <Field.Root required invalid={!!error}>
+        <Field.Label fontSize="md">{t('customer.name')}</Field.Label>
+        <Input
+          ref={nameRef}
+          size="xl"
+          bg="bg"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value)
+            setError('')
+          }}
+          onKeyDown={onKeyDown}
+          placeholder={t('customer.namePlaceholder')}
+        />
+        <Field.ErrorText>{error}</Field.ErrorText>
+      </Field.Root>
+
+      <SimpleGrid columns={{ base: 1, sm: 2 }} gap={3}>
+        <Field.Root>
+          <Field.Label fontSize="md">{t('customer.phone')}</Field.Label>
+          <Input
+            size="xl"
+            bg="bg"
+            inputMode="tel"
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            onKeyDown={onKeyDown}
+          />
+        </Field.Root>
+        <Field.Root>
+          <Field.Label fontSize="md">{t('customer.cin')}</Field.Label>
+          <Input
+            size="xl"
+            bg="bg"
+            inputMode="numeric"
+            value={cin}
+            onChange={(e) => setCin(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={t('customer.cinPlaceholder')}
+          />
+        </Field.Root>
+      </SimpleGrid>
+
+      {/* Two clients of the same name is legal — two records for the SAME
+          client is what wrecks a carnet. Say so, do not block. */}
+      {duplicate && (
+        <Alert.Root status="warning">
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>{t('customer.alreadyExists')}</Alert.Title>
+          </Alert.Content>
+        </Alert.Root>
+      )}
+
+      <HStack gap={2}>
+        <Button size="lg" variant="outline" bg="bg" flexShrink={0} onClick={onCancel}>
+          {t('customer.backToList')}
+        </Button>
+        <Button size="lg" colorPalette="green" flex="1" onClick={submit}>
+          <UserPlus size={20} />
+          {t('customer.createAndSelect')}
+        </Button>
+      </HStack>
+    </Stack>
+  )
+}
+
 /** Searchable client list — a plain dropdown is unusable past a few dozen. */
 function ClientPicker({
   customers,
@@ -156,51 +313,108 @@ function ClientPicker({
   searchLabel: string
   symbol: string
 }) {
+  const { t } = useTranslation()
   const [q, setQ] = useState('')
+  const [adding, setAdding] = useState(false)
   const needle = q.trim().toLowerCase()
   const filtered = needle
     ? customers.filter(
         (c) =>
-          c.name.toLowerCase().includes(needle) || (c.phone ?? '').includes(needle),
+          c.name.toLowerCase().includes(needle) ||
+          (c.phone ?? '').includes(needle) ||
+          (c.cin ?? '').toLowerCase().includes(needle),
       )
     : customers
 
+  if (adding) {
+    return (
+      <QuickClientForm
+        // What he already typed looking for the client IS the client's name.
+        initialName={q.trim()}
+        existingNames={customers.map((c) => c.name)}
+        onCancel={() => setAdding(false)}
+        onCreated={(id) => {
+          setAdding(false)
+          setQ('')
+          onChange(id)
+        }}
+      />
+    )
+  }
+
   return (
     <Stack gap={2}>
-      <Input
-        size="lg"
-        value={q}
-        onChange={(e) => setQ(e.target.value)}
-        placeholder={searchLabel}
-        autoFocus
-      />
-      <Stack
-        gap={1}
-        maxH="15rem"
-        overflowY="auto"
-        borderWidth="1px"
-        borderColor="border"
-        borderRadius="md"
-        p={1}
-      >
-        {filtered.map((c) => (
-          <Button
-            key={c.id}
-            size="lg"
-            variant={value === c.id ? 'solid' : 'ghost'}
-            colorPalette="brand"
-            justifyContent="space-between"
-            onClick={() => onChange(c.id)}
-          >
-            <Text truncate>{c.name}</Text>
-            {c.balance > 0 && (
-              <Badge colorPalette="orange" variant="subtle">
-                {formatMoney(c.balance, { symbol })}
-              </Badge>
-            )}
+      <HStack gap={2}>
+        <Input
+          size="lg"
+          flex="1"
+          minW={0}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={searchLabel}
+          autoFocus
+        />
+        <Button
+          size="lg"
+          colorPalette="green"
+          flexShrink={0}
+          onClick={() => setAdding(true)}
+        >
+          <UserPlus size={20} />
+          <Text as="span" display={{ base: 'none', sm: 'inline' }}>
+            {t('customer.quickAdd')}
+          </Text>
+        </Button>
+      </HStack>
+
+      {filtered.length === 0 ? (
+        // An empty list under a search box reads as "broken". The way out of
+        // it has to be the thing on screen.
+        <Stack
+          gap={2}
+          borderWidth="1px"
+          borderColor="border"
+          borderRadius="md"
+          p={4}
+          align="center"
+        >
+          <Text color="fg.muted" textAlign="center">
+            {t('customer.empty')}
+          </Text>
+          <Button size="lg" colorPalette="green" onClick={() => setAdding(true)}>
+            <UserPlus size={20} />
+            {t('customer.quickAdd')}
           </Button>
-        ))}
-      </Stack>
+        </Stack>
+      ) : (
+        <Stack
+          gap={1}
+          maxH="15rem"
+          overflowY="auto"
+          borderWidth="1px"
+          borderColor="border"
+          borderRadius="md"
+          p={1}
+        >
+          {filtered.map((c) => (
+            <Button
+              key={c.id}
+              size="lg"
+              variant={value === c.id ? 'solid' : 'ghost'}
+              colorPalette="brand"
+              justifyContent="space-between"
+              onClick={() => onChange(c.id)}
+            >
+              <Text truncate>{c.name}</Text>
+              {c.balance > 0 && (
+                <Badge colorPalette="orange" variant="subtle">
+                  {formatMoney(c.balance, { symbol })}
+                </Badge>
+              )}
+            </Button>
+          ))}
+        </Stack>
+      )}
     </Stack>
   )
 }
@@ -210,7 +424,7 @@ export function CaissePage() {
   const alive = useAlive()
   const { products, loading: productsLoading } = useProducts()
   const { customers } = useCustomers()
-  const { packs } = usePacks()
+  const { packs, loading: packsLoading } = usePacks()
   const { shop } = useShopSettings()
   const cart = usePosCart()
 
@@ -225,7 +439,7 @@ export function CaissePage() {
   const [saveError, setSaveError] = useState('')
 
   // Ambiguous scan → let the cashier pick instead of guessing.
-  const [matches, setMatches] = useState<Product[] | null>(null)
+  const [matches, setMatches] = useState<ScanChoice[] | null>(null)
   /**
    * Why we are asking. A code carried by two different articles is a normal
    * situation in this shop — cheap imported stock repeats barcodes — and it
@@ -377,6 +591,90 @@ export function CaissePage() {
   const canSettle = cart.lines.length > 0 && staleLines.length === 0 && !busy
   const isRefund = cart.total < 0
 
+  // --- packs ------------------------------------------------------------
+
+  const activePacks = useMemo(() => packs.filter((p) => p.active !== false), [packs])
+
+  const openPacks = () => {
+    closeSuggestions()
+    setPackOpen(true)
+  }
+
+  const productById = useMemo(() => new Map(products.map((p) => [p.id, p])), [products])
+
+  /**
+   * Why a pack cannot be sold as it stands, or null when it can.
+   *
+   * A pack is a recipe over live stock, so it can rot: the owner switches it
+   * off for the season, or an article in it is deleted from the stock. Neither
+   * may end as a silent no-op in front of a customer.
+   */
+  const packProblem = useCallback(
+    (pack: Pack): 'inactive' | 'broken' | null => {
+      if (pack.active === false) return 'inactive'
+      // Walked by hand rather than through resolvePack: this runs for every
+      // pack on every Firestore snapshot, and every sale is a snapshot.
+      let sellable = 0
+      for (const item of pack.items) {
+        if (!productById.has(item.productId)) return 'broken'
+        if (item.qty > 0) sellable += 1
+      }
+      return sellable === 0 ? 'broken' : null
+    },
+    [productById],
+  )
+
+  const sellablePacks = useMemo(
+    () => activePacks.filter((pack) => !packProblem(pack)),
+    [activePacks, packProblem],
+  )
+
+  const addPack = useCallback(
+    (pack: Pack) => {
+      const problem = packProblem(pack)
+      if (problem) {
+        // Never fail silently: the cashier is waiting for a line to appear.
+        setNoticeStatus('warning')
+        setNotice(
+          t(problem === 'inactive' ? 'packs.inactiveScan' : 'packs.brokenScan', {
+            name: pack.name,
+          }),
+        )
+        setCanCreate(false)
+        beepError()
+        setPackOpen(false)
+        focusScan()
+        return
+      }
+      const lines = packToLines(pack, products)
+      cart.addPack(
+        lines.map((l) => ({ product: l.product, qty: l.qty, unitPrice: l.unitPrice })),
+        { packId: pack.id, packName: pack.name, packPrice: pack.price },
+      )
+      setLastAdded({ productId: null, name: pack.name, price: pack.price })
+      setCanCreate(false)
+
+      // The pack still sells — the shelf knows better than the count — but a
+      // pack that empties the stock of one of its articles is worth hearing
+      // about while the customer is still at the counter.
+      const short = resolvePack(pack, products).short
+      if (short.length > 0) {
+        setNoticeStatus('info')
+        setNotice(
+          t('packs.shortStock', { names: short.map((m) => m.item.name).join(', ') }),
+        )
+        beepWarn()
+      } else {
+        setNotice('')
+        beepOk()
+      }
+
+      setPackOpen(false)
+      focusScan()
+    },
+    [cart.addPack, packProblem, products, t],
+  )
+
   // --- scanning ---------------------------------------------------------
 
   /**
@@ -419,6 +717,41 @@ export function CaissePage() {
     [byBarcode],
   )
 
+  /**
+   * The same index for packs. Switched-off and broken packs are indexed too —
+   * "this pack is off" is a far more useful answer than "unknown code", and it
+   * is the only way the cashier learns why the label he just scanned did
+   * nothing.
+   */
+  const byPackBarcode = useMemo(() => {
+    const index = new Map<string, Pack[]>()
+    const put = (key: string, pack: Pack) => {
+      if (!key) return
+      const already = index.get(key)
+      if (!already) index.set(key, [pack])
+      else if (!already.includes(pack)) already.push(pack)
+    }
+    for (const pack of packs) {
+      const code = codeOf(pack.barcode)
+      if (!code) continue
+      put(code, pack)
+      put(loose(code), pack)
+    }
+    return index
+  }, [packs])
+
+  const findPackByCode = useCallback(
+    (term: string, physical?: string | null): Pack[] => {
+      for (const candidate of [term, loose(term), physical, physical && loose(physical)]) {
+        if (!candidate) continue
+        const hit = byPackBarcode.get(candidate)
+        if (hit) return hit
+      }
+      return []
+    },
+    [byPackBarcode],
+  )
+
   const addToCart = useCallback(
     (p: Product) => {
       cart.addProduct(p)
@@ -433,6 +766,15 @@ export function CaissePage() {
       focusScan()
     },
     [cart.addProduct],
+  )
+
+  /** Rings up whichever of the two a code resolved to. */
+  const take = useCallback(
+    (choice: ScanChoice) => {
+      if (choice.kind === 'pack') addPack(choice.pack)
+      else addToCart(choice.product)
+    },
+    [addPack, addToCart],
   )
 
   /**
@@ -485,7 +827,9 @@ export function CaissePage() {
       setTicket(null)
       focusScan()
 
-      if (productsLoading) {
+      // Packs are read against live stock, so BOTH collections have to be in
+      // before a code can honestly be called unknown.
+      if (productsLoading || packsLoading) {
         // Answering "unknown code" here would be a lie, and offering to create
         // the article would duplicate it. Hold it and replay it below.
         if (pendingScans.current.length < MAX_PENDING) pendingScans.current.push(term)
@@ -496,34 +840,73 @@ export function CaissePage() {
 
       setNotice('')
 
-      const exact = findByCode(term, physical)
-      if (exact && exact.length === 1) {
-        addToCart(exact[0])
+      // A code can be printed on a shelf label and on a pack label alike.
+      // Sellable packs stand next to the articles as equal candidates; the
+      // rest are kept aside to explain themselves if nothing else matches.
+      const packHits = findPackByCode(term, physical)
+      const sellableHits = packHits.filter((pack) => !packProblem(pack))
+      const exact = findByCode(term, physical) ?? []
+
+      const exactChoices: ScanChoice[] = [
+        ...sellableHits.map((pack): ScanChoice => ({ kind: 'pack', pack })),
+        ...exact.map((product): ScanChoice => ({ kind: 'product', product })),
+      ]
+
+      if (exactChoices.length === 1) {
+        take(exactChoices[0])
+        return
+      }
+      if (exactChoices.length > 1) {
+        setMatches(exactChoices.slice(0, 40))
+        setMatchKind('code')
+        setNoticeStatus('warning')
+        setNotice(t('pos.sameCode'))
+        beepWarn()
         return
       }
 
-      const sharedCode = !!exact && exact.length > 1
+      // The label IS known — it is just not sellable right now. Saying which
+      // beats "unknown code", which would send the owner hunting in the stock.
+      if (packHits.length > 0) {
+        const pack = packHits[0]
+        setNoticeStatus('warning')
+        setNotice(
+          t(packProblem(pack) === 'inactive' ? 'packs.inactiveScan' : 'packs.brokenScan', {
+            name: pack.name,
+          }),
+        )
+        setCanCreate(false)
+        beepError()
+        focusScan()
+        return
+      }
+
       // Folded the same way the suggestion list folds, or Enter would answer
       // "no such article" for the very row the cashier is looking at.
       const needle = fold(term)
-      const found = sharedCode
-        ? exact
-        : products.filter(
+      const found: ScanChoice[] = [
+        ...activePacks
+          .filter((pack) => fold(pack.name).includes(needle) && !packProblem(pack))
+          .map((pack): ScanChoice => ({ kind: 'pack', pack })),
+        ...products
+          .filter(
             (p) =>
               fold(p.name).includes(needle) ||
               fold(`${p.family ?? ''} ${p.variant ?? ''}`).includes(needle),
           )
+          .map((product): ScanChoice => ({ kind: 'product', product })),
+      ]
 
       if (found.length === 1) {
-        addToCart(found[0])
+        take(found[0])
         return
       }
       if (found.length > 1) {
         // Never guess: picking the first alphabetical match sells the wrong item.
         setMatches(found.slice(0, 40))
-        setMatchKind(sharedCode ? 'code' : 'name')
+        setMatchKind('name')
         setNoticeStatus('warning')
-        setNotice(sharedCode ? t('pos.sameCode') : t('pos.manyMatches', { term }))
+        setNotice(t('pos.manyMatches', { term }))
         beepWarn()
         return
       }
@@ -536,7 +919,17 @@ export function CaissePage() {
       setNewName(/^\d+$/.test(term) ? '' : term)
       focusScan()
     },
-    [addToCart, findByCode, products, productsLoading, t],
+    [
+      take,
+      activePacks,
+      findByCode,
+      findPackByCode,
+      packProblem,
+      products,
+      productsLoading,
+      packsLoading,
+      t,
+    ],
   )
 
   /**
@@ -558,14 +951,26 @@ export function CaissePage() {
    */
   useEffect(() => {
     const term = codeOf(scan)
-    if (term.length < 4 || productsLoading || busy || dialogBlocking) return
+    if (term.length < 4 || productsLoading || packsLoading || busy || dialogBlocking) return
     if (term === consumed.current.term && performance.now() - consumed.current.at < CONSUMED_MS) {
       return
     }
-    const hit = findByCode(term)
-    if (!hit || hit.length === 0) return
+    const hits: ScanChoice[] = [
+      ...findPackByCode(term)
+        .filter((pack) => !packProblem(pack))
+        .map((pack): ScanChoice => ({ kind: 'pack', pack })),
+      ...(findByCode(term) ?? []).map((product): ScanChoice => ({ kind: 'product', product })),
+    ]
+    if (hits.length === 0) return
+    // A code that is the beginning of a longer one is never rung up early —
+    // pack labels share that rule, or a pack coded 2001 would fire while the
+    // owner is halfway through typing 20015.
     for (const p of products) {
       const code = codeOf(p.barcode)
+      if (code && code !== term && code.startsWith(term)) return
+    }
+    for (const pack of packs) {
+      const code = codeOf(pack.barcode)
       if (code && code !== term && code.startsWith(term)) return
     }
     // The wedge is still holding the same characters; without this it would
@@ -574,21 +979,35 @@ export function CaissePage() {
     consumed.current = { term, at: performance.now() }
     setScan('')
     // Typed by hand rather than scanned, but a shared code is still a shared
-    // code — ask which article instead of leaving the field sitting there.
-    if (hit.length > 1) {
-      setMatches(hit.slice(0, 40))
+    // code — ask which one instead of leaving the field sitting there.
+    if (hits.length > 1) {
+      setMatches(hits.slice(0, 40))
       setMatchKind('code')
       setNoticeStatus('warning')
       setNotice(t('pos.sameCode'))
       beepWarn()
       return
     }
-    addToCart(hit[0])
-  }, [scan, findByCode, products, productsLoading, busy, dialogBlocking, addToCart, scanner, t])
+    take(hits[0])
+  }, [
+    scan,
+    findByCode,
+    findPackByCode,
+    packProblem,
+    packs,
+    products,
+    productsLoading,
+    packsLoading,
+    busy,
+    dialogBlocking,
+    take,
+    scanner,
+    t,
+  ])
 
   /** The stock arrived - serve every code that was scanned while it loaded. */
   useEffect(() => {
-    if (productsLoading) return
+    if (productsLoading || packsLoading) return
     const held = pendingScans.current
     if (held.length === 0) return
     pendingScans.current = []
@@ -600,7 +1019,7 @@ export function CaissePage() {
       consumed.current = { term: '', at: 0 }
       lookup(code)
     }
-  }, [productsLoading, lookup])
+  }, [productsLoading, packsLoading, lookup])
 
   /**
    * With the chooser open, 1 / 2 / 3 pick an article — a till is driven with
@@ -647,19 +1066,24 @@ export function CaissePage() {
   useEffect(() => setHighlight(-1), [query])
 
   const suggestions = useMemo(
-    () => (dialogBlocking || busy ? [] : searchProducts(products, query, 8)),
-    [products, query, dialogBlocking, busy],
+    () =>
+      dialogBlocking || busy
+        ? []
+        // Only packs that can actually be sold: offering one whose article was
+        // deleted would put a dead row under the cashier's finger.
+        : searchChoices(products, sellablePacks, query, 8),
+    [products, sellablePacks, query, dialogBlocking, busy],
   )
   const suggestOpen = suggestions.length > 0
 
   const onScanInput = (value: string) => setScan(value)
 
-  const pickSuggestion = (p: Product) => {
+  const pickSuggestion = (choice: ScanChoice) => {
     closeSuggestions()
     consumed.current = { term: codeOf(scan), at: performance.now() }
     scanner.reset()
     setScan('')
-    addToCart(p)
+    take(choice)
   }
 
   const onScanKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -684,36 +1108,6 @@ export function CaissePage() {
       if (picked) pickSuggestion(picked)
     }
   }
-
-  // ---- packs ------------------------------------------------------------
-
-  const activePacks = useMemo(
-    () => packs.filter((p) => p.active !== false),
-    [packs],
-  )
-
-  const openPacks = () => {
-    closeSuggestions()
-    setPackOpen(true)
-  }
-
-  const addPack = useCallback(
-    (pack: Pack) => {
-      const lines = packToLines(pack, products)
-      if (lines.length === 0) return
-      cart.addPack(
-        lines.map((l) => ({ product: l.product, qty: l.qty, unitPrice: l.unitPrice })),
-        { packId: pack.id, packName: pack.name, packPrice: pack.price },
-      )
-      setLastAdded({ productId: null, name: pack.name, price: pack.price })
-      setNotice('')
-      setCanCreate(false)
-      beepOk()
-      setPackOpen(false)
-      focusScan()
-    },
-    [cart.addPack, products],
-  )
 
   /** The newest line has to be the one on screen, or the box hides the work. */
   useEffect(() => {
@@ -746,10 +1140,10 @@ export function CaissePage() {
     return true
   }
 
-  const chooseMatch = (p: Product) => {
+  const chooseMatch = (choice: ScanChoice) => {
     setMatches(null)
     setScan('')
-    addToCart(p)
+    take(choice)
   }
   // Read by the number-key shortcut above, which is bound once per dialog.
   const chooseMatchRef = useRef(chooseMatch)
@@ -988,6 +1382,9 @@ export function CaissePage() {
       if (e.key === 'F2') {
         e.preventDefault()
         openPay('cash')
+      } else if (e.key === 'F3') {
+        e.preventDefault()
+        openPay('partial')
       } else if (e.key === 'F4') {
         e.preventDefault()
         if (cart.lines.length > 0) cart.park(parkLabel())
@@ -1082,6 +1479,8 @@ export function CaissePage() {
                   symbol={symbol}
                   onPick={pickSuggestion}
                   onHighlight={setHighlight}
+                  packLabel={t('packs.badge')}
+                  unitsLabel={(n) => t('packs.itemsCount', { count: n })}
                 />
               </Box>
 
@@ -1501,15 +1900,34 @@ export function CaissePage() {
                   <Coins size={20} />
                   {t('pos.payExact')}
                 </Button>
-                <Button
-                  size="lg"
-                  colorPalette="red"
-                  variant="subtle"
-                  disabled={!canSettle || cart.total <= 0}
-                  onClick={() => openPay('credit')}
-                >
-                  {t('pos.credit')}
-                </Button>
+                {/* The two ways a ticket leaves without being fully paid.
+                    Side by side, distinct colours, both reachable in one tap —
+                    a client who hands over part of the money is an everyday
+                    event here, not an advanced option. */}
+                <HStack gap={2}>
+                  <Button
+                    flex="1"
+                    size="lg"
+                    colorPalette="orange"
+                    variant="subtle"
+                    disabled={!canSettle || cart.total <= 0}
+                    onClick={() => openPay('partial')}
+                  >
+                    <Wallet size={18} />
+                    {t('pos.partialShort')}
+                  </Button>
+                  <Button
+                    flex="1"
+                    size="lg"
+                    colorPalette="red"
+                    variant="subtle"
+                    disabled={!canSettle || cart.total <= 0}
+                    onClick={() => openPay('credit')}
+                  >
+                    <HandCoins size={18} />
+                    {t('pos.credit')}
+                  </Button>
+                </HStack>
               </Stack>
             </Card.Body>
           </Card.Root>
@@ -1587,12 +2005,24 @@ export function CaissePage() {
         </Box>
         <Button
           size="lg"
+          colorPalette="orange"
+          variant="subtle"
+          display={{ base: 'none', lg: 'inline-flex' }}
+          disabled={!canSettle || cart.total <= 0}
+          onClick={() => openPay('partial')}
+        >
+          <Wallet size={18} />
+          {t('pos.partialShort')}
+        </Button>
+        <Button
+          size="lg"
           colorPalette="red"
           variant="subtle"
           display={{ base: 'none', md: 'inline-flex' }}
           disabled={!canSettle || cart.total <= 0}
           onClick={() => openPay('credit')}
         >
+          <HandCoins size={18} />
           {t('pos.credit')}
         </Button>
         <Button
@@ -1641,15 +2071,15 @@ export function CaissePage() {
               </Dialog.Header>
               <Dialog.Body overflowY="auto">
                 <Stack gap={3}>
-                  {matches?.map((p, i) => (
+                  {matches?.map((c, i) => (
                     <Button
-                      key={p.id}
+                      key={choiceId(c)}
                       h="auto"
                       py={3}
                       px={4}
                       variant="outline"
-                      colorPalette="brand"
-                      onClick={() => chooseMatch(p)}
+                      colorPalette={c.kind === 'pack' ? 'cyan' : 'brand'}
+                      onClick={() => chooseMatch(c)}
                     >
                       <Flex align="center" gap={3} w="full" minW={0} textAlign="start">
                         {i < 9 && (
@@ -1659,8 +2089,8 @@ export function CaissePage() {
                             display="grid"
                             placeItems="center"
                             borderRadius="md"
-                            bg="brand.subtle"
-                            color="brand.fg"
+                            bg={c.kind === 'pack' ? 'cyan.subtle' : 'brand.subtle'}
+                            color={c.kind === 'pack' ? 'cyan.fg' : 'brand.fg'}
                             fontWeight="bold"
                             fontSize="lg"
                           >
@@ -1669,12 +2099,22 @@ export function CaissePage() {
                         )}
                         <Box minW={0} flex="1">
                           <Text fontSize="lg" fontWeight="bold" truncate>
-                            {p.name}
+                            {choiceName(c)}
                           </Text>
                           <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
-                            {p.barcode && <Text>{p.barcode}</Text>}
+                            {/* A pack and an article that share a code look
+                                alike at a glance — the badge is what stops the
+                                wrong one being sold. */}
+                            {c.kind === 'pack' && (
+                              <Badge colorPalette="cyan" variant="solid" size="sm">
+                                {t('packs.badge')}
+                              </Badge>
+                            )}
+                            {choiceCode(c) && <Text>{choiceCode(c)}</Text>}
                             <Text>
-                              {p.quantity} {t('stock.units')}
+                              {c.kind === 'pack'
+                                ? t('packs.itemsCount', { count: c.pack.items.length })
+                                : `${c.product.quantity} ${t('stock.units')}`}
                             </Text>
                           </HStack>
                         </Box>
@@ -1682,10 +2122,10 @@ export function CaissePage() {
                           flexShrink={0}
                           fontSize="xl"
                           fontWeight="bold"
-                          color="brand.fg"
+                          color={c.kind === 'pack' ? 'cyan.fg' : 'brand.fg'}
                           whiteSpace="nowrap"
                         >
-                          {money(p.salePrice)}
+                          {money(choicePrice(c))}
                         </Text>
                       </Flex>
                     </Button>
@@ -2205,7 +2645,7 @@ export function CaissePage() {
                           px={4}
                           variant="outline"
                           colorPalette={broken ? 'red' : 'brand'}
-                          disabled={broken}
+                          disabled={broken || productsLoading}
                           onClick={() => addPack(pack)}
                         >
                           <Flex align="center" gap={3} w="full" minW={0} textAlign="start">
@@ -2217,6 +2657,7 @@ export function CaissePage() {
                                 <Text>
                                   {t('packs.itemsCount', { count: pack.items.length })}
                                 </Text>
+                                {pack.barcode && <Text>{pack.barcode}</Text>}
                                 {broken ? (
                                   <Badge colorPalette="red" variant="subtle" size="sm">
                                     {t('packs.brokenShort')}
@@ -2285,6 +2726,34 @@ export function CaissePage() {
                   >
                     <Coins size={20} />
                     {t('pos.payExact')}
+                  </Button>
+                  {/* Below md the settle bar has no room for these two, so
+                      this dialog is the ONLY way to reach them on a phone. */}
+                  <Button
+                    size="xl"
+                    variant="subtle"
+                    colorPalette="orange"
+                    disabled={!canSettle || cart.total <= 0}
+                    onClick={() => {
+                      setMoreOpen(false)
+                      openPay('partial')
+                    }}
+                  >
+                    <Wallet size={20} />
+                    {t('pos.partial')}
+                  </Button>
+                  <Button
+                    size="xl"
+                    variant="subtle"
+                    colorPalette="red"
+                    disabled={!canSettle || cart.total <= 0}
+                    onClick={() => {
+                      setMoreOpen(false)
+                      openPay('credit')
+                    }}
+                  >
+                    <HandCoins size={20} />
+                    {t('pos.credit')}
                   </Button>
                   <Button
                     size="xl"

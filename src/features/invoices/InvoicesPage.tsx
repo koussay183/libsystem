@@ -14,7 +14,7 @@ export function InvoicesPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={5}>
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="blue.subtle" color="blue.fg" p={2} borderRadius="lg">
           <ReceiptText size={26} />
         </Box>
         <Heading size="2xl">{t('invoices.title')}</Heading>

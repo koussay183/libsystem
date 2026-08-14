@@ -1,6 +1,7 @@
 import { Badge, Box, Flex, HStack, Text } from '@chakra-ui/react'
 import { formatMoney } from '@/lib/money'
-import type { Product } from '@/types/models'
+import { choiceCode, choiceId, choiceName, choicePrice } from './posSearch'
+import type { ScanChoice } from './posSearch'
 
 /**
  * The list that drops under the scan field while the cashier TYPES.
@@ -20,15 +21,19 @@ export function ScanSuggestions({
   symbol,
   onPick,
   onHighlight,
+  packLabel,
+  unitsLabel,
 }: {
   open: boolean
-  items: Product[]
+  items: ScanChoice[]
   /** -1 until the cashier arrows down, so Enter keeps meaning "search". */
   highlight: number
   term: string
   symbol: string
-  onPick: (p: Product) => void
+  onPick: (c: ScanChoice) => void
   onHighlight: (index: number) => void
+  packLabel: string
+  unitsLabel: (n: number) => string
 }) {
   if (!open || items.length === 0) return null
 
@@ -52,43 +57,60 @@ export function ScanSuggestions({
       onPointerDown={(e) => e.preventDefault()}
     >
       <Box maxH="min(24rem, calc(100dvh - 16rem))" overflowY="auto">
-        {items.map((p, i) => (
-          <Flex
-            key={p.id}
-            role="option"
-            aria-selected={i === highlight}
-            align="center"
-            gap={3}
-            px={3}
-            py={2}
-            cursor="pointer"
-            borderBottomWidth={i === items.length - 1 ? 0 : '1px'}
-            borderColor="border"
-            bg={i === highlight ? 'brand.subtle' : undefined}
-            _hover={{ bg: 'brand.subtle' }}
-            onMouseEnter={() => onHighlight(i)}
-            onClick={() => onPick(p)}
-          >
-            <Box minW={0} flex="1">
-              <Text fontSize="lg" fontWeight="semibold" lineClamp={1}>
-                {p.name}
+        {items.map((c, i) => {
+          const isPack = c.kind === 'pack'
+          const accent = isPack ? 'cyan' : 'brand'
+          return (
+            <Flex
+              key={choiceId(c)}
+              role="option"
+              aria-selected={i === highlight}
+              align="center"
+              gap={3}
+              px={3}
+              py={2}
+              cursor="pointer"
+              borderBottomWidth={i === items.length - 1 ? 0 : '1px'}
+              borderColor="border"
+              // A pack is a different KIND of thing to sell, so it reads as
+              // one at a glance instead of hiding among the articles.
+              borderStartWidth={isPack ? '4px' : 0}
+              borderStartColor="cyan.solid"
+              bg={i === highlight ? `${accent}.subtle` : undefined}
+              _hover={{ bg: `${accent}.subtle` }}
+              onMouseEnter={() => onHighlight(i)}
+              onClick={() => onPick(c)}
+            >
+              <Box minW={0} flex="1">
+                <Text fontSize="lg" fontWeight="semibold" lineClamp={1}>
+                  {choiceName(c)}
+                </Text>
+                <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
+                  {isPack && (
+                    <Badge size="sm" variant="solid" colorPalette="cyan">
+                      {packLabel}
+                    </Badge>
+                  )}
+                  {choiceCode(c) && <Text as="span">{choiceCode(c)}</Text>}
+                  {c.kind === 'product' ? (
+                    <Badge
+                      size="sm"
+                      variant="subtle"
+                      colorPalette={c.product.quantity <= 0 ? 'red' : 'gray'}
+                    >
+                      {c.product.quantity}
+                    </Badge>
+                  ) : (
+                    <Text as="span">{unitsLabel(c.pack.items.length)}</Text>
+                  )}
+                </HStack>
+              </Box>
+              <Text fontSize="lg" fontWeight="bold" color={`${accent}.fg`} whiteSpace="nowrap">
+                {formatMoney(choicePrice(c), { symbol })}
               </Text>
-              <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
-                {p.barcode && <Text as="span">{p.barcode}</Text>}
-                <Badge
-                  size="sm"
-                  variant="subtle"
-                  colorPalette={p.quantity <= 0 ? 'red' : 'gray'}
-                >
-                  {p.quantity}
-                </Badge>
-              </HStack>
-            </Box>
-            <Text fontSize="lg" fontWeight="bold" color="brand.fg" whiteSpace="nowrap">
-              {formatMoney(p.salePrice, { symbol })}
-            </Text>
-          </Flex>
-        ))}
+            </Flex>
+          )
+        })}
       </Box>
     </Box>
   )

@@ -35,6 +35,7 @@ export function CustomerForm({
 
   const [name, setName] = useState('')
   const [phone, setPhone] = useState('')
+  const [cin, setCin] = useState('')
   const [note, setNote] = useState('')
   const [nameError, setNameError] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -44,6 +45,7 @@ export function CustomerForm({
     if (!open) return
     setName(customer?.name ?? '')
     setPhone(customer?.phone ?? '')
+    setCin(customer?.cin ?? '')
     setNote(customer?.note ?? '')
     setNameError('')
     setSaveError('')
@@ -63,13 +65,13 @@ export function CustomerForm({
       const input = {
         name: name.trim(),
         phone: phone.trim() || undefined,
+        cin: cin.trim() || undefined,
         note: note.trim() || undefined,
       }
       if (customer) {
         await updateCustomer(customer.id, input)
       } else {
-        const id = await createCustomer(input)
-        onCreated?.(id)
+        onCreated?.(createCustomer(input))
       }
       if (alive.current) onClose()
     } catch (err) {
@@ -130,6 +132,20 @@ export function CustomerForm({
                       onChange={(e: ChangeEvent<HTMLInputElement>) => {
                         setPhone(e.target.value)
                       }}
+                    />
+                    <Field.HelperText>{t('common.optional')}</Field.HelperText>
+                  </Field.Root>
+
+                  <Field.Root>
+                    <Field.Label>{t('customer.cin')}</Field.Label>
+                    <Input
+                      size="lg"
+                      inputMode="numeric"
+                      value={cin}
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => {
+                        setCin(e.target.value)
+                      }}
+                      placeholder={t('customer.cinPlaceholder')}
                     />
                     <Field.HelperText>{t('common.optional')}</Field.HelperText>
                   </Field.Root>

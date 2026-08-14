@@ -65,7 +65,7 @@ export function SuppliersPage() {
     <Box>
       {/* ---------------- Header ---------------- */}
       <Flex align="center" gap={3} mb={5} wrap="wrap">
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="purple.subtle" color="purple.fg" p={2} borderRadius="lg">
           <Truck size={26} />
         </Box>
         <Heading size="2xl">{t('supplier.title')}</Heading>

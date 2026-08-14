@@ -106,6 +106,12 @@ export interface Customer {
   id: string
   name: string
   phone?: string
+  /**
+   * Carte d'identite nationale. Two clients in a small town genuinely share a
+   * name, and the shop settles its carnet on that number — so it is what tells
+   * one Mohamed Ali apart from the other when the debt is called in.
+   */
+  cin?: string
   note?: string
   /** Outstanding balance in millimes (positive = customer owes the shop). */
   balance: number

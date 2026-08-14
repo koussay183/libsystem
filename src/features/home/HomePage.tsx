@@ -25,6 +25,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import { formatMoney } from '@/lib/money'
 import { useTodaySales } from '@/features/sales/useSales'
+import { ROUTE_PALETTE } from '@/lib/navColors'
 
 interface Tile {
   to: string
@@ -55,56 +56,56 @@ export function HomePage() {
       icon: Package,
       title: t('home.stockTitle'),
       desc: t('home.stockDesc'),
-      palette: 'brand',
+      palette: ROUTE_PALETTE['/stock'],
     },
     {
       to: '/packs',
       icon: Boxes,
       title: t('packs.title'),
       desc: t('packs.subtitle'),
-      palette: 'cyan',
+      palette: ROUTE_PALETTE['/packs'],
     },
     {
       to: '/invoices',
       icon: ReceiptText,
       title: t('home.invoicesTitle'),
       desc: t('home.invoicesDesc'),
-      palette: 'blue',
+      palette: ROUTE_PALETTE['/invoices'],
     },
     {
       to: '/credit',
       icon: HandCoins,
       title: t('home.creditTitle'),
       desc: t('home.creditDesc'),
-      palette: 'orange',
+      palette: ROUTE_PALETTE['/credit'],
     },
     {
       to: '/suppliers',
       icon: Truck,
       title: t('home.suppliersTitle'),
       desc: t('home.suppliersDesc'),
-      palette: 'purple',
+      palette: ROUTE_PALETTE['/suppliers'],
     },
     {
       to: '/dashboard',
       icon: Wallet,
       title: t('home.dashboardTitle'),
       desc: t('home.dashboardDesc'),
-      palette: 'green',
+      palette: ROUTE_PALETTE['/dashboard'],
     },
     {
       to: '/reports',
       icon: BarChart3,
       title: t('reports.title'),
       desc: t('reports.subtitle'),
-      palette: 'teal',
+      palette: ROUTE_PALETTE['/reports'],
     },
     {
       to: '/settings',
       icon: Settings,
       title: t('settings.title'),
       desc: t('settings.subtitle'),
-      palette: 'gray',
+      palette: ROUTE_PALETTE['/settings'],
     },
   ]
 

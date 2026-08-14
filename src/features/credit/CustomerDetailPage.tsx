@@ -147,6 +147,11 @@ export function CustomerDetailPage() {
                   {customer.phone}
                 </Text>
               )}
+              {customer.cin && (
+                <Text mt={1} fontSize="lg" color="fg.muted">
+                  {t('customer.cinShort')} {customer.cin}
+                </Text>
+              )}
               {customer.note && (
                 <Text mt={1} color="fg.muted">
                   {customer.note}

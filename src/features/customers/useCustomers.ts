@@ -8,7 +8,7 @@ import {
   where,
   getDoc,
   getDocs,
-  addDoc,
+  setDoc,
   updateDoc,
   doc,
   writeBatch,
@@ -26,6 +26,8 @@ const ENTRIES = 'credit_entries'
 export interface CustomerInput {
   name: string
   phone?: string
+  /** Carte d'identite nationale — what identifies a debtor beyond his name. */
+  cin?: string
   note?: string
 }
 
@@ -143,16 +145,29 @@ export function useAllCreditEntries(max = 3000) {
   return { entries, loading, error }
 }
 
-export async function createCustomer(input: CustomerInput): Promise<string> {
+/**
+ * The id is minted locally and the write is NOT awaited.
+ *
+ * With the line down Firestore only resolves a write on server acknowledgement,
+ * so awaiting it would hang forever — and this runs in the middle of a sale,
+ * where the cashier is adding the client he is about to put the ticket on. The
+ * document is durable in IndexedDB the moment setDoc is called, and the live
+ * list picks it up from the local cache straight away.
+ */
+export function createCustomer(input: CustomerInput): string {
   const now = Date.now()
-  const ref = await addDoc(collection(db, CUSTOMERS), {
-    name: input.name,
-    phone: input.phone || undefined,
-    note: input.note || undefined,
-    balance: 0,
-    createdAt: now,
-    updatedAt: now,
-  })
+  const ref = doc(collection(db, CUSTOMERS))
+  void track(
+    setDoc(ref, {
+      name: input.name,
+      phone: input.phone || undefined,
+      cin: input.cin || undefined,
+      note: input.note || undefined,
+      balance: 0,
+      createdAt: now,
+      updatedAt: now,
+    }),
+  ).catch(() => {})
   return ref.id
 }
 
@@ -163,6 +178,7 @@ export async function updateCustomer(id: string, input: CustomerInput) {
   await updateDoc(doc(db, CUSTOMERS, id), {
     name: input.name,
     phone: input.phone ? input.phone : deleteField(),
+    cin: input.cin ? input.cin : deleteField(),
     note: input.note ? input.note : deleteField(),
     updatedAt: Date.now(),
   })

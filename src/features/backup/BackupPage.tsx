@@ -13,7 +13,7 @@ export function BackupPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={1}>
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="red.subtle" color="red.fg" p={2} borderRadius="lg">
           <DatabaseBackup size={24} />
         </Box>
         <Heading size="2xl">{t('backup.title')}</Heading>

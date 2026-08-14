@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -22,11 +22,12 @@ import {
   Table,
   Text,
 } from '@chakra-ui/react'
-import { Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Barcode, Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { formatMoney, fromMinor, parseMoney, parseQuantity } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts } from '@/features/stock/useProducts'
-import { ProductSearch } from '@/features/invoices/ProductSearch'
+import { ProductScanField } from '@/components/ProductScanField'
+import { codeOf, loose, generateInStoreCode } from '@/features/stock/barcode'
 import {
   usePacks,
   createPack,
@@ -91,7 +92,7 @@ export function PacksPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={2} wrap="wrap">
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="cyan.subtle" color="cyan.fg" p={2} borderRadius="lg">
           <Boxes size={26} />
         </Box>
         <Heading size="2xl">{t('packs.title')}</Heading>
@@ -182,6 +183,12 @@ export function PacksPage() {
                             <Text fontSize="sm" color="fg.muted">
                               {t('packs.itemsCount', { count: pack.items.length })}
                             </Text>
+                            {pack.barcode && (
+                              <Badge colorPalette="cyan" variant="subtle" size="sm">
+                                <Barcode size={12} />
+                                {pack.barcode}
+                              </Badge>
+                            )}
                             {broken && (
                               <Badge colorPalette="red" variant="subtle" size="sm">
                                 {t('packs.brokenShort')}
@@ -268,6 +275,7 @@ export function PacksPage() {
         <PackForm
           open={formOpen}
           pack={editing}
+          packs={packs}
           onClose={() => {
             setFormOpen(false)
             setEditing(null)
@@ -280,14 +288,75 @@ export function PacksPage() {
 
 // ---------------------------------------------------------------------------
 
+/**
+ * Quantity as free text, committed on blur or Enter.
+ *
+ * A quantity bound straight to the state reads as 0 the instant the field is
+ * cleared to type a new number — and 0 means "take this article out of the
+ * pack", so the row disappeared from under the owner's fingers halfway through
+ * changing 2 into 3. An empty field now means nothing at all; the bin next to
+ * it is how an article leaves.
+ */
+function PackQtyInput({
+  value,
+  onCommit,
+  label,
+}: {
+  value: number
+  onCommit: (n: number) => void
+  label: string
+}) {
+  const [text, setText] = useState(String(value))
+  useEffect(() => setText(String(value)), [value])
+
+  const commit = () => {
+    const trimmed = text.trim()
+    if (trimmed === '') {
+      setText(String(value))
+      return
+    }
+    const qty = parseQuantity(trimmed)
+    if (qty === null) {
+      setText(String(value))
+      return
+    }
+    onCommit(qty)
+  }
+
+  return (
+    <Input
+      aria-label={label}
+      size="md"
+      w="4.5rem"
+      textAlign="center"
+      fontWeight="bold"
+      inputMode="numeric"
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onFocus={(e) => e.currentTarget.select()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter') return
+        // Enter here means "that is the quantity", not "save the pack".
+        e.preventDefault()
+        e.stopPropagation()
+        commit()
+        e.currentTarget.blur()
+      }}
+    />
+  )
+}
+
 function PackForm({
   open,
   pack,
   onClose,
+  packs,
 }: {
   open: boolean
   pack: Pack | null
   onClose: () => void
+  packs: Pack[]
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -336,22 +405,48 @@ function PackForm({
 
   const dearerThanParts = priceMinor > preview.info.normalTotal && preview.info.normalTotal > 0
 
-  const addProduct = (p: Product) => {
+  /**
+   * Scanning the same article twice means "two of them", exactly as it does at
+   * the till — not a second identical row the owner then has to merge himself.
+   */
+  const addProduct = useCallback((p: Product) => {
     setItems((current) => {
       const found = current.find((i) => i.productId === p.id)
       if (found) {
-        return current.map((i) =>
-          i.productId === p.id ? { ...i, qty: i.qty + 1 } : i,
-        )
+        return current.map((i) => (i.productId === p.id ? { ...i, qty: i.qty + 1 } : i))
       }
       return [...current, { productId: p.id, name: p.name, qty: 1 }]
     })
     setError('')
+  }, [])
+
+  /**
+   * Who else already answers to this code.
+   *
+   * A pack sharing a code with an article is legal — the till asks which one —
+   * but the owner should know he is signing up for that question on every
+   * single scan. Two packs on one code is simply a slip.
+   */
+  const codeClash = useMemo(() => {
+    const key = loose(codeOf(barcode))
+    if (key === '') return null
+    if (packs.some((other) => other.id !== pack?.id && loose(codeOf(other.barcode)) === key)) {
+      return 'pack' as const
+    }
+    if (products.some((p) => loose(codeOf(p.barcode)) === key)) return 'product' as const
+    return null
+  }, [barcode, packs, pack?.id, products])
+
+  const makeCode = () => {
+    setBarcode(
+      generateInStoreCode([
+        ...products.map((p) => p.barcode),
+        ...packs.filter((other) => other.id !== pack?.id).map((other) => other.barcode),
+      ]),
+    )
   }
 
-  const setQty = (productId: string, text: string) => {
-    const qty = parseQuantity(text)
-    if (qty === null) return
+  const setQty = (productId: string, qty: number) => {
     setItems((current) =>
       qty <= 0
         ? current.filter((i) => i.productId !== productId)
@@ -429,7 +524,7 @@ function PackForm({
                     <Field.Label>{t('packs.name')}</Field.Label>
                     <Input
                       size="lg"
-                      autoFocus
+                      autoFocus={!pack}
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       placeholder={t('packs.namePlaceholder')}
@@ -453,21 +548,63 @@ function PackForm({
                     </Field.Root>
                     <Field.Root>
                       <Field.Label>{t('stock.barcode')}</Field.Label>
-                      <Input
-                        size="lg"
-                        value={barcode}
-                        onChange={(e) => setBarcode(e.target.value)}
-                        inputMode="numeric"
-                      />
-                      <Field.HelperText>{t('common.optional')}</Field.HelperText>
+                      <HStack gap={2} w="full">
+                        <Input
+                          size="lg"
+                          flex="1"
+                          minW={0}
+                          value={barcode}
+                          onChange={(e) => setBarcode(e.target.value)}
+                          inputMode="numeric"
+                        />
+                        <Button
+                          type="button"
+                          size="lg"
+                          variant="outline"
+                          colorPalette="cyan"
+                          flexShrink={0}
+                          onClick={makeCode}
+                          title={t('packs.generateBarcode')}
+                        >
+                          <Barcode size={20} />
+                        </Button>
+                      </HStack>
+                      <Field.HelperText>{t('packs.barcodeHint')}</Field.HelperText>
                     </Field.Root>
                   </HStack>
+
+                  {codeClash && (
+                    <Alert.Root status={codeClash === 'pack' ? 'error' : 'warning'}>
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>
+                          {t(
+                            codeClash === 'pack'
+                              ? 'packs.codeTakenPack'
+                              : 'packs.codeTakenProduct',
+                          )}
+                        </Alert.Title>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
 
                   <Box>
                     <Text fontWeight="bold" mb={2}>
                       {t('packs.items')}
                     </Text>
-                    <ProductSearch onPick={addProduct} placeholder={t('packs.searchProduct')} />
+                    <ProductScanField
+                      products={products}
+                      onPick={addProduct}
+                      placeholder={t('packs.searchProduct')}
+                      // Editing an existing pack, the name is already there and
+                      // the only reason to open the form is the article list —
+                      // so that is where the cursor starts. A new pack needs a
+                      // name first, and starts in the field above.
+                      autoFocus={!!pack}
+                    />
+                    <Text fontSize="sm" color="fg.muted" mt={2}>
+                      {t('packs.scanToAdd')}
+                    </Text>
 
                     {items.length > 0 && (
                       <Stack gap={2} mt={3}>
@@ -493,13 +630,10 @@ function PackForm({
                                     : t('packs.brokenShort')}
                                 </Text>
                               </Box>
-                              <Input
-                                size="md"
-                                w="4.5rem"
-                                textAlign="center"
-                                inputMode="numeric"
-                                value={String(item.qty)}
-                                onChange={(e) => setQty(item.productId, e.target.value)}
+                              <PackQtyInput
+                                value={item.qty}
+                                label={t('pos.qty')}
+                                onCommit={(qty) => setQty(item.productId, qty)}
                               />
                               <IconButton
                                 aria-label={t('common.remove')}

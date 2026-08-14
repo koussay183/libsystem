@@ -30,6 +30,7 @@ import {
   Portal,
 } from '@chakra-ui/react'
 import { useAuth } from '@/auth/AuthContext'
+import { ROUTE_PALETTE, paletteFor } from '@/lib/navColors'
 import { LanguageToggle } from '@/components/LanguageToggle'
 import { SyncStatus, UpdateBanner } from '@/components/SyncStatus'
 
@@ -38,6 +39,9 @@ interface NavItem {
   icon: LucideIcon
   label: string
 }
+
+/** The colour this route answers to, everywhere in the app. */
+const paletteOf = (to: string) => ROUTE_PALETTE[to] ?? 'brand'
 
 interface NavGroup {
   label: string
@@ -113,10 +117,12 @@ export function AppShell() {
 
   const fullHeight = VIEWPORT_ROUTES.has(location.pathname)
 
-  const currentLabel =
-    [...groups.flatMap((g) => g.items), ...footerItems].find(
-      (i) => location.pathname === i.to || location.pathname.startsWith(`${i.to}/`),
-    )?.label ?? t('nav.home')
+  const current = [...groups.flatMap((g) => g.items), ...footerItems].find(
+    (i) => location.pathname === i.to || location.pathname.startsWith(`${i.to}/`),
+  )
+  const currentLabel = current?.label ?? t('nav.home')
+  const CurrentIcon = current?.icon ?? BookMarked
+  const currentPalette = paletteFor(location.pathname)
 
   /**
    * NavLink sets `aria-current="page"` on the active route, so the active
@@ -130,16 +136,34 @@ export function AppShell() {
       w="full"
       justifyContent="flex-start"
       gap={3}
-      px={3}
+      px={2}
       variant="ghost"
-      colorPalette="brand"
+      colorPalette={paletteOf(to)}
       fontWeight="semibold"
       color="fg.muted"
-      _hover={{ bg: 'brand.subtle', color: 'brand.fg' }}
-      _currentPage={{ bg: 'brand.solid', color: 'brand.contrast' }}
+      _hover={{ bg: 'colorPalette.subtle', color: 'colorPalette.fg' }}
+      _currentPage={{ bg: 'colorPalette.solid', color: 'colorPalette.contrast' }}
     >
       <NavLink to={to}>
-        <Icon size={20} />
+        {/*
+          The icon keeps its colour whether the row is the current one or not.
+          An owner who does not read the labels navigates by that square, so it
+          must not change hue when the page opens — only its surroundings do.
+        */}
+        <Box
+          as="span"
+          flexShrink={0}
+          boxSize="2.25rem"
+          display="grid"
+          placeItems="center"
+          borderRadius="lg"
+          // `muted`, not `subtle`: `subtle` is also the hover background, and
+          // the square would vanish into the row under the cursor.
+          bg="colorPalette.muted"
+          color="colorPalette.fg"
+        >
+          <Icon size={20} />
+        </Box>
         <Text as="span" truncate>
           {label}
         </Text>
@@ -285,9 +309,22 @@ export function AppShell() {
             <MenuIcon size={24} />
           </IconButton>
 
-          <Text fontSize="lg" fontWeight="bold" truncate flex="1" minW={0}>
-            {currentLabel}
-          </Text>
+          <Flex align="center" gap={2} flex="1" minW={0} colorPalette={currentPalette}>
+            <Box
+              flexShrink={0}
+              boxSize="2.25rem"
+              display="grid"
+              placeItems="center"
+              borderRadius="lg"
+              bg="colorPalette.solid"
+              color="colorPalette.contrast"
+            >
+              <CurrentIcon size={20} />
+            </Box>
+            <Text fontSize="lg" fontWeight="bold" truncate>
+              {currentLabel}
+            </Text>
+          </Flex>
 
           <HStack gap={{ base: 1, sm: 2 }} flexShrink={0}>
             <SyncStatus />

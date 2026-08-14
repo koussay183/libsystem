@@ -220,7 +220,7 @@ export function DashboardPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={1}>
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="teal.subtle" color="teal.fg" p={2} borderRadius="lg">
           <Wallet size={24} />
         </Box>
         <Heading size="2xl">{t('dashboard.title')}</Heading>

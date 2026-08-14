@@ -501,7 +501,7 @@ export function SettingsPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={2}>
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="gray.subtle" color="gray.fg" p={2} borderRadius="lg">
           <SettingsIcon size={26} />
         </Box>
         <Heading size="2xl">{t('settings.title')}</Heading>

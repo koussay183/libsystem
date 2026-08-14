@@ -66,6 +66,11 @@ export function CarnetPrint({
       >
         <div style={{ fontSize: '1.3em', fontWeight: 700 }}>{customer.name}</div>
         {customer.phone && <div>{customer.phone}</div>}
+        {customer.cin && (
+          <div>
+            {t('customer.cinShort')} {customer.cin}
+          </div>
+        )}
         {customer.note && <div>{customer.note}</div>}
         <div>{t('credit.since', { date: formatDate(customer.createdAt) })}</div>
       </div>

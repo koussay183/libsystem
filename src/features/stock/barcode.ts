@@ -51,3 +51,26 @@ export function sharedCodes(products: { barcode?: string | null }[]): Set<string
 export function looksLikeCode(term: string): boolean {
   return /^[0-9][0-9\s-]{3,}$/.test(term.trim())
 }
+
+/**
+ * A 13-digit code the shop can print on a pack it made up itself.
+ *
+ * The leading 2 is the GS1 range reserved for in-store use, so a generated
+ * code can never collide with a manufacturer's barcode on a real product. The
+ * caller passes every code already in use and gets one that is not among them.
+ */
+export function generateInStoreCode(taken: Iterable<unknown>): string {
+  const used = new Set<string>()
+  for (const value of taken) {
+    const key = loose(codeOf(value))
+    if (key !== '') used.add(key)
+  }
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    let code = '2'
+    for (let i = 0; i < 12; i += 1) code += Math.floor(Math.random() * 10)
+    if (!used.has(code)) return code
+  }
+  // 50 collisions against a shop's worth of codes is not a real outcome; the
+  // fallback simply never returns nothing.
+  return `2${Date.now()}`.slice(0, 13)
+}

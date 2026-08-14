@@ -81,7 +81,8 @@ export function CreditPage() {
       list = list.filter(
         (r) =>
           r.customer.name.toLowerCase().includes(q) ||
-          (r.customer.phone ?? '').toLowerCase().includes(q),
+          (r.customer.phone ?? '').toLowerCase().includes(q) ||
+          (r.customer.cin ?? '').toLowerCase().includes(q),
       )
     }
     if (onlyDebtors) list = list.filter((r) => r.customer.balance > 0)
@@ -118,7 +119,7 @@ export function CreditPage() {
   return (
     <Box>
       <Flex align="center" gap={3} mb={2} wrap="wrap">
-        <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg">
+        <Box bg="orange.subtle" color="orange.fg" p={2} borderRadius="lg">
           <HandCoins size={26} />
         </Box>
         <Heading size="2xl">{t('credit.title')}</Heading>
@@ -297,9 +298,11 @@ export function CreditPage() {
                       <Text fontSize="xl" fontWeight="semibold" truncate>
                         {c.name}
                       </Text>
-                      {c.phone && (
+                      {(c.phone || c.cin) && (
                         <Text fontSize="sm" color="fg.muted">
-                          {c.phone}
+                          {[c.phone, c.cin && `${t('customer.cinShort')} ${c.cin}`]
+                            .filter(Boolean)
+                            .join(' · ')}
                         </Text>
                       )}
                       <Flex wrap="wrap" gap={2} mt={2}>
