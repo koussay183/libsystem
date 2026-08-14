@@ -50,6 +50,13 @@ const DEFAULT_MIN_LENGTH = 4
  * since retail barcodes are numeric.
  *
  * This also rescues scanners that emulate the numeric keypad with NumLock off.
+ *
+ * Letters are mapped too, now that a code can be a word: the QR labels stuck
+ * on the counter for the photocopier and the printer carry text, and on AZERTY
+ * the three keys that move — A/Q, Z/W and M — turn IMPRIMER into I?PRI?ER.
+ * Case is taken from the shift key, so on a keyboard that already agrees with
+ * the scanner the physical reading is identical to the typed one and no
+ * second candidate is produced.
  */
 const PHYSICAL: Record<string, string> = {
   Minus: '-',
@@ -61,6 +68,22 @@ for (let d = 0; d <= 9; d += 1) {
   PHYSICAL[`Digit${d}`] = String(d)
   PHYSICAL[`Numpad${d}`] = String(d)
 }
+for (let c = 0; c < 26; c += 1) {
+  PHYSICAL[`Key${String.fromCharCode(65 + c)}`] = String.fromCharCode(97 + c)
+}
+
+/** Is this mapping a letter, i.e. does the shift key decide its case? */
+const isLetter = (ch: string) => ch >= 'a' && ch <= 'z'
+
+/**
+ * How long after a finished code a lone Enter or Tab still counts as that
+ * scanner's suffix rather than as the cashier pressing a key.
+ *
+ * Without this the early-flush path below would hand the trailing Enter to the
+ * page: with the settlement dialog open that Enter lands on the confirm button
+ * and records a sale nobody agreed to.
+ */
+const TRAILING_SUFFIX_MS = 150
 
 function isEditable(el: Element | null): el is HTMLElement {
   if (!el || !(el instanceof HTMLElement)) return false
@@ -117,6 +140,20 @@ export interface BarcodeScannerOptions {
    * flickering under the cashier's hand.
    */
   onBurstStart?: () => void
+  /**
+   * "This is the whole code — do not wait for more."
+   *
+   * Without it every scan pays {@link END_OF_SCAN_MS} of silence before the
+   * article appears, because the only way to know a burst has ended is that it
+   * stopped. The caller knows its own catalogue, so it can answer the question
+   * directly: the code matches something, and nothing longer starts with it.
+   * When it says yes the article is rung up on the last character, with no
+   * delay at all.
+   *
+   * Must stay cheap — it is asked on every character once the buffer is long
+   * enough. Returning false is the answer for all but the last one.
+   */
+  isComplete?: (code: string, physical: string | null) => boolean
 }
 
 export interface BarcodeScanner {
@@ -133,6 +170,7 @@ export function useBarcodeScanner({
   targetRef,
   minLength = DEFAULT_MIN_LENGTH,
   onBurstStart,
+  isComplete,
 }: BarcodeScannerOptions): BarcodeScanner {
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
@@ -142,11 +180,16 @@ export function useBarcodeScanner({
   const onBurstStartRef = useRef(onBurstStart)
   onBurstStartRef.current = onBurstStart
 
+  const isCompleteRef = useRef(isComplete)
+  isCompleteRef.current = isComplete
+
   /** What the layout typed, and what the physical keys say. */
   const typed = useRef('')
   const physical = useRef('')
   const lastAt = useRef(0)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** When the last code went out, so its trailing Enter can be recognised. */
+  const flushedAt = useRef(0)
   /** Field that was focused when the burst started, and its value back then. */
   const hijacked = useRef<{
     el: HTMLInputElement | HTMLTextAreaElement
@@ -174,6 +217,7 @@ export function useBarcodeScanner({
       const stolen = hijacked.current
       reset()
       if (code.length < minLength) return
+      flushedAt.current = performance.now()
 
       // The characters landed in some other field on their way here (the
       // cashier had clicked into a quantity box). Put that field back the way
@@ -190,6 +234,18 @@ export function useBarcodeScanner({
       if (e.ctrlKey || e.altKey || e.metaKey) return
 
       if (e.key === 'Enter' || e.key === 'Tab') {
+        // The code went out a moment ago — on the timer, or on the last
+        // character because the caller recognised it. This key is that
+        // scanner's suffix arriving late, and it must not reach the page.
+        if (
+          typed.current.length === 0 &&
+          performance.now() - flushedAt.current < TRAILING_SUFFIX_MS
+        ) {
+          e.preventDefault()
+          e.stopPropagation()
+          e.stopImmediatePropagation()
+          return
+        }
         // Only swallow the key when it really is a scanner's suffix. A human
         // pressing Enter on a half-typed name must still submit the form, and
         // Tab must still move between fields.
@@ -244,10 +300,34 @@ export function useBarcodeScanner({
       }
 
       typed.current += e.key
-      physical.current += PHYSICAL[e.code] ?? e.key
+      const mapped = PHYSICAL[e.code]
+      physical.current +=
+        mapped === undefined
+          ? e.key
+          : isLetter(mapped) && e.shiftKey
+            ? mapped.toUpperCase()
+            : mapped
 
       // Exactly at the threshold, not past it, so this fires once per burst.
       if (typed.current.length === minLength) onBurstStartRef.current?.()
+
+      // The catalogue recognises what is in the buffer and nothing longer
+      // starts with it, so there is nothing left to wait for. This is what
+      // takes the delay between the beep and the line on the ticket down to
+      // nothing on the codes the shop actually sells.
+      if (typed.current.length >= minLength && isCompleteRef.current) {
+        const alt = physical.current !== typed.current ? physical.current : null
+        if (isCompleteRef.current(typed.current, alt)) {
+          // This character has been consumed by the code that just went out.
+          // Let the browser type it and it lands in the scan field a moment
+          // AFTER the caller emptied that field, leaving the last digit of
+          // every scan sitting there to corrupt the next one.
+          e.preventDefault()
+          clearTimer()
+          flush()
+          return
+        }
+      }
 
       // Restart the "code complete" countdown on every character. This is what
       // removes the Enter key: the burst ends by simply going quiet.

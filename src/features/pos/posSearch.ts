@@ -1,5 +1,5 @@
-import { codeOf, loose } from '@/features/stock/barcode'
-import type { Pack, Product } from '@/types/models'
+import { fold, foldCode, foldedOf } from '@/lib/textIndex'
+import type { Pack, Product, QuickService } from '@/types/models'
 
 /**
  * The search behind the till's suggestion list.
@@ -8,53 +8,13 @@ import type { Pack, Product } from '@/types/models'
  * the ticket — so it is tuned for half-remembered names rather than codes:
  * accents and Arabic diacritics are ignored, and an article whose name STARTS
  * with what was typed beats one that merely contains it.
+ *
+ * The folding itself lives in lib/textIndex, shared with the stock search, so
+ * both agree on what "the same word" means and neither re-folds the whole shop
+ * on every keystroke.
  */
 
-/**
- * Strips what a tired cashier will not type: Latin accents, Arabic short
- * vowels and tatweel, and the alef/ya/ta-marbuta spellings that vary from one
- * supplier's label to the next.
- */
-export function fold(input: string): string {
-  return input
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[ً-ْٰـ]/g, '')
-    .replace(/[أإآٱ]/g, 'ا')
-    .replace(/ى/g, 'ي')
-    .replace(/ة/g, 'ه')
-    .trim()
-}
-
-interface Folded {
-  name: string
-  family: string
-  code: string
-  /** The raw text this was folded from — the cache key. */
-  source: string
-}
-
-/**
- * Folding every product on every keystroke would be wasted work: a sale
- * rewrites a handful of product objects and leaves the rest identical, so the
- * result is kept per document id and only recomputed when its text changes.
- */
-const cache = new Map<string, Folded>()
-
-function foldedOf(p: Product): Folded {
-  const source = `${p.name} ${p.family ?? ''} ${p.variant ?? ''} ${p.barcode ?? ''}`
-  const hit = cache.get(p.id)
-  if (hit && hit.source === source) return hit
-  const value: Folded = {
-    name: fold(p.name),
-    family: fold(`${p.family ?? ''} ${p.variant ?? ''}`),
-    code: loose(codeOf(p.barcode)),
-    source,
-  }
-  cache.set(p.id, value)
-  return value
-}
+export { fold }
 
 /** Lower is better. Anything above this is not shown at all. */
 const NO_MATCH = 99
@@ -80,7 +40,7 @@ function rank(p: Product, needle: string, needleCode: string): number {
 export function searchProducts(products: Product[], term: string, limit = 8): Product[] {
   const needle = fold(term)
   if (needle.length < 2) return []
-  const needleCode = loose(codeOf(term))
+  const needleCode = foldCode(term)
 
   const scored: { p: Product; score: number }[] = []
   for (const p of products) {
@@ -106,21 +66,51 @@ export function searchProducts(products: Product[], term: string, limit = 8): Pr
 export type ScanChoice =
   | { kind: 'product'; product: Product }
   | { kind: 'pack'; pack: Pack }
+  | { kind: 'service'; service: QuickService }
 
-export const choiceId = (c: ScanChoice) =>
-  c.kind === 'pack' ? `pack:${c.pack.id}` : `product:${c.product.id}`
+export function choiceId(c: ScanChoice): string {
+  if (c.kind === 'pack') return `pack:${c.pack.id}`
+  if (c.kind === 'service') return `service:${c.service.id}`
+  return `product:${c.product.id}`
+}
 
-export const choiceName = (c: ScanChoice) =>
-  c.kind === 'pack' ? c.pack.name : c.product.name
+export function choiceName(c: ScanChoice): string {
+  if (c.kind === 'pack') return c.pack.name
+  if (c.kind === 'service') return c.service.name
+  return c.product.name
+}
 
-export const choicePrice = (c: ScanChoice) =>
-  c.kind === 'pack' ? c.pack.price : c.product.salePrice
+/**
+ * What the row shows as a price. A service has none until the job is done, so
+ * its suggested price stands in — and null is what tells the UI to say so
+ * rather than print a confident 0.000.
+ */
+export function choicePrice(c: ScanChoice): number | null {
+  if (c.kind === 'pack') return c.pack.price
+  // `|| null`, not `?? null`: a stored 0 is not a price the till should
+  // print next to the service as though it were the charge.
+  if (c.kind === 'service') return c.service.defaultPrice || null
+  return c.product.salePrice
+}
 
-export const choiceCode = (c: ScanChoice) =>
-  c.kind === 'pack' ? c.pack.barcode : c.product.barcode
+export function choiceCode(c: ScanChoice): string | null | undefined {
+  if (c.kind === 'pack') return c.pack.barcode
+  if (c.kind === 'service') return c.service.code
+  return c.product.barcode
+}
+
+function rankService(service: QuickService, needle: string, needleCode: string): number {
+  const code = foldCode(service.code)
+  if (needleCode !== '' && code !== '' && code === needleCode) return 0
+  const name = fold(service.name)
+  if (name.startsWith(needle)) return 1
+  if (name.includes(needle)) return 3
+  if (needleCode !== '' && code !== '' && code.includes(needleCode)) return 5
+  return NO_MATCH
+}
 
 function rankPack(pack: Pack, needle: string, needleCode: string): number {
-  const code = loose(codeOf(pack.barcode))
+  const code = foldCode(pack.barcode)
   if (needleCode !== '' && code !== '' && code === needleCode) return 0
   const name = fold(pack.name)
   if (name.startsWith(needle)) return 1
@@ -130,23 +120,34 @@ function rankPack(pack: Pack, needle: string, needleCode: string): number {
 }
 
 /**
- * The suggestion list, packs included.
+ * The suggestion list: services, packs and articles together.
  *
- * At equal relevance a pack comes first: it is something the owner built on
- * purpose to be sold as a unit, and the articles inside it are one row further
- * down anyway.
+ * At equal relevance the things the owner defined by hand come first — a
+ * service or a pack exists because he made it, and the articles inside a pack
+ * are one row further down anyway.
  */
 export function searchChoices(
   products: Product[],
   packs: Pack[],
+  services: QuickService[],
   term: string,
   limit = 8,
 ): ScanChoice[] {
   const needle = fold(term)
   if (needle.length < 2) return []
-  const needleCode = loose(codeOf(term))
+  const needleCode = foldCode(term)
 
   const scored: { choice: ScanChoice; score: number; sold: number }[] = []
+  for (const service of services) {
+    const score = rankService(service, needle, needleCode)
+    if (score !== NO_MATCH) {
+      scored.push({
+        choice: { kind: 'service', service },
+        score,
+        sold: Number.MAX_SAFE_INTEGER,
+      })
+    }
+  }
   for (const pack of packs) {
     const score = rankPack(pack, needle, needleCode)
     if (score !== NO_MATCH) {

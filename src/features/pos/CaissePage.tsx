@@ -48,6 +48,7 @@ import {
   UserPlus,
   Wallet,
   HandCoins,
+  QrCode,
 } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
@@ -75,12 +76,13 @@ import {
   choiceCode,
 } from './posSearch'
 import type { ScanChoice } from './posSearch'
+import { foldCode, foldedOf } from '@/lib/textIndex'
 import { usePacks, resolvePack, packToLines } from '@/features/packs/usePacks'
 import type { Pack } from '@/types/models'
 import type { PosLine } from './usePosCart'
 import { Ticket } from './Ticket'
 import type { TicketData } from './Ticket'
-import type { PaymentMode, Product, Customer } from '@/types/models'
+import type { PaymentMode, Product, Customer, QuickService } from '@/types/models'
 
 type PayKind = 'cash' | 'credit' | 'partial'
 
@@ -425,7 +427,7 @@ export function CaissePage() {
   const { products, loading: productsLoading } = useProducts()
   const { customers } = useCustomers()
   const { packs, loading: packsLoading } = usePacks()
-  const { shop } = useShopSettings()
+  const { shop, loading: shopLoading } = useShopSettings()
   const cart = usePosCart()
 
   const scanRef = useRef<HTMLInputElement>(null)
@@ -473,6 +475,15 @@ export function CaissePage() {
 
   const [packOpen, setPackOpen] = useState(false)
   const [moreOpen, setMoreOpen] = useState(false)
+
+  /**
+   * The service whose price is being asked for — a scanned photocopy or print
+   * job. There is nothing to look up: the price is whatever the work came to,
+   * and the only thing between the scan and the ticket is one number.
+   */
+  const [serviceAsk, setServiceAsk] = useState<QuickService | null>(null)
+  const [servicePrice, setServicePrice] = useState('')
+  const [serviceError, setServiceError] = useState('')
 
   /** Declared here because the scanner, created below, closes the list. */
   const closeSuggestions = useCallback(() => {
@@ -554,6 +565,7 @@ export function CaissePage() {
     discountOpen ||
     packOpen ||
     moreOpen ||
+    !!serviceAsk ||
     !!matches ||
     !!priceLine
   const anyDialogOpen = dialogBlocking || !!ticket
@@ -590,6 +602,72 @@ export function CaissePage() {
 
   const canSettle = cart.lines.length > 0 && staleLines.length === 0 && !busy
   const isRefund = cart.total < 0
+
+  // --- services sold by scanning a printed label -------------------------
+
+  /**
+   * Every service, switched off ones included. "This service is off" is a far
+   * more useful answer to a scanned label than "unknown code", which sends the
+   * owner hunting through the stock for something that was never there.
+   */
+  const allServices = useMemo(() => shop.services ?? [], [shop.services])
+  const services = useMemo(
+    () => allServices.filter((s) => s.active !== false),
+    [allServices],
+  )
+
+  /** Folded on both sides, so IMPRIMER, imprimer and Imprimer are one code. */
+  const byServiceCode = useMemo(() => {
+    const index = new Map<string, QuickService[]>()
+    for (const service of allServices) {
+      const key = foldCode(service.code)
+      if (key === '') continue
+      const already = index.get(key)
+      if (already) already.push(service)
+      else index.set(key, [service])
+    }
+    return index
+  }, [allServices])
+
+  const findServiceByCode = useCallback(
+    (term: string, physical?: string | null): QuickService[] => {
+      for (const candidate of [term, physical]) {
+        if (!candidate) continue
+        const hit = byServiceCode.get(foldCode(candidate))
+        if (hit) return hit
+      }
+      return []
+    },
+    [byServiceCode],
+  )
+
+  const askService = useCallback((service: QuickService) => {
+    setNotice('')
+    setCanCreate(false)
+    setPackOpen(false)
+    setServiceError('')
+    setServicePrice(
+      service.defaultPrice ? String(fromMinor(service.defaultPrice)) : '',
+    )
+    setServiceAsk(service)
+    beepOk()
+  }, [])
+
+  const confirmService = () => {
+    const service = serviceAsk
+    if (!service) return
+    const price = parseMoney(servicePrice)
+    if (price === null || price <= 0) {
+      setServiceError(t('services.priceRequired'))
+      return
+    }
+    cart.addMisc(service.name, price)
+    setLastAdded({ productId: null, name: service.name, price })
+    setServiceAsk(null)
+    setServicePrice('')
+    beepDone()
+    focusScan()
+  }
 
   // --- packs ------------------------------------------------------------
 
@@ -772,9 +850,10 @@ export function CaissePage() {
   const take = useCallback(
     (choice: ScanChoice) => {
       if (choice.kind === 'pack') addPack(choice.pack)
+      else if (choice.kind === 'service') askService(choice.service)
       else addToCart(choice.product)
     },
-    [addPack, addToCart],
+    [addPack, addToCart, askService],
   )
 
   /**
@@ -827,9 +906,11 @@ export function CaissePage() {
       setTicket(null)
       focusScan()
 
-      // Packs are read against live stock, so BOTH collections have to be in
-      // before a code can honestly be called unknown.
-      if (productsLoading || packsLoading) {
+      // Packs are read against live stock and services live on the settings
+      // document, so ALL THREE have to be in before a code can honestly be
+      // called unknown — otherwise a photocopy label scanned on a cold start
+      // offers to create an article called IMPRIMER.
+      if (productsLoading || packsLoading || shopLoading) {
         // Answering "unknown code" here would be a lie, and offering to create
         // the article would duplicate it. Hold it and replay it below.
         if (pendingScans.current.length < MAX_PENDING) pendingScans.current.push(term)
@@ -846,8 +927,11 @@ export function CaissePage() {
       const packHits = findPackByCode(term, physical)
       const sellableHits = packHits.filter((pack) => !packProblem(pack))
       const exact = findByCode(term, physical) ?? []
+      const serviceHits = findServiceByCode(term, physical)
+      const liveServices = serviceHits.filter((s) => s.active !== false)
 
       const exactChoices: ScanChoice[] = [
+        ...liveServices.map((service): ScanChoice => ({ kind: 'service', service })),
         ...sellableHits.map((pack): ScanChoice => ({ kind: 'pack', pack })),
         ...exact.map((product): ScanChoice => ({ kind: 'product', product })),
       ]
@@ -862,6 +946,15 @@ export function CaissePage() {
         setNoticeStatus('warning')
         setNotice(t('pos.sameCode'))
         beepWarn()
+        return
+      }
+
+      if (serviceHits.length > 0) {
+        setNoticeStatus('warning')
+        setNotice(t('services.inactiveScan', { name: serviceHits[0].name }))
+        setCanCreate(false)
+        beepError()
+        focusScan()
         return
       }
 
@@ -885,6 +978,9 @@ export function CaissePage() {
       // "no such article" for the very row the cashier is looking at.
       const needle = fold(term)
       const found: ScanChoice[] = [
+        ...services
+          .filter((service) => fold(service.name).includes(needle))
+          .map((service): ScanChoice => ({ kind: 'service', service })),
         ...activePacks
           .filter((pack) => fold(pack.name).includes(needle) && !packProblem(pack))
           .map((pack): ScanChoice => ({ kind: 'pack', pack })),
@@ -922,13 +1018,77 @@ export function CaissePage() {
     [
       take,
       activePacks,
+      services,
       findByCode,
       findPackByCode,
+      findServiceByCode,
       packProblem,
       products,
       productsLoading,
       packsLoading,
+      shopLoading,
       t,
+    ],
+  )
+
+  /**
+   * Is any code in the shop strictly longer than this one and starting with it?
+   *
+   * If so the burst is not over — a pack coded 2001 must not fire while the
+   * reader is still halfway through 20015. Folded on both sides so a service
+   * code spelt in any case is compared the same way.
+   */
+  const hasLongerCode = useCallback(
+    (term: string) => {
+      const key = foldCode(term)
+      if (key === '') return false
+      for (const p of products) {
+        // foldedOf, not foldCode: this runs inside the keydown handler and
+        // re-folding a few thousand barcodes there is a visible hitch on the
+        // one path this change exists to make faster.
+        const code = foldedOf(p).code
+        if (code !== '' && code !== key && code.startsWith(key)) return true
+      }
+      for (const pack of packs) {
+        const code = foldCode(pack.barcode)
+        if (code !== '' && code !== key && code.startsWith(key)) return true
+      }
+      for (const service of allServices) {
+        const code = foldCode(service.code)
+        if (code !== '' && code !== key && code.startsWith(key)) return true
+      }
+      return false
+    },
+    [products, packs, allServices],
+  )
+
+  /**
+   * Told to the wedge so it can ring an article up on the last character
+   * instead of waiting to hear silence. Deliberately cheap: the map lookups
+   * miss for every character but the last, and only then is the O(n) "is
+   * anything longer?" scan paid for once.
+   */
+  const isCompleteCode = useCallback(
+    (code: string, physical: string | null) => {
+      if (blocked.current || productsLoading || packsLoading || shopLoading) return false
+      const known = (term: string) =>
+        !!findByCode(term) ||
+        findPackByCode(term).length > 0 ||
+        findServiceByCode(term).length > 0
+      for (const candidate of [code, physical]) {
+        if (!candidate) continue
+        if (known(candidate) && !hasLongerCode(candidate)) return true
+      }
+      return false
+    },
+    [
+      findByCode,
+      findPackByCode,
+      findServiceByCode,
+      hasLongerCode,
+      productsLoading,
+      packsLoading,
+      shopLoading,
     ],
   )
 
@@ -942,6 +1102,8 @@ export function CaissePage() {
     onScan: lookup,
     // A machine is typing: whatever list was open is not what it is after.
     onBurstStart: closeSuggestions,
+    // Known code, nothing longer starts with it: do not wait for the silence.
+    isComplete: isCompleteCode,
   })
 
   /**
@@ -951,28 +1113,23 @@ export function CaissePage() {
    */
   useEffect(() => {
     const term = codeOf(scan)
-    if (term.length < 4 || productsLoading || packsLoading || busy || dialogBlocking) return
+    if (term.length < 4 || productsLoading || packsLoading || shopLoading || busy || dialogBlocking)
+      return
     if (term === consumed.current.term && performance.now() - consumed.current.at < CONSUMED_MS) {
       return
     }
     const hits: ScanChoice[] = [
+      ...findServiceByCode(term)
+        .filter((s) => s.active !== false)
+        .map((service): ScanChoice => ({ kind: 'service', service })),
       ...findPackByCode(term)
         .filter((pack) => !packProblem(pack))
         .map((pack): ScanChoice => ({ kind: 'pack', pack })),
       ...(findByCode(term) ?? []).map((product): ScanChoice => ({ kind: 'product', product })),
     ]
     if (hits.length === 0) return
-    // A code that is the beginning of a longer one is never rung up early —
-    // pack labels share that rule, or a pack coded 2001 would fire while the
-    // owner is halfway through typing 20015.
-    for (const p of products) {
-      const code = codeOf(p.barcode)
-      if (code && code !== term && code.startsWith(term)) return
-    }
-    for (const pack of packs) {
-      const code = codeOf(pack.barcode)
-      if (code && code !== term && code.startsWith(term)) return
-    }
+    // A code that is the beginning of a longer one is never rung up early.
+    if (hasLongerCode(term)) return
     // The wedge is still holding the same characters; without this it would
     // fire a moment later and ring the very same unit up twice.
     scanner.reset()
@@ -993,11 +1150,12 @@ export function CaissePage() {
     scan,
     findByCode,
     findPackByCode,
+    findServiceByCode,
+    hasLongerCode,
     packProblem,
-    packs,
-    products,
     productsLoading,
     packsLoading,
+    shopLoading,
     busy,
     dialogBlocking,
     take,
@@ -1007,7 +1165,7 @@ export function CaissePage() {
 
   /** The stock arrived - serve every code that was scanned while it loaded. */
   useEffect(() => {
-    if (productsLoading || packsLoading) return
+    if (productsLoading || packsLoading || shopLoading) return
     const held = pendingScans.current
     if (held.length === 0) return
     pendingScans.current = []
@@ -1019,7 +1177,7 @@ export function CaissePage() {
       consumed.current = { term: '', at: 0 }
       lookup(code)
     }
-  }, [productsLoading, packsLoading, lookup])
+  }, [productsLoading, packsLoading, shopLoading, lookup])
 
   /**
    * With the chooser open, 1 / 2 / 3 pick an article — a till is driven with
@@ -1052,7 +1210,7 @@ export function CaissePage() {
    * pauses. Waiting for that pause is what tells the two apart without having
    * to classify keystrokes.
    */
-  const SUGGEST_DEBOUNCE_MS = 180
+  const SUGGEST_DEBOUNCE_MS = 110
   useEffect(() => {
     const term = scan.trim()
     if (term === '') {
@@ -1071,8 +1229,8 @@ export function CaissePage() {
         ? []
         // Only packs that can actually be sold: offering one whose article was
         // deleted would put a dead row under the cashier's finger.
-        : searchChoices(products, sellablePacks, query, 8),
-    [products, sellablePacks, query, dialogBlocking, busy],
+        : searchChoices(products, sellablePacks, services, query, 8),
+    [products, sellablePacks, services, query, dialogBlocking, busy],
   )
   const suggestOpen = suggestions.length > 0
 
@@ -1480,6 +1638,8 @@ export function CaissePage() {
                   onPick={pickSuggestion}
                   onHighlight={setHighlight}
                   packLabel={t('packs.badge')}
+                  serviceLabel={t('services.badge')}
+                  askPriceLabel={t('services.askPrice')}
                   unitsLabel={(n) => t('packs.itemsCount', { count: n })}
                 />
               </Box>
@@ -2078,7 +2238,9 @@ export function CaissePage() {
                       py={3}
                       px={4}
                       variant="outline"
-                      colorPalette={c.kind === 'pack' ? 'cyan' : 'brand'}
+                      colorPalette={
+                        c.kind === 'pack' ? 'cyan' : c.kind === 'service' ? 'purple' : 'brand'
+                      }
                       onClick={() => chooseMatch(c)}
                     >
                       <Flex align="center" gap={3} w="full" minW={0} textAlign="start">
@@ -2089,8 +2251,20 @@ export function CaissePage() {
                             display="grid"
                             placeItems="center"
                             borderRadius="md"
-                            bg={c.kind === 'pack' ? 'cyan.subtle' : 'brand.subtle'}
-                            color={c.kind === 'pack' ? 'cyan.fg' : 'brand.fg'}
+                            bg={
+                              c.kind === 'pack'
+                                ? 'cyan.subtle'
+                                : c.kind === 'service'
+                                  ? 'purple.subtle'
+                                  : 'brand.subtle'
+                            }
+                            color={
+                              c.kind === 'pack'
+                                ? 'cyan.fg'
+                                : c.kind === 'service'
+                                  ? 'purple.fg'
+                                  : 'brand.fg'
+                            }
                             fontWeight="bold"
                             fontSize="lg"
                           >
@@ -2110,22 +2284,38 @@ export function CaissePage() {
                                 {t('packs.badge')}
                               </Badge>
                             )}
+                            {c.kind === 'service' && (
+                              <Badge colorPalette="purple" variant="solid" size="sm">
+                                {t('services.badge')}
+                              </Badge>
+                            )}
                             {choiceCode(c) && <Text>{choiceCode(c)}</Text>}
-                            <Text>
-                              {c.kind === 'pack'
-                                ? t('packs.itemsCount', { count: c.pack.items.length })
-                                : `${c.product.quantity} ${t('stock.units')}`}
-                            </Text>
+                            {c.kind === 'pack' && (
+                              <Text>{t('packs.itemsCount', { count: c.pack.items.length })}</Text>
+                            )}
+                            {c.kind === 'product' && (
+                              <Text>
+                                {c.product.quantity} {t('stock.units')}
+                              </Text>
+                            )}
                           </HStack>
                         </Box>
                         <Text
                           flexShrink={0}
                           fontSize="xl"
                           fontWeight="bold"
-                          color={c.kind === 'pack' ? 'cyan.fg' : 'brand.fg'}
+                          color={
+                            c.kind === 'pack'
+                              ? 'cyan.fg'
+                              : c.kind === 'service'
+                                ? 'purple.fg'
+                                : 'brand.fg'
+                          }
                           whiteSpace="nowrap"
                         >
-                          {money(choicePrice(c))}
+                          {choicePrice(c) === null
+                            ? t('services.askPrice')
+                            : money(choicePrice(c) as number)}
                         </Text>
                       </Flex>
                     </Button>
@@ -2587,6 +2777,120 @@ export function CaissePage() {
                   }}
                 >
                   {t('pos.newTicket')}
+                </Button>
+              </Dialog.Footer>
+            </Dialog.Content>
+          </Dialog.Positioner>
+        </Portal>
+      </Dialog.Root>
+
+      {/* ------------------------------------------------------------------
+          A service was scanned off its printed label. There is nothing to
+          look up — the only thing between the scan and the ticket is what the
+          job came to, so that is the only thing on screen.
+      ------------------------------------------------------------------ */}
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        open={!!serviceAsk}
+        onOpenChange={(e) => {
+          if (e.open) return
+          setServiceAsk(null)
+          setServicePrice('')
+          focusScan()
+        }}
+      >
+        <Portal>
+          <Dialog.Backdrop />
+          <Dialog.Positioner>
+            <Dialog.Content maxW="30rem">
+              <Dialog.Header>
+                <Flex align="center" gap={3} minW={0}>
+                  <Box
+                    flexShrink={0}
+                    bg="purple.subtle"
+                    color="purple.fg"
+                    p={2}
+                    borderRadius="lg"
+                  >
+                    <QrCode size={24} />
+                  </Box>
+                  <Box minW={0}>
+                    <Dialog.Title fontSize="2xl" lineHeight="1.2">
+                      {serviceAsk?.name}
+                    </Dialog.Title>
+                    <Text color="fg.muted" fontSize="sm">
+                      {t('services.askHint')}
+                    </Text>
+                  </Box>
+                </Flex>
+                <Dialog.CloseTrigger asChild>
+                  <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
+                    <X size={18} />
+                  </IconButton>
+                </Dialog.CloseTrigger>
+              </Dialog.Header>
+
+              <Dialog.Body>
+                <Field.Root invalid={!!serviceError}>
+                  <Field.Label fontSize="lg">
+                    {`${t('services.priceCollected')} (${symbol})`}
+                  </Field.Label>
+                  <Input
+                    autoFocus
+                    h="4.5rem"
+                    fontSize="3xl"
+                    fontWeight="bold"
+                    textAlign="center"
+                    inputMode="decimal"
+                    placeholder="0.000"
+                    value={servicePrice}
+                    onChange={(e) => {
+                      setServicePrice(e.target.value)
+                      setServiceError('')
+                    }}
+                    onFocus={(e) => e.currentTarget.select()}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return
+                      e.preventDefault()
+                      confirmService()
+                    }}
+                  />
+                  <Field.ErrorText>{serviceError}</Field.ErrorText>
+                </Field.Root>
+
+                {/* The usual price for this job, one tap away. */}
+                {!!serviceAsk?.defaultPrice && (
+                  <Button
+                    mt={3}
+                    size="lg"
+                    w="full"
+                    variant="outline"
+                    colorPalette="purple"
+                    onClick={() =>
+                      setServicePrice(String(fromMinor(serviceAsk.defaultPrice as number)))
+                    }
+                  >
+                    {money(serviceAsk.defaultPrice)}
+                  </Button>
+                )}
+              </Dialog.Body>
+
+              <Dialog.Footer>
+                <Button
+                  size="lg"
+                  variant="outline"
+                  onClick={() => {
+                    setServiceAsk(null)
+                    setServicePrice('')
+                    focusScan()
+                  }}
+                >
+                  {t('common.cancel')}
+                </Button>
+                <Button size="lg" colorPalette="purple" onClick={confirmService}>
+                  <Plus size={20} />
+                  {t('services.addToTicket')}
                 </Button>
               </Dialog.Footer>
             </Dialog.Content>

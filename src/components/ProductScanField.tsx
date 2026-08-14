@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Alert, Badge, Box, Flex, HStack, Input, InputGroup, Text } from '@chakra-ui/react'
 import { CheckCircle2, ScanLine } from 'lucide-react'
@@ -42,7 +42,9 @@ export function ProductScanField({
 
   const symbol = t('money.symbol')
 
-  const results = searchProducts(products, q, 8)
+  // Memoised: this used to re-scan the whole stock on every render of the
+  // dialog, including renders caused by typing in a completely different field.
+  const results = useMemo(() => searchProducts(products, q, 8), [products, q])
 
   useEffect(() => setHighlight(-1), [q])
 

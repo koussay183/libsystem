@@ -22,6 +22,8 @@ export function ScanSuggestions({
   onPick,
   onHighlight,
   packLabel,
+  serviceLabel,
+  askPriceLabel,
   unitsLabel,
 }: {
   open: boolean
@@ -33,6 +35,9 @@ export function ScanSuggestions({
   onPick: (c: ScanChoice) => void
   onHighlight: (index: number) => void
   packLabel: string
+  serviceLabel: string
+  /** Shown instead of a price for a service that has no suggested one. */
+  askPriceLabel: string
   unitsLabel: (n: number) => string
 }) {
   if (!open || items.length === 0) return null
@@ -59,7 +64,9 @@ export function ScanSuggestions({
       <Box maxH="min(24rem, calc(100dvh - 16rem))" overflowY="auto">
         {items.map((c, i) => {
           const isPack = c.kind === 'pack'
-          const accent = isPack ? 'cyan' : 'brand'
+          const isService = c.kind === 'service'
+          const accent = isPack ? 'cyan' : isService ? 'purple' : 'brand'
+          const price = choicePrice(c)
           return (
             <Flex
               key={choiceId(c)}
@@ -72,10 +79,11 @@ export function ScanSuggestions({
               cursor="pointer"
               borderBottomWidth={i === items.length - 1 ? 0 : '1px'}
               borderColor="border"
-              // A pack is a different KIND of thing to sell, so it reads as
-              // one at a glance instead of hiding among the articles.
-              borderStartWidth={isPack ? '4px' : 0}
-              borderStartColor="cyan.solid"
+              // A pack and a service are different KINDS of thing to sell,
+              // so they read as such at a glance instead of hiding among the
+              // articles.
+              borderStartWidth={isPack || isService ? '4px' : 0}
+              borderStartColor={isPack ? 'cyan.solid' : 'purple.solid'}
               bg={i === highlight ? `${accent}.subtle` : undefined}
               _hover={{ bg: `${accent}.subtle` }}
               onMouseEnter={() => onHighlight(i)}
@@ -91,8 +99,13 @@ export function ScanSuggestions({
                       {packLabel}
                     </Badge>
                   )}
+                  {isService && (
+                    <Badge size="sm" variant="solid" colorPalette="purple">
+                      {serviceLabel}
+                    </Badge>
+                  )}
                   {choiceCode(c) && <Text as="span">{choiceCode(c)}</Text>}
-                  {c.kind === 'product' ? (
+                  {c.kind === 'product' && (
                     <Badge
                       size="sm"
                       variant="subtle"
@@ -100,13 +113,19 @@ export function ScanSuggestions({
                     >
                       {c.product.quantity}
                     </Badge>
-                  ) : (
+                  )}
+                  {c.kind === 'pack' && (
                     <Text as="span">{unitsLabel(c.pack.items.length)}</Text>
                   )}
                 </HStack>
               </Box>
-              <Text fontSize="lg" fontWeight="bold" color={`${accent}.fg`} whiteSpace="nowrap">
-                {formatMoney(choicePrice(c), { symbol })}
+              <Text
+                fontSize={price === null ? 'sm' : 'lg'}
+                fontWeight="bold"
+                color={price === null ? 'fg.muted' : `${accent}.fg`}
+                whiteSpace="nowrap"
+              >
+                {price === null ? askPriceLabel : formatMoney(price, { symbol })}
               </Text>
             </Flex>
           )

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { doc, onSnapshot, setDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { track } from '@/lib/syncStatus'
 import type { ShopSettings } from '@/types/models'
 
 const REF = () => doc(db, 'settings', 'shop')
@@ -38,6 +39,17 @@ export function useShopSettings() {
   return { shop, loading }
 }
 
-export async function saveShopSettings(settings: ShopSettings) {
-  await setDoc(REF(), { ...settings, updatedAt: Date.now() }, { merge: true })
+/**
+ * The write is NOT awaited.
+ *
+ * Firestore only resolves a write once the server has acknowledged it, so with
+ * the line down `await` never returns and the Enregistrer button spins for
+ * ever — while the change is in fact already durable in IndexedDB and will go
+ * up by itself. The sync badge in the header is what reports the journey; this
+ * reports only that the shop has taken the change, which it has.
+ */
+export function saveShopSettings(settings: ShopSettings): void {
+  void track(
+    setDoc(REF(), { ...settings, updatedAt: Date.now() }, { merge: true }),
+  ).catch(() => {})
 }

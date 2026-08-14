@@ -237,6 +237,27 @@ export interface Pack {
 /** Pack without the server-managed fields — what the form produces. */
 export type PackInput = Omit<Pack, 'id' | 'createdAt' | 'updatedAt'>
 
+/**
+ * A service the shop performs rather than an article it stocks: photocopying,
+ * printing, binding.
+ *
+ * There is nothing to count and no purchase price — the price is whatever the
+ * job came to, and the cashier types it once the work is done. The shop prints
+ * `code` as a QR label, sticks it next to the machine, and scans it with the
+ * same hand reader it uses for books.
+ */
+export interface QuickService {
+  id: string
+  /** What the cashier and the ticket see: "Photocopie". */
+  name: string
+  /** What the QR label carries. Matched ignoring case and accents. */
+  code: string
+  /** A common price for this job, offered as one tap. Millimes. */
+  defaultPrice?: number
+  /** A service that is not on offer today is switched off, not deleted. */
+  active?: boolean
+}
+
 /** Shop identity printed on the ticket. Stored as settings/shop. */
 export interface ShopSettings {
   name: string
@@ -253,4 +274,11 @@ export interface ShopSettings {
   categoryMargins?: Record<string, number>
   /** VAT rate pre-selected on a new article, percent. */
   defaultVat?: number
+  /**
+   * Services sold by scanning a printed QR label. Kept on the shop document
+   * rather than in a collection of their own: there are a handful of them, the
+   * settings are already subscribed to on every page, and this way they ride
+   * along in the backup with everything else.
+   */
+  services?: QuickService[]
 }

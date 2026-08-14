@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -37,6 +37,7 @@ import {
   X,
 } from 'lucide-react'
 import { formatMoney } from '@/lib/money'
+import { fold, foldCode, foldedOf, pruneFoldCache } from '@/lib/textIndex'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts, removeProduct } from './useProducts'
 import { groupByFamily } from './naming'
@@ -55,6 +56,12 @@ const TONE_PALETTE = {
 } as const satisfies Record<StatusTone, string>
 
 type View = 'grouped' | 'flat'
+
+/** How long the table waits after the last keystroke before it redraws. */
+const SEARCH_DEBOUNCE_MS = 140
+
+/** Rows put in the DOM at once. Past this, the search box is the right tool. */
+const ROW_LIMIT = 150
 
 export function StockPage() {
   const { t } = useTranslation()
@@ -77,33 +84,109 @@ export function StockPage() {
 
   const symbol = t('money.symbol')
 
-  const q = search.trim().toLowerCase()
+  /**
+   * The text actually searched on, one beat behind the field.
+   *
+   * Every keystroke used to filter the whole stock AND re-render every row of
+   * the table. On a few thousand articles the letters arrived faster than
+   * React could redraw and the field visibly lagged the keyboard. The input
+   * stays instant; the table catches up when the typing pauses.
+   */
+  const [applied, setApplied] = useState('')
+  useEffect(() => {
+    const id = setTimeout(() => setApplied(search), SEARCH_DEBOUNCE_MS)
+    return () => clearTimeout(id)
+  }, [search])
+
+  // Articles deleted from the stock would otherwise keep their folded entry
+  // for the life of the tab. The stock page is where deletion happens.
+  useEffect(() => pruneFoldCache(products), [products])
+
+  const q = applied.trim()
+  const needle = fold(q)
+  /**
+   * The same term with the separators taken out, for the code side alone.
+   *
+   * The index stores every barcode stripped of spaces and hyphens, so a search
+   * for the code exactly as it is printed on the shelf — 978-2-07-036822-8 —
+   * has to be stripped too or it can never match the article it belongs to.
+   * Searching one way and storing the other is how "this book is not in my
+   * stock" happens in front of a customer holding it.
+   */
+  const needleCode = foldCode(q)
+
   const filtered = useMemo(
     () =>
-      q === ''
+      needle === ''
         ? products
-        : products.filter(
-            (p) =>
-              p.name.toLowerCase().includes(q) ||
-              (p.barcode ?? '').toLowerCase().includes(q) ||
-              (p.family ?? '').toLowerCase().includes(q) ||
-              (p.category ?? '').toLowerCase().includes(q),
-          ),
-    [products, q],
+        // foldedOf is cached per article, so this is a substring test against
+        // strings that already exist rather than four fresh lowercased copies
+        // of every article on every letter typed. It also means the stock
+        // search finally ignores accents, like the till's does.
+        : products.filter((p) => {
+            const f = foldedOf(p)
+            return (
+              f.all.includes(needle) ||
+              (needleCode !== '' && f.code.includes(needleCode))
+            )
+          }),
+    [products, needle, needleCode],
   )
 
-  const { families, loners } = useMemo(() => groupByFamily(filtered), [filtered])
+  /**
+   * How many rows are actually put in the DOM.
+   *
+   * A shop with three thousand articles was rendering three thousand table
+   * rows — tens of thousands of nodes — and reconciling all of them on every
+   * keystroke. Nobody reads past the first screen anyway: the way to find an
+   * article is the search box above.
+   */
+  const [limit, setLimit] = useState(ROW_LIMIT)
+  useEffect(() => setLimit(ROW_LIMIT), [needle, needleCode, view])
+
+  const shown = useMemo(() => filtered.slice(0, limit), [filtered, limit])
+
+  /**
+   * Grouped from the WHOLE result, then cut by whole families.
+   *
+   * Grouping the already-cut list instead would show a family its truncated
+   * contents and then count and price them — "3 variantes, 2,000 à 3,500" for
+   * a family of eight. A row that is missing is obvious; a row that quietly
+   * states a wrong number is not.
+   */
+  const grouped = useMemo(() => {
+    const { families: all, loners: singles } = groupByFamily(filtered)
+    let budget = limit
+    const families = []
+    for (const group of all) {
+      if (budget <= 0) break
+      families.push(group)
+      budget -= group.items.length + 1
+    }
+    const loners = budget > 0 ? singles.slice(0, budget) : []
+    const total = all.length + singles.length
+    return { families, loners, cut: families.length + loners.length < total }
+  }, [filtered, limit])
+
+  const { families, loners } = grouped
+  const capped = view === 'flat' ? filtered.length > limit : grouped.cut
 
   // Counted exactly the way the per-row badge decides, so the tile and the
   // rows it summarises can never disagree. Without the threshold check every
   // out-of-stock article with no threshold set was counted as "stock bas" too.
-  const lowCount = products.filter(
-    (p) => p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold,
-  ).length
+  const lowCount = useMemo(
+    () =>
+      products.filter((p) => p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold)
+        .length,
+    [products],
+  )
 
   /** Codes carried by more than one article, so the pairs can be marked. */
   const shared = useMemo(() => sharedCodes(products), [products])
-  const stockValue = products.reduce((sum, p) => sum + p.costPrice * p.quantity, 0)
+  const stockValue = useMemo(
+    () => products.reduce((sum, p) => sum + p.costPrice * p.quantity, 0),
+    [products],
+  )
 
   const status = (p: Product): { tone: StatusTone; label: string } => {
     if (p.quantity <= 0) return { tone: 'danger', label: t('stock.outOfStock') }
@@ -437,7 +520,7 @@ export function StockPage() {
           <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>
-              {looksLikeCode(search) ? t('stock.scanNotFound') : t('stock.noResults')}
+              {looksLikeCode(q) ? t('stock.scanNotFound') : t('stock.noResults')}
             </Alert.Title>
           </Alert.Content>
           <Button
@@ -445,9 +528,9 @@ export function StockPage() {
             colorPalette="brand"
             flexShrink={0}
             onClick={() =>
-              looksLikeCode(search)
-                ? openForm({ barcode: search.trim() })
-                : openForm({ name: search.trim(), quick: true })
+              looksLikeCode(q)
+                ? openForm({ barcode: q })
+                : openForm({ name: q, quick: true })
             }
           >
             <Plus size={20} />
@@ -457,6 +540,38 @@ export function StockPage() {
       ) : (
         <Card.Root>
           <Card.Body p={0}>
+            {/* A truncated list that does not say so reads as "my article is
+                not in the stock". */}
+            {capped && (
+              <Flex
+                align="center"
+                gap={3}
+                px={4}
+                py={3}
+                wrap="wrap"
+                borderBottomWidth="1px"
+                borderColor="border"
+                bg="bg.subtle"
+              >
+                <Text color="fg.muted">
+                  {t('stock.showingSome', {
+                    shown:
+                      view === 'flat'
+                        ? shown.length
+                        : families.reduce((n, g) => n + g.items.length, 0) + loners.length,
+                    total: filtered.length,
+                  })}
+                </Text>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  ms="auto"
+                  onClick={() => setLimit(filtered.length)}
+                >
+                  {t('stock.showAll')}
+                </Button>
+              </Flex>
+            )}
             <Box overflowX="auto">
               <Table.Root size="lg">
                 <Table.Header>
@@ -481,7 +596,7 @@ export function StockPage() {
                 </Table.Header>
                 <Table.Body>
                   {view === 'flat'
-                    ? filtered.map((p) => productRow(p, false))
+                    ? shown.map((p) => productRow(p, false))
                     : [
                         ...families.map((group) => {
                           // While searching, every family is open: the match is

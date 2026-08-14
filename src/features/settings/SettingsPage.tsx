@@ -30,9 +30,11 @@ import {
   Pencil,
   Trash2,
   X,
+  QrCode,
   DatabaseBackup,
 } from 'lucide-react'
 import { BackupPanel } from '@/features/backup/BackupPanel'
+import { ServicesTab } from './ServicesTab'
 import {
   VAT_RATES,
   FALLBACK_MARGIN,
@@ -524,6 +526,10 @@ export function SettingsPage() {
               {t('settings.categoriesTab')}
             </HStack>
           </Tabs.Trigger>
+          <Tabs.Trigger value="services">
+            <QrCode size={18} />
+            {t('services.title')}
+          </Tabs.Trigger>
           <Tabs.Trigger value="backup">
             <HStack gap={2}>
               <DatabaseBackup size={18} />
@@ -537,6 +543,9 @@ export function SettingsPage() {
         </Tabs.Content>
         <Tabs.Content value="categories">
           <CategoriesTab />
+        </Tabs.Content>
+        <Tabs.Content value="services">
+          <ServicesTab />
         </Tabs.Content>
         <Tabs.Content value="backup">
           <BackupPanel />
