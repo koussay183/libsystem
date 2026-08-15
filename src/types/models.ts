@@ -275,6 +275,13 @@ export interface ShopSettings {
   /** VAT rate pre-selected on a new article, percent. */
   defaultVat?: number
   /**
+   * How prices are written and typed throughout the app: 10,500 DT, or
+   * 10 500 millimes. Display only — money is stored as integer millimes
+   * either way. Kept on the shop document so it follows the shop to its
+   * other machine.
+   */
+  moneyMode?: 'dinar' | 'millime'
+  /**
    * Services sold by scanning a printed QR label. Kept on the shop document
    * rather than in a collection of their own: there are a handful of them, the
    * settings are already subscribed to on every page, and this way they ride

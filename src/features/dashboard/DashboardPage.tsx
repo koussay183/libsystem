@@ -51,7 +51,7 @@ import {
   Tooltip,
   Legend,
 } from 'recharts'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate, formatPercent } from '@/lib/format'
 import { useSales } from '@/features/sales/useSales'
 import { usePurchases } from '@/features/purchases/usePurchases'
@@ -116,7 +116,7 @@ export function DashboardPage() {
   const { entries: creditEntries } = useAllCreditEntries()
   const { products, loading: productsLoading, error: productsError } = useProducts()
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
   const loading = salesLoading || purchasesLoading || productsLoading
   /** The query returned exactly its limit — older tickets were left behind. */

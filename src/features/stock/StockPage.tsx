@@ -36,7 +36,7 @@ import {
   Zap,
   X,
 } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { fold, foldCode, foldedOf, pruneFoldCache } from '@/lib/textIndex'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts, removeProduct } from './useProducts'
@@ -82,7 +82,7 @@ export function StockPage() {
   const [notice, setNotice] = useState('')
   const [actionError, setActionError] = useState('')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   /**
    * The text actually searched on, one beat behind the field.

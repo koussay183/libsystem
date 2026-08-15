@@ -23,7 +23,7 @@ import {
   Text,
 } from '@chakra-ui/react'
 import { Barcode, Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { formatMoney, fromMinor, parseMoney, parseQuantity } from '@/lib/money'
+import { formatMoney, fromMinor, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts } from '@/features/stock/useProducts'
 import { ProductScanField } from '@/components/ProductScanField'
@@ -54,7 +54,7 @@ export function PacksPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [actionError, setActionError] = useState('')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   const openNew = () => {
@@ -371,7 +371,7 @@ function PackForm({
   /** Set once the owner has been told the pack costs more than its parts. */
   const [dearOk, setDearOk] = useState(false)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   useEffect(() => {
@@ -542,7 +542,7 @@ function PackForm({
                           setDearOk(false)
                         }}
                         inputMode="decimal"
-                        placeholder="0.000"
+                        placeholder={moneyPlaceholder()}
                       />
                       <Field.HelperText>{t('packs.priceHint')}</Field.HelperText>
                     </Field.Root>

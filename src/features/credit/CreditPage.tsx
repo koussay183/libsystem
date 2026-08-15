@@ -32,7 +32,7 @@ import {
   Wallet,
   CalendarClock,
 } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { CustomerForm } from './CustomerForm'
 import { daysSince, debtStartedAt, groupByCustomer, needsReminder } from './ledger'
@@ -55,7 +55,7 @@ export function CreditPage() {
   const [onlyDebtors, setOnlyDebtors] = useState(false)
   const [formOpen, setFormOpen] = useState(false)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   const byCustomer = useMemo(() => groupByCustomer(entries), [entries])

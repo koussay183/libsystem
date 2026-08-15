@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import { Outlet, Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { LucideIcon } from 'lucide-react'
@@ -31,6 +31,8 @@ import {
 } from '@chakra-ui/react'
 import { useAuth } from '@/auth/AuthContext'
 import { ROUTE_PALETTE, paletteFor } from '@/lib/navColors'
+import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
+import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
 import { SyncStatus, UpdateBanner } from '@/components/SyncStatus'
 
@@ -48,7 +50,7 @@ interface NavGroup {
   items: NavItem[]
 }
 
-const SIDEBAR_W = '17rem'
+const SIDEBAR_W = '18.5rem'
 
 /**
  * Routes that own the viewport instead of scrolling with the document.
@@ -74,6 +76,24 @@ export function AppShell() {
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
+  const { shop } = useShopSettings()
+
+  /**
+   * Dinars or millimes, for the whole app.
+   *
+   * The mode lives in lib/money, which every price on every screen and every
+   * price field already goes through, so nothing else has to know about it.
+   * What this subscription buys is the redraw: without it the switch would
+   * take effect only on pages mounted afterwards, and the owner would be
+   * looking at one page written two different ways.
+   */
+  const moneyMode = useSyncExternalStore(subscribeMoneyMode, getMoneyMode, getMoneyMode)
+
+  // The shop document is what carries the choice to the other machine; the
+  // local copy is only what makes the first paint right.
+  useEffect(() => {
+    if (shop.moneyMode) setMoneyMode(shop.moneyMode)
+  }, [shop.moneyMode])
 
   const groups: NavGroup[] = [
     {
@@ -129,52 +149,73 @@ export function AppShell() {
    * styling is expressed with the `_currentPage` condition. Listed last so it
    * wins over `_hover` (equal specificity, source order decides).
    */
-  const NavButton = ({ to, icon: Icon, label }: NavItem) => (
-    <Button
-      asChild
-      size="lg"
-      w="full"
-      justifyContent="flex-start"
-      gap={3}
-      px={2}
-      variant="ghost"
-      colorPalette={paletteOf(to)}
-      fontWeight="semibold"
-      color="fg.muted"
-      _hover={{ bg: 'colorPalette.subtle', color: 'colorPalette.fg' }}
-      _currentPage={{ bg: 'colorPalette.solid', color: 'colorPalette.contrast' }}
-    >
-      <NavLink to={to}>
-        {/*
-          The icon keeps its colour whether the row is the current one or not.
-          An owner who does not read the labels navigates by that square, so it
-          must not change hue when the page opens — only its surroundings do.
-        */}
-        <Box
-          as="span"
-          flexShrink={0}
-          boxSize="2.25rem"
-          display="grid"
-          placeItems="center"
-          borderRadius="lg"
-          // `muted`, not `subtle`: `subtle` is also the hover background, and
-          // the square would vanish into the row under the cursor.
-          bg="colorPalette.muted"
-          color="colorPalette.fg"
-        >
-          <Icon size={20} />
-        </Box>
-        <Text as="span" truncate>
-          {label}
-        </Text>
-      </NavLink>
-    </Button>
-  )
+  /**
+   * Every module is a coloured block, all the time — not a grey line that only
+   * admits to its colour when the mouse is over it. An owner who does not read
+   * the labels navigates by colour and position, and neither of those exists
+   * until the colour is on the screen.
+   */
+  const NavButton = ({ to, icon: Icon, label }: NavItem) => {
+    // The same rule NavLink uses to set aria-current, so the square and the
+    // row it sits on can never disagree about which page is open.
+    const active =
+      location.pathname === to || location.pathname.startsWith(`${to}/`)
+    return (
+      <Button
+        asChild
+        h="3.5rem"
+        w="full"
+        justifyContent="flex-start"
+        gap={3}
+        px={3}
+        variant="plain"
+        colorPalette={paletteOf(to)}
+        fontSize="lg"
+        fontWeight="bold"
+        borderRadius="l3"
+        bg="colorPalette.subtle"
+        color="colorPalette.fg"
+        transition="background-color 0.12s, transform 0.12s"
+        _hover={{ bg: 'colorPalette.muted' }}
+        _active={{ transform: 'scale(0.985)' }}
+        // Listed last so it wins over _hover: same specificity, source order decides.
+        _currentPage={{
+          bg: 'colorPalette.solid',
+          color: 'colorPalette.contrast',
+          boxShadow: 'md',
+        }}
+      >
+        <NavLink to={to}>
+          {/*
+            The square is the strongest mark on the row, so it has to hold up on
+            both grounds: a solid block of the module's colour on the pale
+            inactive row, and a translucent white one on the saturated active row
+            — where a solid block of the same colour would disappear into it.
+          */}
+          <Box
+            as="span"
+            flexShrink={0}
+            boxSize="2.5rem"
+            display="grid"
+            placeItems="center"
+            borderRadius="lg"
+            bg={active ? 'whiteAlpha.300' : 'colorPalette.solid'}
+            color="colorPalette.contrast"
+          >
+            <Icon size={22} />
+          </Box>
+          <Text as="span" truncate>
+            {label}
+          </Text>
+        </NavLink>
+      </Button>
+    )
+  }
 
   const navContent = (
     <Stack gap={5} flex="1" overflowY="auto" px={3} py={4}>
       {groups.map((g) => (
-        <Stack key={g.label} gap={1}>
+        <Stack key={g.label} gap={2}>
           <Text
             fontSize="xs"
             fontWeight="bold"
@@ -194,7 +235,7 @@ export function AppShell() {
 
       <Box flex="1" />
 
-      <Stack gap={1} borderTopWidth="1px" borderColor="border" pt={3}>
+      <Stack gap={2} borderTopWidth="1px" borderColor="border" pt={3}>
         {footerItems.map((item) => (
           <NavButton key={item.to} {...item} />
         ))}
@@ -356,7 +397,19 @@ export function AppShell() {
           // with no scrollbar to bring it back.
           overflow={fullHeight ? 'clip' : undefined}
         >
-          <Outlet />
+          {/*
+            Keyed on the money mode so flipping dinars/millimes rebuilds the
+            page from scratch. A re-render alone would leave any amount that
+            was worked out inside a useMemo written the old way, and a screen
+            showing both units at once is worse than either.
+
+            Safe to remount: the switch lives in the settings, so the till —
+            the one screen holding state worth keeping — is not mounted when
+            it is touched, and its parked tickets are in localStorage anyway.
+          */}
+          <Box key={moneyMode} display="contents">
+            <Outlet />
+          </Box>
         </Box>
       </Flex>
     </Box>

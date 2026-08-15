@@ -21,7 +21,7 @@ import {
   EmptyState,
 } from '@chakra-ui/react'
 import { Plus, Truck, Wallet, Search, Trash2, Filter } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
 import { usePurchases, purchaseOwed, purchaseStatus, removePurchase } from './usePurchases'
 import type { PurchaseStatus } from './usePurchases'
@@ -49,7 +49,7 @@ export function PurchasesTab() {
   const [onlyUnpaid, setOnlyUnpaid] = useState(false)
   const [actionError, setActionError] = useState('')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   /** Money still owed across every supplier — the number the owner cannot see today. */

@@ -20,7 +20,7 @@ import {
 } from '@chakra-ui/react'
 import { Layers, Plus, Trash2, X } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { parseMoney, parseQuantity } from '@/lib/money'
+import { parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { createProducts, findProductsByBarcodes } from './useProducts'
 import { composeName } from './naming'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
@@ -111,7 +111,7 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     setTimeout(() => familyRef.current?.focus(), 50)
   }, [open])
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const categoryNames = categories.map((c) => c.name)
   const supplierNames = suppliers.map((s) => s.name)
   const categoryIsFree = newCategory || (category !== '' && !categoryNames.includes(category))
@@ -394,7 +394,7 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                               value={costPrice}
                               onChange={(e) => setCostPrice(e.target.value)}
                               inputMode="decimal"
-                              placeholder="0.000"
+                              placeholder={moneyPlaceholder()}
                             />
                           </Field.Root>
                           <Field.Root>
@@ -404,7 +404,7 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                               value={salePrice}
                               onChange={(e) => setSalePrice(e.target.value)}
                               inputMode="decimal"
-                              placeholder="0.000"
+                              placeholder={moneyPlaceholder()}
                             />
                           </Field.Root>
                           <Field.Root>

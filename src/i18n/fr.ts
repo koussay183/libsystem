@@ -666,6 +666,13 @@ export const fr = {
   },
   money: {
     symbol: 'DT',
+    millimes: 'mill',
+    format: 'Écriture des prix',
+    formatHint:
+      'Change l’affichage ET la saisie partout : ce que vous lisez est ce que vous tapez.',
+    dinarMode: 'Dinars',
+    millimeMode: 'Millimes',
+    example: 'Par exemple',
   },
 } as const
 

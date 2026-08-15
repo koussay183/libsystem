@@ -50,7 +50,7 @@ import {
   HandCoins,
   QrCode,
 } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
+import { formatMoney, parseMoney, fromMinor, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import {
   beepOk,
@@ -548,7 +548,7 @@ export function CaissePage() {
   const [lastTicket, setLastTicket] = useState<TicketData | null>(null)
   const [paper, setPaper] = useState<'thermal' | 'a4'>('thermal')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
   const focusScan = () => scanRef.current?.focus()
 
@@ -2366,7 +2366,7 @@ export function CaissePage() {
                         value={newPrice}
                         onChange={(e) => setNewPrice(e.target.value)}
                         inputMode="decimal"
-                        placeholder="0.000"
+                        placeholder={moneyPlaceholder()}
                       />
                     </Field.Root>
                     <Field.Root>
@@ -2376,7 +2376,7 @@ export function CaissePage() {
                         value={newCost}
                         onChange={(e) => setNewCost(e.target.value)}
                         inputMode="decimal"
-                        placeholder="0.000"
+                        placeholder={moneyPlaceholder()}
                       />
                     </Field.Root>
                   </HStack>
@@ -2428,7 +2428,7 @@ export function CaissePage() {
                       value={miscPrice}
                       onChange={(e) => setMiscPrice(e.target.value)}
                       inputMode="decimal"
-                      placeholder="0.000"
+                      placeholder={moneyPlaceholder()}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault()
@@ -2522,7 +2522,7 @@ export function CaissePage() {
                     value={discountText}
                     onChange={(e) => setDiscountText(e.target.value)}
                     inputMode="decimal"
-                    placeholder="0.000"
+                    placeholder={moneyPlaceholder()}
                   />
                   <Field.HelperText>{money(cart.subtotal)}</Field.HelperText>
                 </Field.Root>
@@ -2843,7 +2843,7 @@ export function CaissePage() {
                     fontWeight="bold"
                     textAlign="center"
                     inputMode="decimal"
-                    placeholder="0.000"
+                    placeholder={moneyPlaceholder()}
                     value={servicePrice}
                     onChange={(e) => {
                       setServicePrice(e.target.value)

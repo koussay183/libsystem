@@ -20,7 +20,7 @@ import {
   Badge,
 } from '@chakra-ui/react'
 import { Trash2, Plus, Minus, PackageOpen, FileText } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
+import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useCustomers } from '@/features/customers/useCustomers'
@@ -54,7 +54,7 @@ export function NewSaleInvoice({
   const { t } = useTranslation()
   const alive = useAlive()
   const { customers } = useCustomers()
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   const [customerId, setCustomerId] = useState('')
   const [lines, setLines] = useState<InvoiceLine[]>([])

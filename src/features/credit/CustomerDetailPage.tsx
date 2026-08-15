@@ -28,7 +28,7 @@ import {
   Table,
   Text,
 } from '@chakra-ui/react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -67,7 +67,7 @@ export function CustomerDetailPage() {
   const [deleteError, setDeleteError] = useState('')
   const [deleting, setDeleting] = useState(false)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   // The running balance can only be built oldest -> newest; the table then

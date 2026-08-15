@@ -3,7 +3,7 @@ import type { ChangeEvent, FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Box, Button, Input, InputGroup, Text } from '@chakra-ui/react'
 import { Search } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useProducts } from '@/features/stock/useProducts'
 import { sameCode } from '@/features/stock/barcode'
 import type { Product } from '@/types/models'
@@ -24,7 +24,7 @@ export function ProductSearch({
   const { products } = useProducts()
   const [q, setQ] = useState('')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const query = q.trim().toLowerCase()
   const results =
     query === ''

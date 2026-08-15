@@ -658,5 +658,11 @@ export const ar: Dict = {
   },
   money: {
     symbol: 'د.ت',
+    millimes: 'مليم',
+    format: 'كتابة الأسعار',
+    formatHint: 'يغيّر العرض والإدخال في كل مكان: ما تقرأه هو ما تكتبه.',
+    dinarMode: 'دينار',
+    millimeMode: 'مليم',
+    example: 'مثال',
   },
 }

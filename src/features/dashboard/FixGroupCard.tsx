@@ -12,7 +12,7 @@ import {
   Text,
 } from '@chakra-ui/react'
 import { ChevronDown, Wrench } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { FIX_ROWS_SHOWN } from './useDashboardStats'
 import type { FixRow } from './useDashboardStats'
 
@@ -52,7 +52,7 @@ export function FixGroupCard({
   countLabel,
 }: FixGroupCardProps) {
   const { t } = useTranslation()
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const shown = rows.slice(0, FIX_ROWS_SHOWN)
   const truncated = rows.length > shown.length
 

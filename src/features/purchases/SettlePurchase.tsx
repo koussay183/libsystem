@@ -14,7 +14,7 @@ import {
   Alert,
 } from '@chakra-ui/react'
 import { Wallet } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
+import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
 import { settlePurchase, purchaseOwed } from './usePurchases'
@@ -36,7 +36,7 @@ export function SettlePurchase({
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   const owed = purchaseOwed(purchase)
 

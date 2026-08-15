@@ -23,7 +23,7 @@ import {
   Settings,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useTodaySales } from '@/features/sales/useSales'
 import { ROUTE_PALETTE } from '@/lib/navColors'
 
@@ -39,7 +39,7 @@ interface Tile {
 export function HomePage() {
   const { t } = useTranslation()
   const { sales, loading } = useTodaySales()
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   // "How did today go?" is the first thing the owner wants when he walks in.
   const today = useMemo(

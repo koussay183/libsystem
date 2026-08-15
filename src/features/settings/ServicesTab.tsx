@@ -23,7 +23,7 @@ import {
   Text,
 } from '@chakra-ui/react'
 import { Download, Pencil, Plus, Printer, QrCode, Trash2, X } from 'lucide-react'
-import { formatMoney, fromMinor, parseMoney } from '@/lib/money'
+import { formatMoney, fromMinor, parseMoney, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { fold, foldCode } from '@/lib/textIndex'
 import { qrDataUrl, downloadQrLabel } from '@/lib/qr'
 import { useProducts } from '@/features/stock/useProducts'
@@ -67,7 +67,7 @@ export function ServicesTab() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
   const services = shop.services ?? []
 
@@ -368,7 +368,7 @@ function ServiceForm({
   /** True once the owner has typed a code himself; the name stops driving it. */
   const [codeTouched, setCodeTouched] = useState(false)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   useEffect(() => {
     if (!open) return
@@ -506,7 +506,7 @@ function ServiceForm({
                       inputMode="decimal"
                       value={price}
                       onChange={(e) => setPrice(e.target.value)}
-                      placeholder="0.000"
+                      placeholder={moneyPlaceholder()}
                     />
                     <Field.HelperText>{t('services.defaultPriceHint')}</Field.HelperText>
                   </Field.Root>

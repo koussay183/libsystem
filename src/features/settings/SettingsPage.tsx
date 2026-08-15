@@ -41,6 +41,7 @@ import {
   defaultVatFor,
   parsePercent,
 } from '@/features/stock/pricing'
+import { setMoneyMode } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import {
   useCategories,
@@ -134,6 +135,52 @@ function ShopTab() {
                 <Text color="fg.muted" fontSize="sm" mb={3}>
                   {t('settings.pricingHint')}
                 </Text>
+
+                {/* ----------------------------------------------------------
+                    Dinars or millimes. Applied the moment it is touched and
+                    saved on the spot: it changes what every price field in
+                    the app means, so leaving it pending behind a Save button
+                    is how an amount gets typed in the wrong unit.
+                ---------------------------------------------------------- */}
+                <Field.Root mb={4}>
+                  <Field.Label>{t('money.format')}</Field.Label>
+                  <SegmentGroup.Root
+                    size="lg"
+                    colorPalette="brand"
+                    value={form.moneyMode === 'millime' ? 'millime' : 'dinar'}
+                    onValueChange={(e: { value: string | null }) => {
+                      const next = e.value === 'millime' ? 'millime' : 'dinar'
+                      setMoneyMode(next)
+                      // Saved from `form`, not from `shop`: writing the live
+                      // document back would echo through the snapshot effect
+                      // above and throw away whatever else the owner had
+                      // typed and not yet saved.
+                      const merged: ShopSettings = {
+                        ...form,
+                        moneyMode: next,
+                        name: form.name.trim() || 'Librairie',
+                      }
+                      setForm(merged)
+                      saveShopSettings(merged)
+                      setDone(true)
+                    }}
+                  >
+                    <SegmentGroup.Indicator />
+                    <SegmentGroup.Item value="dinar">
+                      <SegmentGroup.ItemText>
+                        {`${t('money.dinarMode')} · 10,500 ${t('money.symbol')}`}
+                      </SegmentGroup.ItemText>
+                      <SegmentGroup.ItemHiddenInput />
+                    </SegmentGroup.Item>
+                    <SegmentGroup.Item value="millime">
+                      <SegmentGroup.ItemText>
+                        {`${t('money.millimeMode')} · 10 500`}
+                      </SegmentGroup.ItemText>
+                      <SegmentGroup.ItemHiddenInput />
+                    </SegmentGroup.Item>
+                  </SegmentGroup.Root>
+                  <Field.HelperText>{t('money.formatHint')}</Field.HelperText>
+                </Field.Root>
 
                 <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
                   <Field.Root>

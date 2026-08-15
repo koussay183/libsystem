@@ -20,7 +20,7 @@ import {
   EmptyState,
 } from '@chakra-ui/react'
 import { Trash2, Truck, Plus, Minus, PackageOpen } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor } from '@/lib/money'
+import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
@@ -43,7 +43,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
   const { t } = useTranslation()
   const alive = useAlive()
   const { suppliers } = useSuppliers()
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const supplierNames = suppliers.map((s) => s.name)
 
   const [supplier, setSupplier] = useState('')

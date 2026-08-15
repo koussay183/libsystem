@@ -17,7 +17,7 @@ import {
   Spinner,
 } from '@chakra-ui/react'
 import { TrendingUp, TrendingDown, Wallet, BarChart3, Package } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
 import { useProducts } from '@/features/stock/useProducts'
 
@@ -40,7 +40,7 @@ export function ReportsPage() {
   const { products, loading, error } = useProducts()
   const [sort, setSort] = useState<SortKey>('profit')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
   // Everything below reads the running totals kept on each product, so this

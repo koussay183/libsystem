@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Alert, Badge, Box, Flex, HStack, Input, InputGroup, Text } from '@chakra-ui/react'
 import { CheckCircle2, ScanLine } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { beepOk, beepWarn, beepError } from '@/lib/beep'
 import { useBarcodeScanner } from '@/features/pos/useBarcodeScanner'
 import { searchProducts } from '@/features/pos/posSearch'
@@ -40,7 +40,7 @@ export function ProductScanField({
   /** The article that just went in — the same reassurance the till gives. */
   const [added, setAdded] = useState<Product | null>(null)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   // Memoised: this used to re-scan the whole stock on every render of the
   // dialog, including renders caused by typing in a completely different field.

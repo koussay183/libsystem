@@ -22,7 +22,7 @@ import {
   EmptyState,
 } from '@chakra-ui/react'
 import { ShoppingCart, Receipt, Search, Printer, FileText, Plus } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
 import { useSales } from './useSales'
 import { NewSaleInvoice } from './NewSaleInvoice'
@@ -63,7 +63,7 @@ export function SalesTab() {
   const [preview, setPreview] = useState<TicketData | null>(null)
   const [paper, setPaper] = useState<'thermal' | 'a4'>('thermal')
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
   const nameOf = (id?: string | null) => customers.find((c) => c.id === id)?.name
 

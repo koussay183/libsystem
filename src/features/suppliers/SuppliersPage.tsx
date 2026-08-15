@@ -19,7 +19,7 @@ import {
   Spinner,
 } from '@chakra-ui/react'
 import { Plus, Search, Truck, Pencil, Trash2, Wallet } from 'lucide-react'
-import { formatMoney } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useSuppliers, removeSupplier } from './useSuppliers'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { SupplierForm } from './SupplierForm'
@@ -34,7 +34,7 @@ export function SuppliersPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Supplier | null>(null)
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
   const totalFor = (name: string) =>
     purchases.filter((p) => p.supplier === name).reduce((s, p) => s + p.total, 0)
   const totalAll = purchases.reduce((s, p) => s + p.total, 0)

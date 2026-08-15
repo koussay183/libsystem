@@ -21,7 +21,7 @@ import {
 } from '@chakra-ui/react'
 import { Copy, Package, ScanLine, X, Zap } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { fromMinor, parseMoney, parseQuantity, marginPercent } from '@/lib/money'
+import { fromMinor, parseMoney, parseQuantity, marginPercent, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
 import { createProduct, updateProduct, findProductByBarcode } from './useProducts'
 import {
@@ -160,7 +160,7 @@ export function ProductForm({
     setTimeout(() => nameRef.current?.focus(), 50)
   }, [open, product, template, initialBarcode, initialName, quick, shop])
 
-  const symbol = t('money.symbol')
+  const symbol = t(moneySymbolKey())
 
   /**
    * One handler per field. Each writes the fields DOWNSTREAM of itself and
@@ -582,7 +582,7 @@ export function ProductForm({
                           value={costHT}
                           onChange={(e) => applyHt(e.target.value)}
                           inputMode="decimal"
-                          placeholder="0.000"
+                          placeholder={moneyPlaceholder()}
                         />
                         <Field.HelperText>{t('stock.costPriceHtHint')}</Field.HelperText>
                       </Field.Root>
@@ -618,7 +618,7 @@ export function ProductForm({
                           value={costPrice}
                           onChange={(e) => applyTtc(e.target.value)}
                           inputMode="decimal"
-                          placeholder="0.000"
+                          placeholder={moneyPlaceholder()}
                         />
                         <Field.HelperText>{t('stock.costPriceHint')}</Field.HelperText>
                       </Field.Root>
@@ -644,7 +644,7 @@ export function ProductForm({
                         value={salePrice}
                         onChange={(e) => applySale(e.target.value)}
                         inputMode="decimal"
-                        placeholder="0.000"
+                        placeholder={moneyPlaceholder()}
                       />
                       <Field.ErrorText>{priceError}</Field.ErrorText>
                     </Field.Root>
