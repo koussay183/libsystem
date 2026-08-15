@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react'
+import { Fragment, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -37,7 +37,7 @@ import {
   X,
 } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
-import { fold, foldCode, foldedOf, pruneFoldCache } from '@/lib/textIndex'
+import { buildQuery, matchesQuery, pruneFoldCache } from '@/lib/textIndex'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts, removeProduct } from './useProducts'
 import { groupByFamily } from './naming'
@@ -57,11 +57,15 @@ const TONE_PALETTE = {
 
 type View = 'grouped' | 'flat'
 
-/** How long the table waits after the last keystroke before it redraws. */
-const SEARCH_DEBOUNCE_MS = 140
-
-/** Rows put in the DOM at once. Past this, the search box is the right tool. */
-const ROW_LIMIT = 150
+/**
+ * Rows put in the DOM at once, and how many more a click adds.
+ *
+ * A screenful is what gets read; everything past it is weight the browser
+ * carries on every keystroke. The search box is how an article is found in a
+ * stock of thousands — not scrolling.
+ */
+const ROW_LIMIT = 60
+const ROW_STEP = 200
 
 export function StockPage() {
   const { t } = useTranslation()
@@ -85,52 +89,39 @@ export function StockPage() {
   const symbol = t(moneySymbolKey())
 
   /**
-   * The text actually searched on, one beat behind the field.
+   * The term the table is drawn from, which React is allowed to lag behind on.
    *
-   * Every keystroke used to filter the whole stock AND re-render every row of
-   * the table. On a few thousand articles the letters arrived faster than
-   * React could redraw and the field visibly lagged the keyboard. The input
-   * stays instant; the table catches up when the typing pauses.
+   * A fixed debounce was the wrong tool: it made every search feel late by the
+   * same amount whether the shop had fifty articles or five thousand.
+   * useDeferredValue lets the field update at once and the table follow at low
+   * priority, and — the part a timer cannot do — lets React throw away a
+   * half-drawn table the moment the next letter arrives. The box never waits
+   * for the list.
    */
-  const [applied, setApplied] = useState('')
-  useEffect(() => {
-    const id = setTimeout(() => setApplied(search), SEARCH_DEBOUNCE_MS)
-    return () => clearTimeout(id)
-  }, [search])
+  const applied = useDeferredValue(search)
+  const behind = applied !== search
 
   // Articles deleted from the stock would otherwise keep their folded entry
   // for the life of the tab. The stock page is where deletion happens.
   useEffect(() => pruneFoldCache(products), [products])
 
   const q = applied.trim()
-  const needle = fold(q)
+
   /**
-   * The same term with the separators taken out, for the code side alone.
-   *
-   * The index stores every barcode stripped of spaces and hyphens, so a search
-   * for the code exactly as it is printed on the shelf — 978-2-07-036822-8 —
-   * has to be stripped too or it can never match the article it belongs to.
-   * Searching one way and storing the other is how "this book is not in my
-   * stock" happens in front of a customer holding it.
+   * Taken apart once per search rather than once per article: the words to
+   * look for, and the whole term stripped of separators for matching a code.
    */
-  const needleCode = foldCode(q)
+  const query = useMemo(() => buildQuery(q), [q])
 
   const filtered = useMemo(
     () =>
-      needle === ''
+      query.tokens.length === 0
         ? products
-        // foldedOf is cached per article, so this is a substring test against
-        // strings that already exist rather than four fresh lowercased copies
-        // of every article on every letter typed. It also means the stock
-        // search finally ignores accents, like the till's does.
-        : products.filter((p) => {
-            const f = foldedOf(p)
-            return (
-              f.all.includes(needle) ||
-              (needleCode !== '' && f.code.includes(needleCode))
-            )
-          }),
-    [products, needle, needleCode],
+        // Nothing is lowercased or re-folded here — every article's searchable
+        // text was folded once, when it last changed. Nothing is fetched
+        // either: the stock is already in memory, so a search costs no reads.
+        : products.filter((p) => matchesQuery(p, query)),
+    [products, query],
   )
 
   /**
@@ -142,7 +133,7 @@ export function StockPage() {
    * article is the search box above.
    */
   const [limit, setLimit] = useState(ROW_LIMIT)
-  useEffect(() => setLimit(ROW_LIMIT), [needle, needleCode, view])
+  useEffect(() => setLimit(ROW_LIMIT), [q, view])
 
   const shown = useMemo(() => filtered.slice(0, limit), [filtered, limit])
 
@@ -566,13 +557,15 @@ export function StockPage() {
                   size="sm"
                   variant="outline"
                   ms="auto"
-                  onClick={() => setLimit(filtered.length)}
+                  onClick={() => setLimit((n) => n + ROW_STEP)}
                 >
-                  {t('stock.showAll')}
+                  {t('stock.showMore')}
                 </Button>
               </Flex>
             )}
-            <Box overflowX="auto">
+            {/* Dimmed for the instant the list is behind the box, so a
+                stale table is never mistaken for the answer. */}
+            <Box overflowX="auto" opacity={behind ? 0.55 : 1} transition="opacity 0.12s">
               <Table.Root size="lg">
                 <Table.Header>
                   <Table.Row>

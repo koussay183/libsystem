@@ -108,3 +108,49 @@ export function pruneFoldCache(products: { id: string }[]) {
   const live = new Set(products.map((p) => p.id))
   for (const id of cache.keys()) if (!live.has(id)) cache.delete(id)
 }
+
+// ---------------------------------------------------------------------------
+// Searching for several words at once
+// ---------------------------------------------------------------------------
+
+/** A typed search, taken apart once so it is not re-parsed per article. */
+export interface Query {
+  /** Every word that must be found somewhere. Empty means "match all". */
+  tokens: string[]
+  /** The whole term with separators stripped, for matching a barcode. */
+  code: string
+}
+
+/**
+ * Takes a search apart into the words it is really made of.
+ *
+ * Nobody types an article's name the way the label spells it. They type two
+ * fragments they remember, in whatever order — "bic bleu", "bleu bic", "cah
+ * 96" — and expect the article. Matching the whole string as one substring
+ * finds none of those, which is what makes a search feel broken when the thing
+ * being looked for is plainly in the list.
+ */
+export function buildQuery(term: string): Query {
+  const folded = fold(term)
+  return {
+    tokens: folded.split(/\s+/).filter((w) => w !== ''),
+    code: foldCode(term),
+  }
+}
+
+/**
+ * True when every word of the query is somewhere in this article, or when the
+ * query reads as a code this article carries.
+ *
+ * The code is checked as a whole rather than word by word: a barcode typed
+ * with the separators off a shelf label is one thing, not several.
+ */
+export function matchesQuery(p: Product, q: Query): boolean {
+  if (q.tokens.length === 0) return true
+  const f = foldedOf(p)
+  if (q.code !== '' && f.code !== '' && f.code.includes(q.code)) return true
+  for (const token of q.tokens) {
+    if (!f.all.includes(token)) return false
+  }
+  return true
+}

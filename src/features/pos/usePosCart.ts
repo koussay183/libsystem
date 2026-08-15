@@ -35,11 +35,17 @@ export interface ParkedSession {
   label: string
   at: number
   lines: PosLine[]
-  discount: number
+  /** Percent off the ticket, 0-100. */
+  discountPercent: number
 }
 
-// v2: lines gained an `id`, misc lines and returns. v1 baskets cannot be read.
-const PARKED_KEY = 'pos.parked.v2'
+/**
+ * v2: lines gained an `id`, misc lines and returns.
+ * v3: the discount became a percentage. The key HAS to move with it — a v2
+ *     ticket parked with `discount: 5000` (five dinars) read as a percentage
+ *     would be a 5000% discount.
+ */
+const PARKED_KEY = 'pos.parked.v3'
 
 /** Nobody sells a thousand of anything on one line — past this it is a typo. */
 const MAX_QTY = 999
@@ -65,6 +71,7 @@ function loadParked(): ParkedSession[] {
  */
 export function usePosCart() {
   const [lines, setLines] = useState<PosLine[]>([])
+  /** Percent off the whole ticket, 0-100. */
   const [discount, setDiscountState] = useState(0)
   const [parked, setParked] = useState<ParkedSession[]>(loadParked)
 
@@ -77,20 +84,32 @@ export function usePosCart() {
   }, [parked])
 
   /**
-   * Scanning the same product again bumps the existing line. A return line or
-   * a line whose price was renegotiated is left alone: merging into it would
-   * silently apply that change to the newly scanned unit.
+   * Scanning the same product again bumps the existing line, and MOVES IT TO
+   * THE END — the ticket is shown newest first, and a line that grew without
+   * moving would leave the cashier watching the wrong row.
+   *
+   * A line whose price was renegotiated is left alone: merging into it would
+   * silently apply that change to the newly scanned unit. A sale and a return
+   * of the same article never merge into each other either — they are opposite
+   * facts about the same ticket.
    */
-  const addProduct = useCallback((p: Product) => {
+  const addProduct = useCallback((p: Product, asReturn = false) => {
+    const step = asReturn ? -1 : 1
     setLines((prev) => {
       // A pack line is deliberately excluded: it carries a prorated price, and
       // merging a loose unit into it would quietly change what the pack costs
       // with nothing on screen to explain the new total.
       const found = prev.find(
-        (l) => l.productId === p.id && l.qty > 0 && !l.priceEdited && !l.packUid,
+        (l) =>
+          l.productId === p.id &&
+          (asReturn ? l.qty < 0 : l.qty > 0) &&
+          !l.priceEdited &&
+          !l.packUid,
       )
-      if (found)
-        return prev.map((l) => (l.id === found.id ? { ...l, qty: l.qty + 1 } : l))
+      if (found) {
+        const bumped = { ...found, qty: found.qty + step }
+        return [...prev.filter((l) => l.id !== found.id), bumped]
+      }
       return [
         ...prev,
         {
@@ -98,7 +117,7 @@ export function usePosCart() {
           productId: p.id,
           barcode: p.barcode,
           name: p.name,
-          qty: 1,
+          qty: step,
           unitPrice: p.salePrice,
           unitCost: p.costPrice,
           stock: p.quantity,
@@ -116,6 +135,7 @@ export function usePosCart() {
     (
       members: { product: Product; qty: number; unitPrice: number }[],
       meta: { packId: string; packName: string; packPrice: number },
+      asReturn = false,
     ) => {
       if (members.length === 0) return
       const packUid = nextId()
@@ -126,7 +146,7 @@ export function usePosCart() {
           productId: m.product.id,
           barcode: m.product.barcode,
           name: m.product.name,
-          qty: m.qty,
+          qty: asReturn ? -m.qty : m.qty,
           unitPrice: m.unitPrice,
           unitCost: m.product.costPrice,
           stock: m.product.quantity,
@@ -141,7 +161,7 @@ export function usePosCart() {
   )
 
   /** A photocopy, a repair, anything with no barcode and no stock to move. */
-  const addMisc = useCallback((name: string, unitPrice: number) => {
+  const addMisc = useCallback((name: string, unitPrice: number, asReturn = false) => {
     setLines((prev) => [
       ...prev,
       {
@@ -149,7 +169,7 @@ export function usePosCart() {
         productId: null,
         barcode: null,
         name,
-        qty: 1,
+        qty: asReturn ? -1 : 1,
         unitPrice,
         unitCost: 0,
         stock: 0,
@@ -224,7 +244,7 @@ export function usePosCart() {
   const park = useCallback((label: string) => {
     setLines((current) => {
       if (current.length === 0) return current
-      setDiscountState((currentDiscount) => {
+      setDiscountState((currentPercent) => {
         setParked((prev) => [
           ...prev,
           {
@@ -232,7 +252,7 @@ export function usePosCart() {
             label,
             at: Date.now(),
             lines: current,
-            discount: currentDiscount,
+            discountPercent: currentPercent,
           },
         ])
         return 0
@@ -246,7 +266,7 @@ export function usePosCart() {
       const session = prev.find((s) => s.id === id)
       if (session) {
         setLines(session.lines)
-        setDiscountState(session.discount ?? 0)
+        setDiscountState(session.discountPercent ?? 0)
       }
       return prev.filter((s) => s.id !== id)
     })
@@ -258,12 +278,23 @@ export function usePosCart() {
 
   const subtotal = lines.reduce((sum, l) => sum + l.qty * l.unitPrice, 0)
 
-  // A discount can never exceed what is owed, and makes no sense on a ticket
-  // that is a net refund — clamping here keeps every downstream total honest.
-  const setDiscount = useCallback((minor: number) => {
-    setDiscountState(Math.max(0, minor))
+  /**
+   * The discount is a PERCENTAGE, which is how it is actually given: "je te
+   * fais dix pour cent". Held as the percentage rather than as the dinars it
+   * came to, so that scanning one more article re-figures it instead of
+   * leaving yesterday's amount sitting on a bigger ticket.
+   */
+  const setDiscountPercent = useCallback((percent: number) => {
+    if (!Number.isFinite(percent)) return
+    setDiscountState(Math.max(0, Math.min(100, percent)))
   }, [])
-  const effectiveDiscount = Math.min(Math.max(0, discount), Math.max(0, subtotal))
+
+  // Rounded to the millime, then clamped: a discount can never exceed what is
+  // owed, and makes no sense on a ticket that is a net refund.
+  const effectiveDiscount = Math.min(
+    Math.max(0, Math.round((Math.max(0, subtotal) * discount) / 100)),
+    Math.max(0, subtotal),
+  )
 
   const total = subtotal - effectiveDiscount
   const itemCount = lines.reduce((n, l) => n + Math.abs(l.qty), 0)
@@ -273,8 +304,8 @@ export function usePosCart() {
     lines,
     parked,
     discount: effectiveDiscount,
-    rawDiscount: discount,
-    setDiscount,
+    discountPercent: discount,
+    setDiscountPercent,
     addProduct,
     addPack,
     addMisc,

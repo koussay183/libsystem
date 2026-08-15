@@ -78,6 +78,7 @@ import {
 import type { ScanChoice } from './posSearch'
 import { foldCode, foldedOf } from '@/lib/textIndex'
 import { usePacks, resolvePack, packToLines } from '@/features/packs/usePacks'
+import { parsePercent } from '@/features/stock/pricing'
 import type { Pack } from '@/types/models'
 import type { PosLine } from './usePosCart'
 import { Ticket } from './Ticket'
@@ -525,9 +526,21 @@ export function CaissePage() {
   const [priceLine, setPriceLine] = useState<PosLine | null>(null)
   const [priceText, setPriceText] = useState('')
 
-  // Whole-ticket discount
+  // Whole-ticket discount, as a percentage of it
   const [discountOpen, setDiscountOpen] = useState(false)
   const [discountText, setDiscountText] = useState('')
+
+  /**
+   * The till is taking goods BACK.
+   *
+   * A return used to be per line: ring the article up, then find the little
+   * undo button on its row. That is fine once and wrong twenty times — the
+   * cashier is holding the goods, not the mouse. As a mode, the same scan that
+   * sells is the scan that takes back, and the screen turns red so that going
+   * on to the next customer without leaving it is not something that can
+   * happen quietly.
+   */
+  const [returnMode, setReturnMode] = useState(false)
 
   // Settlement
   const [payOpen, setPayOpen] = useState(false)
@@ -661,7 +674,7 @@ export function CaissePage() {
       setServiceError(t('services.priceRequired'))
       return
     }
-    cart.addMisc(service.name, price)
+    cart.addMisc(service.name, price, returnMode)
     setLastAdded({ productId: null, name: service.name, price })
     setServiceAsk(null)
     setServicePrice('')
@@ -728,6 +741,7 @@ export function CaissePage() {
       cart.addPack(
         lines.map((l) => ({ product: l.product, qty: l.qty, unitPrice: l.unitPrice })),
         { packId: pack.id, packName: pack.name, packPrice: pack.price },
+        returnMode,
       )
       setLastAdded({ productId: null, name: pack.name, price: pack.price })
       setCanCreate(false)
@@ -750,7 +764,7 @@ export function CaissePage() {
       setPackOpen(false)
       focusScan()
     },
-    [cart.addPack, packProblem, products, t],
+    [cart.addPack, packProblem, products, t, returnMode],
   )
 
   // --- scanning ---------------------------------------------------------
@@ -832,7 +846,7 @@ export function CaissePage() {
 
   const addToCart = useCallback(
     (p: Product) => {
-      cart.addProduct(p)
+      cart.addProduct(p, returnMode)
       setLastAdded({ productId: p.id, name: p.name, price: p.salePrice })
       setNotice('')
       setCanCreate(false)
@@ -843,7 +857,7 @@ export function CaissePage() {
       else beepOk()
       focusScan()
     },
-    [cart.addProduct],
+    [cart.addProduct, returnMode],
   )
 
   /** Rings up whichever of the two a code resolved to. */
@@ -1267,10 +1281,42 @@ export function CaissePage() {
     }
   }
 
-  /** The newest line has to be the one on screen, or the box hides the work. */
+  /**
+   * The ticket, newest first.
+   *
+   * The cashier looks at one row: the one he just scanned. At the bottom of a
+   * growing list that row is the one the box hides, so the order is turned
+   * over for the screen only — the ticket that prints and the sale that is
+   * recorded keep the order things were rung up in.
+   *
+   * A pack's own lines stay together and in their own order: they are one
+   * thing the customer bought, and reading them backwards would not match the
+   * price printed next to the group.
+   */
+  const displayLines = useMemo(() => {
+    const groups: PosLine[][] = []
+    for (const line of cart.lines) {
+      const last = groups[groups.length - 1]
+      if (line.packUid && last && last[0].packUid === line.packUid) last.push(line)
+      else groups.push([line])
+    }
+    return groups.reverse().flat()
+  }, [cart.lines])
+
+  /**
+   * What was just rung up — the whole pack, when it was a pack. Fades with the
+   * confirmation above it, so the ticket does not keep a stale row lit up.
+   */
+  const newestKey = useMemo(() => {
+    const last = cart.lines[cart.lines.length - 1]
+    if (!last || !lastAdded) return null
+    return last.packUid ?? last.id
+  }, [cart.lines, lastAdded])
+
+  /** Newest first means the top of the box is where the work appears. */
   useEffect(() => {
     const el = ticketScrollRef.current
-    if (el) el.scrollTop = el.scrollHeight
+    if (el) el.scrollTop = 0
   }, [cart.lines.length])
 
   /** The confirmation fades by itself; it must not outlive the next customer. */
@@ -1317,8 +1363,10 @@ export function CaissePage() {
       const same = target.productId
         ? l.productId === target.productId
         : l.productId === null && l.name === target.name
-      if (same && l.qty > 0) {
-        cart.setQty(l.id, l.qty - 1)
+      if (same && l.qty !== 0) {
+        // One unit back toward zero, whichever side of it the line is on.
+        // setQty removes the line when it lands on zero.
+        cart.setQty(l.id, l.qty > 0 ? l.qty - 1 : l.qty + 1)
         break
       }
     }
@@ -1396,7 +1444,7 @@ export function CaissePage() {
   const addMisc = () => {
     const price = parseMoney(miscPrice)
     if (miscName.trim() === '' || price === null) return
-    cart.addMisc(miscName.trim(), price)
+    cart.addMisc(miscName.trim(), price, returnMode)
     setLastAdded({ productId: null, name: miscName.trim(), price })
     beepOk()
     setMiscOpen(false)
@@ -1467,6 +1515,8 @@ export function CaissePage() {
       setTicket(data)
       setLastTicket(data)
       cart.clear()
+      // The next customer is a sale until the cashier says otherwise.
+      setReturnMode(false)
       setLastAdded(null)
       beepDone()
       setPayOpen(false)
@@ -1552,6 +1602,10 @@ export function CaissePage() {
       } else if (e.key === 'F7') {
         e.preventDefault()
         openPacks()
+      } else if (e.key === 'F8') {
+        e.preventDefault()
+        setReturnMode((on) => !on)
+        focusScan()
       } else if (e.key === 'Escape') {
         focusScan()
       }
@@ -1600,8 +1654,50 @@ export function CaissePage() {
           "Caisse", and on a 1366x768 laptop that heading was costing the
           ticket three lines.
       ------------------------------------------------------------------ */}
-      <Card.Root flexShrink={0}>
+      <Card.Root
+        flexShrink={0}
+        // In return mode the card itself is red. The cashier is looking at the
+        // goods and the customer, not at a small badge somewhere.
+        borderWidth={returnMode ? '3px' : '1px'}
+        borderColor={returnMode ? 'red.solid' : 'border'}
+        bg={returnMode ? 'red.subtle' : undefined}
+      >
         <Card.Body p={{ base: 3, md: 4 }}>
+          {returnMode && (
+            <Flex align="center" gap={3} mb={3} wrap="wrap">
+              <Flex
+                align="center"
+                gap={2}
+                bg="red.solid"
+                color="red.contrast"
+                px={3}
+                py={1.5}
+                borderRadius="full"
+                flexShrink={0}
+              >
+                <Undo2 size={20} />
+                <Text fontWeight="bold" fontSize="lg" letterSpacing="wide">
+                  {t('pos.returnMode')}
+                </Text>
+              </Flex>
+              <Text color="red.fg" fontWeight="semibold" minW={0}>
+                {t('pos.returnModeHint')}
+              </Text>
+              <Button
+                size="md"
+                colorPalette="red"
+                variant="solid"
+                ms="auto"
+                flexShrink={0}
+                onClick={() => {
+                  setReturnMode(false)
+                  focusScan()
+                }}
+              >
+                {t('pos.returnModeExit')}
+              </Button>
+            </Flex>
+          )}
           <form onSubmit={submitScan}>
             <Flex gap={2} align="center">
               <Box color="fg.subtle" flexShrink={0} display={{ base: 'none', sm: 'block' }}>
@@ -1673,6 +1769,26 @@ export function CaissePage() {
                 </Text>
               </Button>
 
+              {/* Sale or return, on the same row as the scan field, because
+                  the decision is made before the article is passed over. */}
+              <Button
+                type="button"
+                size="xl"
+                flexShrink={0}
+                colorPalette="red"
+                variant={returnMode ? 'solid' : 'outline'}
+                onClick={() => {
+                  setReturnMode((on) => !on)
+                  focusScan()
+                }}
+                title={`${t('pos.returnMode')} · F8`}
+              >
+                <Undo2 size={20} />
+                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                  {t('pos.returnMode')}
+                </Text>
+              </Button>
+
               <IconButton
                 type="button"
                 aria-label={sound ? t('pos.soundOn') : t('pos.soundOff')}
@@ -1711,19 +1827,25 @@ export function CaissePage() {
               p={2}
               ps={3}
               borderWidth="2px"
-              borderColor="green.emphasized"
-              bg="green.subtle"
+              borderColor={returnMode ? 'red.emphasized' : 'green.emphasized'}
+              bg={returnMode ? 'red.subtle' : 'green.subtle'}
               borderRadius="lg"
             >
-              <Box color="green.fg" flexShrink={0}>
-                <CheckCircle2 size={30} />
+              <Box color={returnMode ? 'red.fg' : 'green.fg'} flexShrink={0}>
+                {returnMode ? <Undo2 size={30} /> : <CheckCircle2 size={30} />}
               </Box>
               <Box minW={0} flex="1">
-                <Text fontSize="lg" fontWeight="bold" color="green.fg" truncate>
+                <Text
+                  fontSize="lg"
+                  fontWeight="bold"
+                  color={returnMode ? 'red.fg' : 'green.fg'}
+                  truncate
+                >
                   {lastAdded.name}
                 </Text>
-                <Text color="green.fg">
-                  {money(lastAdded.price)} · {t('pos.added')}
+                <Text color={returnMode ? 'red.fg' : 'green.fg'}>
+                  {money(lastAdded.price)} ·{' '}
+                  {returnMode ? t('pos.takenBack') : t('pos.added')}
                 </Text>
               </Box>
               <Button
@@ -1861,12 +1983,13 @@ export function CaissePage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {cart.lines.map((l, i) => {
+                  {displayLines.map((l, i) => {
                     const isReturn = l.qty < 0
                     const stale = staleLines.some((s) => s.id === l.id)
                     // The first line of a pack carries the group's heading.
                     const packHead =
-                      !!l.packUid && cart.lines[i - 1]?.packUid !== l.packUid
+                      !!l.packUid && displayLines[i - 1]?.packUid !== l.packUid
+                    const newest = newestKey !== null && (l.packUid ?? l.id) === newestKey
                     return (
                       <Fragment key={l.id}>
                         {packHead && (
@@ -1882,7 +2005,14 @@ export function CaissePage() {
                             </Table.Cell>
                           </Table.Row>
                         )}
-                        <Table.Row bg={isReturn ? 'red.subtle' : undefined}>
+                        <Table.Row
+                          // The row just scanned is marked until the
+                          // confirmation above fades. A return keeps its red:
+                          // what the line IS matters more than how new it is.
+                          bg={isReturn ? 'red.subtle' : newest ? 'green.subtle' : undefined}
+                          borderStartWidth={newest && !isReturn ? '4px' : 0}
+                          borderStartColor="green.solid"
+                        >
                           <Table.Cell py={2} ps={l.packUid ? 6 : undefined}>
                             <Text fontWeight="semibold" lineClamp={1}>
                               {l.name}
@@ -2010,7 +2140,9 @@ export function CaissePage() {
               <Flex justify="space-between" color="fg.muted" fontSize="sm">
                 <Text>{`${cart.itemCount} ${t('pos.items')}`}</Text>
                 {cart.discount > 0 && (
-                  <Text color="orange.fg">-{money(cart.discount)}</Text>
+                  <Text color="orange.fg">
+                    -{cart.discountPercent}% · -{money(cart.discount)}
+                  </Text>
                 )}
               </Flex>
 
@@ -2100,7 +2232,7 @@ export function CaissePage() {
                 variant="outline"
                 disabled={cart.lines.length === 0}
                 onClick={() => {
-                  setDiscountText(cart.discount ? String(fromMinor(cart.discount)) : '')
+                  setDiscountText(cart.discountPercent ? String(cart.discountPercent) : '')
                   setDiscountOpen(true)
                 }}
               >
@@ -2515,24 +2647,73 @@ export function CaissePage() {
               </Dialog.Header>
               <Dialog.Body>
                 <Field.Root>
-                  <Field.Label>{`${t('pos.discount')} (${symbol})`}</Field.Label>
+                  <Field.Label fontSize="lg">{`${t('pos.discount')} (%)`}</Field.Label>
                   <Input
                     size="xl"
                     autoFocus
                     value={discountText}
                     onChange={(e) => setDiscountText(e.target.value)}
+                    onFocus={(e) => e.currentTarget.select()}
+                    onKeyDown={(e) => {
+                      if (e.key !== 'Enter') return
+                      e.preventDefault()
+                      cart.setDiscountPercent(parsePercent(discountText) ?? 0)
+                      setDiscountOpen(false)
+                      focusScan()
+                    }}
                     inputMode="decimal"
-                    placeholder={moneyPlaceholder()}
+                    placeholder="10"
+                    textAlign="center"
+                    fontSize="2xl"
+                    fontWeight="bold"
                   />
-                  <Field.HelperText>{money(cart.subtotal)}</Field.HelperText>
+                  <Field.HelperText>
+                    {`${t('pos.subtotal')} ${money(cart.subtotal)}`}
+                  </Field.HelperText>
                 </Field.Root>
+
+                {/* The rounds actually given, and what this one comes to. A
+                    percentage is easy to agree on and hard to picture. */}
+                <HStack gap={2} mt={3} wrap="wrap">
+                  {[5, 10, 15, 20, 50].map((pct) => (
+                    <Button
+                      key={pct}
+                      size="lg"
+                      variant={Number(discountText) === pct ? 'solid' : 'outline'}
+                      colorPalette="orange"
+                      onClick={() => setDiscountText(String(pct))}
+                    >
+                      {pct}%
+                    </Button>
+                  ))}
+                </HStack>
+
+                <Flex justify="space-between" align="baseline" mt={4}>
+                  <Text color="fg.muted">{t('pos.discount')}</Text>
+                  <Text fontSize="xl" fontWeight="bold" color="orange.fg">
+                    -
+                    {money(
+                      Math.min(
+                        Math.max(
+                          0,
+                          Math.round(
+                            (Math.max(0, cart.subtotal) *
+                              Math.max(0, Math.min(100, parsePercent(discountText) ?? 0))) /
+                              100,
+                          ),
+                        ),
+                        Math.max(0, cart.subtotal),
+                      ),
+                    )}
+                  </Text>
+                </Flex>
               </Dialog.Body>
               <Dialog.Footer>
                 <Button
                   size="lg"
                   variant="outline"
                   onClick={() => {
-                    cart.setDiscount(0)
+                    cart.setDiscountPercent(0)
                     setDiscountOpen(false)
                   }}
                 >
@@ -2542,7 +2723,7 @@ export function CaissePage() {
                   size="lg"
                   colorPalette="brand"
                   onClick={() => {
-                    cart.setDiscount(parseMoney(discountText) ?? 0)
+                    cart.setDiscountPercent(parsePercent(discountText) ?? 0)
                     setDiscountOpen(false)
                   }}
                 >
@@ -3065,7 +3246,7 @@ export function CaissePage() {
                     disabled={cart.lines.length === 0}
                     onClick={() => {
                       setMoreOpen(false)
-                      setDiscountText(cart.discount ? String(fromMinor(cart.discount)) : '')
+                      setDiscountText(cart.discountPercent ? String(cart.discountPercent) : '')
                       setDiscountOpen(true)
                     }}
                   >
