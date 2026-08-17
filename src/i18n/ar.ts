@@ -100,6 +100,7 @@ export const ar: Dict = {
     pickNumber: 'اضغط، أو اكتب 1، 2، 3…',
     notFound: 'لا يوجد منتج لـ «{{term}}»',
     createFromScan: 'إنشاء هذا المنتج',
+    recognisedScan: 'منتج معروف: {{name}} — أضفه إلى مخزونك',
     outOfStock: 'نفد المخزون',
     stockLeft: 'يبقى {{count}} في المخزون',
     editQty: 'تعديل الكمية',
@@ -325,7 +326,8 @@ export const ar: Dict = {
     lowStockBadge: 'مخزون منخفض',
     outOfStock: 'نفد',
     empty: 'لا توجد منتجات بعد',
-    emptyHint: 'أضف أول منتج أو امسح رمزًا شريطيًا.',
+    emptyHint:
+      'امسح رمزًا شريطيًا: إن كان موجودًا في الفهرس المشترك فسيُعرف الاسم وحده. لم يبقَ إلا أسعارك وكميتك.',
     noResults: 'لا نتائج لهذا البحث',
     deleteConfirm: 'حذف هذا المنتج؟',
     margin: 'الهامش',

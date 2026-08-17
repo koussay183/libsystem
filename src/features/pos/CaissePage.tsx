@@ -435,7 +435,17 @@ export function CaissePage() {
   const [scan, setScan] = useState('')
   const [notice, setNotice] = useState('')
   /** Severity of `notice` — "the stock is still loading" is not a warning. */
-  const [noticeStatus, setNoticeStatus] = useState<'info' | 'warning'>('warning')
+  const [noticeStatus, setNoticeStatus] = useState<'info' | 'warning' | 'success'>('warning')
+
+  /**
+   * The code the current "not found" notice is about.
+   *
+   * The catalogue answers over the network, so by the time it replies the cashier
+   * may have scanned something else — and overwriting a fresh notice with an
+   * answer about the previous article would be worse than staying quiet. Every
+   * late reply checks this before it is allowed to say anything.
+   */
+  const missCode = useRef('')
   /** Only an unknown code offers to create the article on the spot. */
   const [canCreate, setCanCreate] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -883,6 +893,12 @@ export function CaissePage() {
         setScan('')
         return
       }
+      // A new code is a new question. Cleared here rather than in each of the ten
+      // branches below, so a recognition banner can never outlive the article it
+      // was about — and so a late reply about the PREVIOUS code finds missCode
+      // changed and stays quiet.
+      setRecognised(null)
+      missCode.current = ''
 
       // The scanner's trailing Enter, arriving just after the code it belongs
       // to already went in.
@@ -1038,9 +1054,43 @@ export function CaissePage() {
        * loose() on the way in, so the stored code is the digits the scanner will
        * actually send next time, not the separators a catalogue happened to print.
        */
-      setNewCode(looksLikeCode(term) ? loose(term) : '')
+      const missed = looksLikeCode(term) ? loose(term) : ''
+      setNewCode(missed)
       setNewName(looksLikeCode(term) ? '' : term)
       focusScan()
+
+      /*
+        ASK THE SHARED CATALOGUE HERE, ON THE MISS ITSELF.
+
+        This used to happen only after the owner clicked "Créer ce produit", and
+        that was the wrong moment by one step: a shop with an empty stock scans a
+        BIC, reads "Aucun produit pour 3086123275133", and concludes the catalogue
+        does not work. He never gets as far as the dialog where the name was
+        waiting for him. The one screen where recognition is worth anything is the
+        one where the article is in his hand.
+
+        It is still not on the scan PATH — lookup() runs on keystrokes and on
+        every code that matches something, and neither needs the catalogue. This
+        is the miss tail: it fires once, for a code this shop does not stock,
+        which is exactly and only when the question is worth asking.
+
+        Late answers are dropped rather than applied, because by then the cashier
+        may have moved on to the next article. @see missCode
+      */
+      missCode.current = missed
+      if (missed !== '') {
+        void lookupCatalog(missed).then((hit) => {
+          if (!hit || !alive.current) return
+          if (missCode.current !== missed) return
+          setRecognised(hit)
+          setNewName((current) => (current.trim() === '' ? hit.name : current))
+          // Green, not orange. Nothing has gone wrong: the article is known, it
+          // simply is not in this shop's stock yet, and adding it is two prices
+          // and a quantity away.
+          setNoticeStatus('success')
+          setNotice(t('pos.recognisedScan', { name: hit.name }))
+        })
+      }
     },
     [
       take,
@@ -1424,12 +1474,18 @@ export function CaissePage() {
       that arrives from the network and takes the field out from under him would
       be worse than no help at all.
     */
-    setRecognised(null)
-    void lookupCatalog(newCode).then((hit) => {
-      if (!hit || !alive.current) return
-      setNewName((current) => (current.trim() === '' ? hit.name : current))
-      setRecognised(hit)
-    })
+    // Normally already answered by the miss tail above, which is where the owner
+    // sees it. This is the second chance: the dialog can also be opened after a
+    // NAME search, and a lookup that timed out on a slow line deserves another
+    // go now that he has stopped to fill a form. Nothing is cleared first —
+    // clearing would flash the banner off and on for the common case.
+    if (!recognised) {
+      void lookupCatalog(newCode).then((hit) => {
+        if (!hit || !alive.current) return
+        setNewName((current) => (current.trim() === '' ? hit.name : current))
+        setRecognised(hit)
+      })
+    }
   }
 
   const saveNewProduct = async () => {

@@ -98,6 +98,10 @@ export const fr = {
     pickNumber: 'Cliquez, ou tapez 1, 2, 3…',
     notFound: 'Aucun produit pour « {{term}} »',
     createFromScan: 'Créer ce produit',
+    // Vert, pas orange : rien n’a échoué. L’article est connu du catalogue
+    // partagé, il n’est simplement pas encore dans CE stock — il ne manque que
+    // le prix d’achat, le prix de vente et la quantité.
+    recognisedScan: 'Produit reconnu : {{name}} — ajoutez-le à votre stock',
     outOfStock: 'Rupture — il ne reste rien en stock',
     stockLeft: 'Reste {{count}} en stock',
     editQty: 'Modifier la quantité',
@@ -334,7 +338,11 @@ export const fr = {
     lowStockBadge: 'Stock bas',
     outOfStock: 'Rupture',
     empty: 'Aucun produit pour l’instant',
-    emptyHint: 'Ajoutez votre premier produit ou scannez un code-barres.',
+    // Un stock vide est l’état normal d’une nouvelle boutique, pas une erreur —
+    // et c’est le seul écran où l’on peut lui apprendre que le catalogue partagé
+    // existe. Sinon il tape 500 noms à la main sans jamais le savoir.
+    emptyHint:
+      'Scannez un code-barres : s’il est déjà dans le catalogue partagé, le nom est trouvé tout seul. Il ne vous reste que vos prix et votre quantité.',
     noResults: 'Aucun résultat pour cette recherche',
     deleteConfirm: 'Supprimer ce produit ?',
     margin: 'Marge',
