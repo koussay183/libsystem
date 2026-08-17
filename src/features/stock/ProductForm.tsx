@@ -39,6 +39,7 @@ import { composeName } from './naming'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { Product, ProductInput } from '@/types/models'
+import { lookupCatalog, contributeToCatalog } from '@/lib/catalog'
 
 interface ProductFormProps {
   open: boolean
@@ -156,6 +157,29 @@ export function ProductForm({
     setNewSupplier(false)
     autoName.current = source?.name ?? ''
     setTimeout(() => nameRef.current?.focus(), 50)
+
+    /*
+      Ask the shared catalogue what this barcode is called, but only for a NEW
+      article that arrived with a code and no name.
+
+      The three guards are each doing real work. Editing an existing product must
+      never have its name replaced by somebody else's idea of it. A duplicate
+      ("Dupliquer") already carries the name the owner is copying. And a form
+      opened with a name already in it — from the till's miss tail, or from a
+      template — has an answer better than the catalogue's, because it came from
+      this shop.
+
+      The write into state is guarded again on arrival: the request is on a 700 ms
+      deadline and the owner may well have typed by then, and taking the field out
+      from under him would be worse than not helping.
+    */
+    if (!product && !template && (initialBarcode ?? '') !== '' && (initialName ?? '') === '') {
+      void lookupCatalog(initialBarcode).then((hit) => {
+        if (!hit) return
+        setName((current) => (current.trim() === '' ? hit.name : current))
+        if (hit.unit) setUnit((current) => (current.trim() === '' ? hit.unit! : current))
+      })
+    }
   }, [open, product, template, initialBarcode, initialName, quick, shop])
 
   const symbol = t(moneySymbolKey())
@@ -367,6 +391,10 @@ export function ProductForm({
       await ensureSupplier(input.supplier ?? '')
       if (product) await updateProduct(product.id, input)
       else await createProduct(input)
+      // Only a NEW article is offered to the shared catalogue. An edit is very
+      // often the owner correcting a name for his own shelf — "Cahier 96p (bleu)"
+      // — and a local correction is not a better answer for everybody else.
+      if (!product) contributeToCatalog(input.barcode, input.name, input.unit ?? undefined)
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) {

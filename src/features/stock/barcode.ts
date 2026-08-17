@@ -97,7 +97,74 @@ export function generateInStoreCode(taken: Iterable<unknown>): string {
  */
 export function catalogKey(value: unknown): string | null {
   const key = loose(codeOf(value))
+  if (cnpKey(key) !== null) return cnpKey(key)
+  return gtinKey(key)
+}
+
+/**
+ * The id for a real manufacturer's barcode: 8 to 14 digits, never one from the
+ * in-store range.
+ *
+ * This is the only shape a SHOP may contribute, and the restriction is the whole
+ * reason the two functions are separate — see {@link cnpKey}.
+ *
+ * WHY THE IN-STORE TEST IS NOT SIMPLY /^2[0-9]{12}$/, WHICH IS WHAT IT WAS.
+ * GS1 reserves the prefix 2 for restricted circulation: codes a shop prints for
+ * itself, checked for collisions against ITS OWN stock only, so two shops mint
+ * the same one by construction. The old test recognised that at exactly thirteen
+ * digits, which is what generateInStoreCode() below happens to produce — so it
+ * caught this app's own codes and nothing else. Another till printing a
+ * 2-prefixed EAN-8 or UPC-A would have walked straight into the shared
+ * namespace and started overwriting a real book.
+ *
+ * The one length where a leading 2 is innocent is 14: an ITF-14 carton code is a
+ * packaging indicator digit followed by a GTIN-13, and that indicator is
+ * allowed to be 2 while the code inside it is an ordinary product. So 14-digit
+ * codes are judged on the GTIN they carry, not on their first digit.
+ *
+ * Deciding this now rather than later is deliberate: widening it after the first
+ * seed would leave entries stranded under ids nothing would look up again.
+ */
+function gtinKey(key: string): string | null {
   if (!/^[0-9]{8,14}$/.test(key)) return null
-  if (/^2[0-9]{12}$/.test(key)) return null
+  // EAN-8, UPC-A and EAN-13: a leading 2 means in-store, so it is not shareable.
+  if (key.length !== 14 && key.startsWith('2')) return null
+  // ITF-14: strip the packaging indicator and judge the GTIN-13 underneath.
+  if (key.length === 14 && key.slice(1).startsWith('2')) return null
   return key
+}
+
+/**
+ * Tunisian school-book codes — the CNP article number printed on every
+ * "manuel scolaire" — under an id namespace of their own.
+ *
+ * These are six digits, so they cannot be a GTIN and cannot go through
+ * {@link gtinKey}. They earn their place anyway: they are nationally
+ * standardised, every bookshop in the country sells the same titles under the
+ * same numbers, and they are the single most valuable thing a new shop can be
+ * handed on its first day. In the shop this was built for, all 52 six-digit
+ * codes are Manuels scolaires and not one of them is anything else.
+ *
+ * The `cnp-` prefix keeps them out of the GTIN space, because six digits are
+ * short enough that a shop could plausibly have minted its own — and a shop's
+ * private numbering must never be able to answer for a national one.
+ *
+ * NO SHOP MAY CONTRIBUTE ONE. Contributions go through {@link gtinKey}, so this
+ * namespace is written only by the back office, from a list somebody has
+ * actually checked. That asymmetry is the point: a national standard should be
+ * curated, and it is the one part of the catalogue where a wrong name would be
+ * wrong for everybody at once.
+ */
+function cnpKey(key: string): string | null {
+  return /^[0-9]{6}$/.test(key) ? `cnp-${key}` : null
+}
+
+/**
+ * The id this shop is allowed to PUBLISH for a code, or null.
+ *
+ * Deliberately narrower than {@link catalogKey}, which is what a shop may look
+ * UP. Reading a curated CNP entry is a gift; writing one is not a shop's to do.
+ */
+export function contributableKey(value: unknown): string | null {
+  return gtinKey(loose(codeOf(value)))
 }

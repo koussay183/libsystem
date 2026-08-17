@@ -79,7 +79,15 @@ const positional = []
  * the next boolean flag anybody adds would arrive with the same bug already in
  * place.
  */
-const BOOLEAN_FLAGS = new Set(['yes', 'dry-run', 'revoke', 'include-history', 'keep-counters'])
+const BOOLEAN_FLAGS = new Set([
+  'yes',
+  'dry-run',
+  'revoke',
+  'include-history',
+  'keep-counters',
+  'clear',
+  'cnp',
+])
 
 const flags = {}
 for (let i = 1; i < argv.length; i += 1) {
@@ -113,6 +121,45 @@ const DAY_MS = 24 * 60 * 60 * 1000
  *     suspension does nothing for a fortnight.
  */
 const RULES_GRACE_MS = 14 * DAY_MS
+
+/**
+ * The id a barcode gets in the shared catalogue.
+ *
+ * MUST STAY IN STEP WITH catalogKey() IN src/features/stock/barcode.ts — the app
+ * looks entries up by exactly this id, so a disagreement between these two
+ * functions does not raise an error anywhere, it just silently stops finding
+ * things. The full reasoning lives in that file; the rules, briefly:
+ *
+ *  · 8 to 14 digits, which covers EAN-8, UPC-A, EAN-13 and ITF-14 — every code a
+ *    real supplier prints — and is always a legal Firestore document id.
+ *  · never a code in the GS1 in-store range (leading 2), because those are minted
+ *    per shop against one shop's own stock and collide across tenants by
+ *    construction. At fourteen digits the leading digit is an ITF-14 packaging
+ *    indicator rather than a prefix, so the GTIN inside is what is judged.
+ *  · six-digit CNP school-book numbers get the `cnp-` namespace. They are a
+ *    national standard, so they are curated here and never contributed by a shop
+ *    — see contributableId.
+ */
+function catalogId(v) {
+  const k = String(v ?? '')
+    .trim()
+    .replace(/[\s-]/g, '')
+  if (/^[0-9]{6}$/.test(k)) return `cnp-${k}`
+  // Already namespaced: a contribution document id round-tripping through here.
+  if (/^cnp-[0-9]{6}$/.test(k)) return k
+  return contributableId(k)
+}
+
+/** The subset a SHOP may publish: real manufacturers' barcodes only. */
+function contributableId(v) {
+  const k = String(v ?? '')
+    .trim()
+    .replace(/[\s-]/g, '')
+  if (!/^[0-9]{8,14}$/.test(k)) return null
+  if (k.length !== 14 && k.startsWith('2')) return null
+  if (k.length === 14 && k.slice(1).startsWith('2')) return null
+  return k
+}
 
 /** Every collection a shop owns. Order matters only for readability. */
 const SHOP_COLLECTIONS = [
@@ -180,7 +227,16 @@ async function loadAdmin() {
       import('firebase-admin/auth'),
       import('firebase-admin/firestore'),
     ])
-    _admin = { ...app, getAuth: auth.getAuth, getFirestore: firestore.getFirestore }
+    _admin = {
+      ...app,
+      getAuth: auth.getAuth,
+      getFirestore: firestore.getFirestore,
+      // The catalogue commands need increment() and delete() sentinels: a
+      // confirmation count has to go up without reading it first, or two shops
+      // seeded in the same minute each write the value they read and one of the
+      // two confirmations is lost.
+      FieldValue: firestore.FieldValue,
+    }
     return _admin
   } catch {
     die(
@@ -749,27 +805,18 @@ commands['migrate:legacy'] = {
 }
 
 commands['catalog:seed'] = {
-  blurb: 'Publish a shop’s barcoded product NAMES into the shared catalogue  --shop <shopId>',
+  blurb:
+    'Publish a shop’s product NAMES into the shared catalogue  --shop <shopId> [--cnp] [--dry-run]',
   async run() {
     const { db } = await connect()
     const shopId = flags.shop ?? positional[0]
     if (!shopId) die('Need --shop <shopId>.')
     const snap = await db.collection('shops').doc(shopId).collection('products').get()
 
-    /**
-     * The same key the app's catalogKey() uses, and for the same reasons:
-     * 8-14 digits only, so it is always a legal Firestore document id; and
-     * never a 2xxxxxxxxxxx code, because those are minted per shop by
-     * generateInStoreCode and collide across tenants by construction.
-     */
-    const key = (v) => {
-      const k = String(v ?? '').trim().replace(/[\s-]/g, '')
-      if (!/^[0-9]{8,14}$/.test(k)) return null
-      if (/^2[0-9]{12}$/.test(k)) return null
-      return k
-    }
+    // @see catalogId — the same rule as the app's catalogKey().
+    const key = (v) => (flags.cnp ? catalogId(v) : contributableId(v))
 
-    const ops = []
+    const candidates = []
     let skipped = 0
     const seen = new Set()
     // Codes this shop itself cannot resolve: it sells two different articles
@@ -796,42 +843,294 @@ commands['catalog:seed'] = {
         skipped += 1
         continue
       }
-      const ref = db.collection('catalog').doc(code)
-      /**
-       * NAME AND UNIT ONLY. Deliberately no price and no category.
-       *
-       * A price would be actively harmful, not merely private: the receiving
-       * shop derives its selling price from ITS OWN margin on the cost it
-       * paid, and the till defaults an unknown cost to zero — so a borrowed
-       * sale price with no cost behind it mints a 100%-margin phantom into
-       * that shop's profit report. A category is a free-text key into the
-       * CONTRIBUTING shop's own category list and means nothing elsewhere.
-       */
-      ops.push((batch) =>
-        batch.set(
-          ref,
-          {
-            name,
-            unit: p.unit ?? null,
-            by: shopId,
-            confirms: 0,
-            createdAt: Date.now(),
-          },
-          { merge: true },
-        ),
-      )
+      candidates.push({ code, name, unit: p.unit ?? null })
     }
 
-    log(`  ${ops.length} catalogue entries from ${snap.size} products${skipped ? `, ${skipped} skipped (no usable code, shared code, or unusable name)` : ''}`)
+    log(
+      `  ${candidates.length} candidates from ${snap.size} products${skipped ? `, ${skipped} skipped (no usable code, shared code, or unusable name)` : ''}`,
+    )
     log(c.dim('  Names and units only — never a price, never a category.'))
-    warn('The catalogue is not wired into the app yet. This only fills it.')
+
+    const plan = await planPromotion(db, candidates, shopId)
+    describePromotion(plan)
     if (flags['dry-run']) {
       warn('Dry run. Nothing was written.')
       return
     }
+    if (plan.ops.length === 0) return
     if (!(await confirm('Publish these to the shared catalogue?'))) return
-    const written = await commitChunked(db, ops, 'writing')
-    ok(`${written} catalogue entries published`)
+    const written = await commitChunked(db, plan.ops, 'writing')
+    ok(`${written} catalogue entries written`)
+  },
+}
+
+/**
+ * Works out what publishing these codes would actually change, WITHOUT
+ * destroying what is already there.
+ *
+ * THIS IS THE FIX FOR THE BUG THAT MADE `confirms` MEANINGLESS. The seed used to
+ * `set(..., { merge: true })` with `confirms: 0`, `createdAt: Date.now()`, `by`
+ * and `name` all in the payload — so running it for a second shop overwrote the
+ * first shop's name, moved createdAt forward, reassigned `by`, and reset any
+ * accumulated confirmations to zero. Admin SDK, so no rule could have stopped
+ * it. It never mattered while nothing read the collection; it matters now.
+ *
+ * THE FIRST WRITER IS AUTHORITATIVE, and the rest is evidence:
+ *
+ *  · absent      -> create it, with provenance and confirms 0.
+ *  · same name   -> another shop independently agrees. Increment confirms and
+ *                   touch NOTHING else. This is the only thing that makes a
+ *                   confirmation count mean anything at all.
+ *  · other name  -> do NOT overwrite. Record the disagreement under `alts`, with
+ *                   a count, and leave the published name alone. A shop calling
+ *                   9782070408504 "Petit Prince poche" is not evidence that
+ *                   "Le Petit Prince" is wrong, and the last run of a command
+ *                   is the worst possible tiebreaker. `catalog:fix` is how a
+ *                   human settles it, once, on purpose.
+ *
+ * Names are compared case- and space-insensitively, because "CAHIER 96P" and
+ * "Cahier 96p" are the same shop agreeing with itself in a different mood.
+ */
+async function planPromotion(db, candidates, by) {
+  const { FieldValue } = await loadAdmin()
+  const plan = { ops: [], created: 0, confirmed: 0, disputed: [], unchanged: 0 }
+  if (candidates.length === 0) return plan
+
+  const fold = (s) =>
+    String(s ?? '')
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim()
+
+  // getAll takes a bounded number of refs, so the reads are chunked exactly as
+  // the writes are.
+  const READ_CHUNK = 300
+  for (let i = 0; i < candidates.length; i += READ_CHUNK) {
+    const slice = candidates.slice(i, i + READ_CHUNK)
+    const refs = slice.map((c) => db.collection('catalog').doc(c.code))
+    const snaps = await db.getAll(...refs)
+
+    for (let j = 0; j < slice.length; j += 1) {
+      const c = slice[j]
+      const snap = snaps[j]
+      const ref = refs[j]
+
+      if (!snap.exists) {
+        plan.created += 1
+        plan.ops.push((batch) =>
+          batch.set(ref, {
+            name: c.name,
+            unit: c.unit,
+            by,
+            confirms: 0,
+            createdAt: Date.now(),
+          }),
+        )
+        continue
+      }
+
+      const current = snap.data() ?? {}
+      if (fold(current.name) === fold(c.name)) {
+        plan.confirmed += 1
+        plan.ops.push((batch) =>
+          batch.set(
+            ref,
+            {
+              confirms: FieldValue.increment(1),
+              // Filled in only if the first writer had none. A unit is a fact
+              // about the article, not an opinion about it.
+              ...(current.unit == null && c.unit != null ? { unit: c.unit } : {}),
+            },
+            { merge: true },
+          ),
+        )
+        continue
+      }
+
+      plan.disputed.push({ code: c.code, published: current.name, offered: c.name })
+      plan.ops.push((batch) =>
+        batch.set(
+          ref,
+          { alts: { [fold(c.name)]: FieldValue.increment(1) } },
+          { merge: true },
+        ),
+      )
+    }
+  }
+  return plan
+}
+
+/** Says what planPromotion() found, in the CLI's own voice. */
+function describePromotion(plan) {
+  log('')
+  log(`  ${String(plan.created).padStart(5)} new entries`)
+  log(`  ${String(plan.confirmed).padStart(5)} confirmed (another shop agrees with the published name)`)
+  log(`  ${String(plan.disputed.length).padStart(5)} disagree with the published name — kept, recorded under alts`)
+  if (plan.disputed.length > 0) {
+    log('')
+    for (const d of plan.disputed.slice(0, 12)) {
+      log(c.dim(`    ${d.code}  published "${d.published}"  offered "${d.offered}"`))
+    }
+    if (plan.disputed.length > 12) log(c.dim(`    … and ${plan.disputed.length - 12} more`))
+    log(c.dim('  Settle any of these with `catalog:fix <code> --name "..."`.'))
+  }
+  log('')
+}
+
+commands['catalog:harvest'] = {
+  blurb: 'Promote what shops offered into the shared catalogue  [--shop <shopId>] [--clear]',
+  async run() {
+    const { db } = await connect()
+
+    /**
+     * Shops never write to /catalog. They write into their own subtree, at
+     * shops/{shopId}/catalog_contributions/{code}, which the tenant rules
+     * already cover — and this is what moves those offers into the shared
+     * collection with the Admin SDK.
+     *
+     * That indirection is the whole security design of the feature. There is no
+     * client-writable root collection, so there is nothing to flood with junk,
+     * nothing to poison with a deliberately wrong name, and no per-account
+     * bookkeeping to invent to make `confirms` trustworthy. The cost is that a
+     * name entered today reaches other shops when this is next run, which is a
+     * price worth paying and not much of one: the value is that the names exist
+     * at all, not that they arrive within the minute.
+     */
+    const only = flags.shop
+    const shops = only
+      ? [(await resolveShop(only)).shopId]
+      : (await db.collection('shops').get()).docs.map((d) => d.id)
+
+    let offered = 0
+    const perShop = []
+    for (const shopId of shops) {
+      const snap = await db
+        .collection('shops')
+        .doc(shopId)
+        .collection('catalog_contributions')
+        .get()
+      if (snap.empty) continue
+      const candidates = []
+      for (const d of snap.docs) {
+        const name = String(d.data().name ?? '').trim()
+        // The document id IS the code, written by the client through
+        // contributableKey(), but it is re-checked here rather than trusted: it
+        // arrived from a browser, and this is the step that puts it in front of
+        // every other shop.
+        const code = catalogId(d.id)
+        if (!code || name === '' || name.length >= 80) continue
+        candidates.push({ code, name, unit: d.data().unit ?? null })
+      }
+      offered += candidates.length
+      perShop.push({ shopId, candidates, refs: snap.docs.map((d) => d.ref) })
+      log(`  ${shopId.padEnd(24)} ${String(candidates.length).padStart(5)} offered`)
+    }
+
+    if (offered === 0) {
+      warn('Nothing offered. Shops contribute when they create a barcoded product.')
+      return
+    }
+
+    let created = 0
+    let confirmed = 0
+    let disputed = 0
+    for (const entry of perShop) {
+      const plan = await planPromotion(db, entry.candidates, entry.shopId)
+      created += plan.created
+      confirmed += plan.confirmed
+      disputed += plan.disputed.length
+      describePromotion(plan)
+      if (flags['dry-run'] || plan.ops.length === 0) continue
+      await commitChunked(db, plan.ops, `writing ${entry.shopId}`)
+
+      /**
+       * --clear is opt-in, and the default of KEEPING the contributions is the
+       * safer one. A contribution left in place is re-offered on the next
+       * harvest, where it either agrees with the published name (and adds another
+       * confirmation, which is harmless and mildly useful) or shows up as the
+       * same disagreement again — a standing reminder that somebody should look
+       * at it. Deleted, a disagreement is gone and nobody ever settles it.
+       */
+      if (flags.clear) {
+        await commitChunked(
+          db,
+          entry.refs.map((ref) => (batch) => batch.delete(ref)),
+          `clearing ${entry.shopId}`,
+        )
+      }
+    }
+
+    if (flags['dry-run']) {
+      warn('Dry run. Nothing was written.')
+      return
+    }
+    ok(`harvest: ${created} new, ${confirmed} confirmed, ${disputed} disputed`)
+    if (!flags.clear) log(c.dim('  Contributions kept. Pass --clear to empty them after a harvest.'))
+  },
+}
+
+commands['catalog:fix'] = {
+  blurb: 'Settle a catalogue entry by hand  <code> --name "..."  [--unit ...]',
+  async run() {
+    const { db } = await connect()
+    const code = catalogId(positional[0])
+    if (!code) die('Need a valid catalogue code.', 'Eight to fourteen digits, or a six-digit CNP.')
+    const name = flags.name
+    if (!name) die('Need --name "the correct name".')
+    if (String(name).length >= 80) die('That name is too long for a catalogue entry (80 max).')
+
+    const { FieldValue } = await loadAdmin()
+    const ref = db.collection('catalog').doc(code)
+    const snap = await ref.get()
+    if (snap.exists) {
+      const d = snap.data()
+      log(`  ${code} is currently "${d.name}"  (by ${d.by ?? '?'}, ${d.confirms ?? 0} confirms)`)
+      if (d.alts) log(c.dim(`  alternatives offered: ${Object.keys(d.alts).join(' | ')}`))
+    } else {
+      log(`  ${code} does not exist yet — this creates it.`)
+    }
+    if (!(await confirm(`Set ${code} to "${name}"?`))) return
+
+    /**
+     * `fixedAt` is what stops a harvest quietly undoing this. A hand-settled
+     * name is a decision, and the next shop that offers a different one must not
+     * be able to overturn it by running a command — planPromotion never
+     * overwrites a published name anyway, but recording the decision is what
+     * makes it auditable a year from now.
+     */
+    await ref.set(
+      {
+        name: String(name),
+        ...(flags.unit ? { unit: String(flags.unit) } : {}),
+        fixedAt: Date.now(),
+        alts: FieldValue.delete(),
+      },
+      { merge: true },
+    )
+    ok(`${code} = "${name}"`)
+  },
+}
+
+commands['catalog:purge'] = {
+  blurb: 'Remove a catalogue entry entirely  <code>',
+  async run() {
+    const { db } = await connect()
+    const code = catalogId(positional[0])
+    if (!code) die('Need a valid catalogue code.')
+    const ref = db.collection('catalog').doc(code)
+    const snap = await ref.get()
+    if (!snap.exists) {
+      warn(`${code} is not in the catalogue.`)
+      return
+    }
+    log(`  ${code} = "${snap.data().name}"`)
+    // The remedy of last resort. Because clients cannot write to /catalog there
+    // is no flood to clean up, but a name can still be wrong, offensive, or
+    // carry something a shop did not mean to publish — and until this existed
+    // the only cure was a hand-written script against the admin key.
+    if (!(await confirm(`Delete ${code} from the shared catalogue?`))) return
+    await ref.delete()
+    ok(`${code} removed`)
   },
 }
 

@@ -61,6 +61,7 @@ import {
   setSoundEnabled,
 } from '@/lib/beep'
 import { codeOf, loose, looksLikeCode } from '@/features/stock/barcode'
+import { lookupCatalog, contributeToCatalog } from '@/lib/catalog'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -1405,6 +1406,25 @@ export function CaissePage() {
     setNewCost('')
     setNewError('')
     setNewOpen(true)
+
+    /*
+      Ask the shared catalogue what this barcode is called — HERE, on a
+      deliberate "create this product", and never on the scan path itself.
+
+      The scan path runs on every keystroke of every code the cashier passes over
+      the reader, and an article the shop already stocks needs no catalogue at
+      all. This runs once, when the owner has already decided to create
+      something, which is also the only moment the answer is worth anything.
+
+      Fire-and-forget with a short deadline, and it never overwrites: if the
+      lookup comes back after he has started typing, his own words win. A name
+      that arrives from the network and takes the field out from under him would
+      be worse than no help at all.
+    */
+    void lookupCatalog(newCode).then((hit) => {
+      if (!hit || !alive.current) return
+      setNewName((current) => (current.trim() === '' ? hit.name : current))
+    })
   }
 
   const saveNewProduct = async () => {
@@ -1424,6 +1444,11 @@ export function CaissePage() {
         quantity: 0,
         lowStockThreshold: 0,
       })
+      // Offered to the shared catalogue, so the next shop that scans this book
+      // is handed the name instead of typing it. Into this shop's own subtree,
+      // queued like every other write, and silent either way — see
+      // src/lib/catalog.ts. Nothing here waits on it and nothing reports it.
+      contributeToCatalog(newCode, newName)
       if (!alive.current) return
       addToCart({
         id,

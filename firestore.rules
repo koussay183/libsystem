@@ -138,8 +138,40 @@ service cloud.firestore {
     // writes to or deletes from them, so aborting the cutover is a matter of
     // putting the old rules and the old bundle back.
     //
-    // The shared barcode catalogue is not here yet on purpose. It is the only
-    // client-writable collection outside a shop and the only cross-tenant read
-    // surface in the design, so it ships on its own day, not on cutover day.
+    // ---------------------------------------------------------------------
+    // The shared barcode catalogue
+    // ---------------------------------------------------------------------
+    //
+    // The one path in this system outside shops/{shopId}/…, and it is READ-ONLY
+    // FOR EVERY CLIENT. It holds what a manufacturer's barcode is called and
+    // nothing else: no price, no cost, no category, no shop id. Prices are each
+    // shop's own business, and a borrowed one would be actively harmful — the
+    // receiving till defaults an unknown cost to zero, so a sale price with no
+    // cost behind it becomes a permanent 100 %-margin phantom in that shop's
+    // profitability report.
+    //
+    // `get` AND NOT `read`. read includes list, and list would let any one
+    // account walk the entire catalogue — every barcode every shop on the
+    // platform stocks, in one query. A till only ever asks about a code it is
+    // holding, so `get` is all it needs and all it gets.
+    //
+    // NO CLIENT WRITE, not even a create. A shop publishes by writing into its
+    // own subtree at shops/{shopId}/catalog_contributions/{code}, which the
+    // tenant block above already covers, and `catalog:harvest` in the CLI
+    // promotes those with the Admin SDK. That is what makes this collection
+    // safe: with no client-writable root path there is nothing here to flood
+    // with junk, nothing to poison with a wrong name, and no per-uid bookkeeping
+    // to invent. It costs immediacy, which was never the valuable part.
+    //
+    // Requiring a shopId claim rather than merely request.auth != null, for the
+    // reason spelled out at the top of this file: the web API key ships in the
+    // bundle, so anyone can sign up and arrive holding a valid anonymous
+    // account. Owning a shop is the only thing that counts.
+    match /catalog/{code} {
+      allow get: if request.auth != null && request.auth.token.get('shopId', '') is string
+                 && request.auth.token.get('shopId', '') != '';
+      allow list: if false;
+      allow write: if false;
+    }
   }
 }
