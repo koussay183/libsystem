@@ -62,6 +62,7 @@ import {
 } from '@/lib/beep'
 import { codeOf, loose, looksLikeCode } from '@/features/stock/barcode'
 import { lookupCatalog, contributeToCatalog } from '@/lib/catalog'
+import type { CatalogEntry } from '@/lib/catalog'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -515,6 +516,8 @@ export function CaissePage() {
   const [newPrice, setNewPrice] = useState('')
   const [newCost, setNewCost] = useState('')
   const [newError, setNewError] = useState('')
+  /** The shared catalogue answered for this code. @see openNewProduct */
+  const [recognised, setRecognised] = useState<CatalogEntry | null>(null)
 
   // Free line (photocopy, binding…)
   const [miscOpen, setMiscOpen] = useState(false)
@@ -1421,9 +1424,11 @@ export function CaissePage() {
       that arrives from the network and takes the field out from under him would
       be worse than no help at all.
     */
+    setRecognised(null)
     void lookupCatalog(newCode).then((hit) => {
       if (!hit || !alive.current) return
       setNewName((current) => (current.trim() === '' ? hit.name : current))
+      setRecognised(hit)
     })
   }
 
@@ -2528,6 +2533,21 @@ export function CaissePage() {
               </Dialog.Header>
               <Dialog.Body>
                 <Stack gap={4}>
+                  {/* The wow moment, at the counter: a code this shop has never
+                      stocked, named by a bookshop it has never met. Prices stay
+                      his — see src/lib/catalog.ts. */}
+                  {recognised && (
+                    <Alert.Root status="success" variant="subtle">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{t('stock.recognised')}</Alert.Title>
+                        <Alert.Description>
+                          {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
+                            t('stock.recognisedHint')}
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
                   <Field.Root required invalid={!!newError}>
                     <Field.Label>{t('stock.name')}</Field.Label>
                     <Input

@@ -304,6 +304,9 @@ export const ar: Dict = {
     namePlaceholder: 'مثال: كراس 96 صفحة',
     barcode: 'الرمز الشريطي',
     codeTwin: 'هذا الرمز موجود على «{{name}}»',
+    recognised: 'منتج معروف — لا داعي لكتابة اسمه',
+    recognisedHint:
+      'هذا الرمز الشريطي معروف في الفهرس المشترك. لم يبقَ إلا أسعارك وكميتك.',
     costBlankWarn: 'بدون سعر شراء، سيُحسب هذا المنتج ربحًا صافيًا بالكامل.',
     barcodePlaceholder: 'امسح أو اكتب الرمز',
     category: 'الصنف',

@@ -40,10 +40,30 @@ import { withDeadline } from './deadline'
  * there at all is.
  */
 
-/** What the catalogue knows about a code. */
+/**
+ * What the catalogue knows about a code — the PRODUCT MASTER.
+ *
+ * The split this whole module rests on: identity is global, commerce is local.
+ *
+ *   global   name, brand, category, unit — what the article IS
+ *   local    purchase price, sale price, margin, stock, supplier — what it is
+ *            worth in THIS shop
+ *
+ * A shop scanning a BIC it has never stocked should be told it is a BIC. What it
+ * paid for it, and what it sells it for, is nobody else's business and would be
+ * actively harmful to borrow — see the note above on the 100 %-margin phantom.
+ */
 export interface CatalogEntry {
   name: string
   unit?: string
+  /** BIC, Maped, Clairefontaine… display only, not stored on the product yet. */
+  brand?: string
+  /**
+   * A suggestion, not a fact. Categories are each shop's own vocabulary, so this
+   * is offered into the form where the owner can accept or change it, and it
+   * creates the category locally if he keeps it.
+   */
+  category?: string
 }
 
 /**
@@ -80,14 +100,21 @@ export async function lookupCatalog(code: unknown): Promise<CatalogEntry | null>
   try {
     const snap = await withDeadline(getDoc(doc(db, 'catalog', key)), LOOKUP_MS)
     if (!snap || !snap.exists()) return null
-    const data = snap.data() as { name?: unknown; unit?: unknown }
+    const data = snap.data() as Record<string, unknown>
     const name = typeof data.name === 'string' ? data.name.trim() : ''
     if (name === '' || name.length > MAX_NAME) return null
-    // `unit` is mapped to undefined rather than passed through, because the CLI
-    // writes `unit: p.unit ?? null` and firebase.ts drops undefined, not null —
-    // a null reaching ProductInput would write a null unit onto the product.
-    const unit = typeof data.unit === 'string' && data.unit.trim() !== '' ? data.unit.trim() : undefined
-    return { name, unit }
+    // Every optional field is mapped to undefined rather than passed through,
+    // because the CLI writes `unit: p.unit ?? null` and firebase.ts drops
+    // undefined, not null — a null reaching ProductInput writes a null onto the
+    // product, which is not the same as leaving the field alone.
+    const text = (v: unknown) =>
+      typeof v === 'string' && v.trim() !== '' && v.length <= MAX_NAME ? v.trim() : undefined
+    return {
+      name,
+      unit: text(data.unit),
+      brand: text(data.brand),
+      category: text(data.category),
+    }
   } catch {
     // Including the synchronous throws: an offline getDoc on a document the
     // cache has never seen rejects rather than resolving empty.
@@ -118,7 +145,12 @@ const LOOKUP_MS = 700
  * may one day be promoted into a shared collection is how a shop's identity ends
  * up somewhere a shop can read it.
  */
-export function contributeToCatalog(code: unknown, name: string, unit?: string): void {
+export function contributeToCatalog(
+  code: unknown,
+  name: string,
+  unit?: string,
+  category?: string,
+): void {
   const key = contributableKey(code)
   if (key === null) return
 
@@ -133,6 +165,7 @@ export function contributeToCatalog(code: unknown, name: string, unit?: string):
       setDoc(doc(db, shopPath('catalog_contributions'), key), {
         name: clean,
         ...(unit && unit.trim() !== '' ? { unit: unit.trim() } : {}),
+        ...(category && category.trim() !== '' ? { category: category.trim() } : {}),
         at: serverTimestamp(),
       }),
     ).catch(() => {

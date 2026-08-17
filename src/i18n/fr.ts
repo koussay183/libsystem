@@ -313,6 +313,9 @@ export const fr = {
     namePlaceholder: 'Ex. Cahier 96 pages',
     barcode: 'Code-barres',
     codeTwin: 'Ce code est déjà sur « {{name}} »',
+    recognised: 'Produit reconnu — vous n’avez pas à saisir son nom',
+    recognisedHint:
+      'Ce code-barres est déjà connu du catalogue partagé. Il ne reste que vos prix et votre quantité.',
     costBlankWarn: 'Sans prix d’achat, cet article comptera comme bénéfice pur.',
     barcodePlaceholder: 'Scannez ou tapez le code',
     category: 'Catégorie',

@@ -40,6 +40,7 @@ import { useCategories, createCategory } from '@/features/categories/useCategori
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { Product, ProductInput } from '@/types/models'
 import { lookupCatalog, contributeToCatalog } from '@/lib/catalog'
+import type { CatalogEntry } from '@/lib/catalog'
 
 interface ProductFormProps {
   open: boolean
@@ -102,6 +103,13 @@ export function ProductForm({
   const [nameError, setNameError] = useState('')
   const [priceError, setPriceError] = useState('')
   const [barcodeError, setBarcodeError] = useState('')
+
+  /**
+   * The catalogue answered for this barcode. Shown, not just applied: the value
+   * of a shared catalogue is entirely in the owner KNOWING his shop recognised
+   * an article nobody here has ever stocked.
+   */
+  const [recognised, setRecognised] = useState<CatalogEntry | null>(null)
   /**
    * The article that already carries this barcode, once the owner has been
    * told. Two genuinely different products can share a printed code — cheap
@@ -173,11 +181,18 @@ export function ProductForm({
       deadline and the owner may well have typed by then, and taking the field out
       from under him would be worse than not helping.
     */
+    setRecognised(null)
     if (!product && !template && (initialBarcode ?? '') !== '' && (initialName ?? '') === '') {
       void lookupCatalog(initialBarcode).then((hit) => {
         if (!hit) return
         setName((current) => (current.trim() === '' ? hit.name : current))
         if (hit.unit) setUnit((current) => (current.trim() === '' ? hit.unit! : current))
+        // A suggestion into an empty field only. The category is this shop's own
+        // vocabulary, and ensureCategory creates it on save if he keeps it.
+        if (hit.category) setCategory((current) => (current.trim() === '' ? hit.category! : current))
+        // Said out loud, because the whole point is that he did not have to type
+        // it. Silent prefill looks like the form remembering something.
+        setRecognised(hit)
       })
     }
   }, [open, product, template, initialBarcode, initialName, quick, shop])
@@ -394,7 +409,13 @@ export function ProductForm({
       // Only a NEW article is offered to the shared catalogue. An edit is very
       // often the owner correcting a name for his own shelf — "Cahier 96p (bleu)"
       // — and a local correction is not a better answer for everybody else.
-      if (!product) contributeToCatalog(input.barcode, input.name, input.unit ?? undefined)
+      if (!product)
+        contributeToCatalog(
+          input.barcode,
+          input.name,
+          input.unit ?? undefined,
+          input.category ?? undefined,
+        )
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) {
@@ -448,6 +469,35 @@ export function ProductForm({
             <Dialog.Body>
               <form id="product-form" onSubmit={submit}>
                 <Stack gap={4}>
+                  {/*
+                    THE POINT OF THE WHOLE SHARED CATALOGUE, SAID OUT LOUD.
+
+                    A prefilled field looks like the form remembering something.
+                    What actually happened is worth more than that: a barcode this
+                    shop has never stocked was recognised, because another
+                    bookshop somewhere in the country entered it first. The owner
+                    has to SEE that, or he will keep typing names he did not need
+                    to type — and he will never understand why the catalogue is
+                    worth anything.
+
+                    What it deliberately does not carry is a price. Identity is
+                    shared; what an article cost and what it sells for is this
+                    shop's own business, and those are the three fields below that
+                    he still fills in himself.
+                  */}
+                  {recognised && (
+                    <Alert.Root status="success" variant="subtle">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{t('stock.recognised')}</Alert.Title>
+                        <Alert.Description>
+                          {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
+                            t('stock.recognisedHint')}
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   {/* The short path: name + sale price and nothing else. */}
                   {!product && (
                     <Switch.Root

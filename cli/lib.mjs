@@ -844,7 +844,16 @@ commands['catalog:seed'] = {
         skipped += 1
         continue
       }
-      candidates.push({ code, name, unit: p.unit ?? null })
+      // Category travels as a SUGGESTION. It is free text in the contributing
+      // shop's own vocabulary, so the receiving form offers it into an empty
+      // field where the owner can keep or change it — it is never applied
+      // silently. Prices never travel, in either direction.
+      candidates.push({
+        code,
+        name,
+        unit: p.unit ?? null,
+        category: typeof p.category === 'string' && p.category.trim() !== '' ? p.category.trim() : null,
+      })
     }
 
     log(
@@ -922,6 +931,7 @@ async function planPromotion(db, candidates, by) {
           batch.set(ref, {
             name: c.name,
             unit: c.unit,
+            category: c.category ?? null,
             by,
             confirms: 0,
             createdAt: Date.now(),
@@ -941,6 +951,11 @@ async function planPromotion(db, candidates, by) {
               // Filled in only if the first writer had none. A unit is a fact
               // about the article, not an opinion about it.
               ...(current.unit == null && c.unit != null ? { unit: c.unit } : {}),
+              // A category is more of an opinion than a unit is, so it fills a
+              // gap and never replaces a choice somebody already made.
+              ...(current.category == null && c.category != null
+                ? { category: c.category }
+                : {}),
             },
             { merge: true },
           ),
@@ -1090,7 +1105,12 @@ commands['catalog:harvest'] = {
         // every other shop.
         const code = catalogId(d.id)
         if (!code || name === '' || name.length >= 80) continue
-        candidates.push({ code, name, unit: d.data().unit ?? null })
+        candidates.push({
+          code,
+          name,
+          unit: d.data().unit ?? null,
+          category: d.data().category ?? null,
+        })
       }
       offered += candidates.length
       perShop.push({ shopId, candidates, refs: snap.docs.map((d) => d.ref) })
