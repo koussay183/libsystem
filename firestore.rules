@@ -1,20 +1,103 @@
 rules_version = '2';
 
-// ⚠️  DEMO MODE — the database is OPEN (public read + write).
+// Multi-tenant rules. One shop per account; a shop's data lives under
+// shops/{shopId}/… and nothing else in this file grants access to anything.
 //
-// The app is currently gated only by a static password checked in the browser
-// (see src/auth/AuthContext.tsx). That is a convenience lock for a client test,
-// NOT security: the Firebase web key ships in the bundle, so anyone with the
-// URL could read or write this data directly. This is fine for a short test
-// with throwaway data — do NOT keep it for a real shop.
+// READ THIS BEFORE CHANGING ANYTHING HERE:
 //
-// BEFORE GOING LIVE, put Firebase Authentication back and lock access to the
-// owner's account (the previous version of this file, in git history, did
-// exactly that with an `isOwner()` UID check).
+// `request.auth != null` IS NOT AN AUTHORIZATION CHECK IN THIS PROJECT.
+// The Firebase web API key is compiled into the app bundle that every shop
+// downloads, so anybody who views source can call the sign-up endpoint and
+// arrive here holding a perfectly valid, perfectly anonymous account. Being
+// signed in therefore proves nothing. Owning a shop — carrying a `shopId`
+// custom claim that only the admin CLI can set — is the only thing that counts,
+// and every rule below is written in those terms.
+//
+// (Sign-up is also switched off in the console: Authentication → Settings →
+// User actions → "Enable create (sign-up)" unchecked. That is a second lock on
+// the same door, not a substitute for these rules.)
+//
+// The previous permissive file is kept as firestore.rules.rollback for the
+// cutover abort path.
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
+
+    // ---------------------------------------------------------------------
+    // Who is asking
+    // ---------------------------------------------------------------------
+
+    /// A request from an account that has been provisioned as a shop.
+    function isTenant() {
+      return request.auth != null
+        && request.auth.token.shopId is string
+        && request.auth.token.shopId != '';
     }
+
+    /// …and the shop it is provisioned for is the one it is reaching into.
+    function owns(shopId) {
+      return isTenant() && request.auth.token.shopId == shopId;
+    }
+
+    /**
+     * A plan that has not run out.
+     *
+     * token.get('paidUntil', 0) rather than token.paidUntil: reading a claim
+     * that is absent aborts the whole expression, and an aborted expression is
+     * not something to leave load-bearing. `is int` is the other half — a date
+     * written into the claim as an ISO string instead of a number would
+     * otherwise be compared against a number, and the CLI is the only thing
+     * standing between those two outcomes.
+     *
+     * Both mistakes now land on the same side: no write.
+     */
+    function paid() {
+      return request.auth.token.get('paidUntil', 0) is int
+        && request.time.toMillis() < request.auth.token.get('paidUntil', 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // A shop's own data
+    // ---------------------------------------------------------------------
+
+    /**
+     * Reads outlive the plan on purpose.
+     *
+     * A shop whose subscription has lapsed can still open its books, look up a
+     * debt and take a full backup — it simply cannot record anything new.
+     * Holding a shop's own history hostage would be the wrong way to ask for
+     * money, and it would make "let me export my data first" impossible.
+     */
+    match /shops/{shopId}/{document=**} {
+      allow read: if owns(shopId);
+      allow write: if owns(shopId) && paid();
+    }
+
+    /**
+     * The shop's own record — its name, plan and dates.
+     *
+     * `get` only, never `list`: list would let one shop enumerate every other
+     * shop on the platform. Writes are refused outright; the admin CLI uses the
+     * Admin SDK, which does not pass through these rules at all.
+     */
+    match /shops/{shopId} {
+      allow get: if owns(shopId);
+      allow write: if false;
+    }
+
+    // ---------------------------------------------------------------------
+    // Everything else, including the pre-SaaS root collections
+    // ---------------------------------------------------------------------
+    //
+    // There is deliberately no rule for /products, /sales, /customers and the
+    // rest at the root. No rule means denied, for every client, always — while
+    // the Admin SDK can still read them. That is exactly what makes those
+    // collections the rollback: the migration copies out of them and never
+    // writes to or deletes from them, so aborting the cutover is a matter of
+    // putting the old rules and the old bundle back.
+    //
+    // The shared barcode catalogue is not here yet on purpose. It is the only
+    // client-writable collection outside a shop and the only cross-tenant read
+    // surface in the design, so it ships on its own day, not on cutover day.
   }
 }

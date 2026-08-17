@@ -11,6 +11,7 @@ import {
   increment,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import type { Purchase } from '@/types/models'
 
 const PURCHASES = 'purchases'
@@ -58,7 +59,7 @@ export function usePurchases() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const q = query(collection(db, PURCHASES), orderBy('date', 'desc'))
+    const q = query(collection(db, shopPath(PURCHASES)), orderBy('date', 'desc'))
     return onSnapshot(
       q,
       (snap) => {
@@ -85,7 +86,7 @@ export async function recordPurchase(input: RecordPurchaseInput) {
   const now = Date.now()
   const batch = writeBatch(db)
 
-  const purchaseRef = doc(collection(db, PURCHASES))
+  const purchaseRef = doc(collection(db, shopPath(PURCHASES)))
   batch.set(purchaseRef, {
     supplier: input.supplier || undefined,
     reference: input.reference || undefined,
@@ -119,7 +120,7 @@ export async function recordPurchase(input: RecordPurchaseInput) {
   }
 
   for (const [productId, agg] of perProduct) {
-    batch.update(doc(db, PRODUCTS, productId), {
+    batch.update(doc(db, shopPath(PRODUCTS), productId), {
       quantity: increment(agg.qty),
       // Only a real price refreshes the cost. A blank or zero cost field would
       // otherwise wipe it permanently, and every later sale would snapshot
@@ -138,7 +139,7 @@ export async function recordPurchase(input: RecordPurchaseInput) {
 /** Records money handed to the supplier against an existing invoice. */
 export async function settlePurchase(id: string, amount: number) {
   if (amount <= 0) return
-  await updateDoc(doc(db, PURCHASES, id), {
+  await updateDoc(doc(db, shopPath(PURCHASES), id), {
     paid: increment(amount),
     updatedAt: Date.now(),
   })
@@ -170,7 +171,7 @@ export async function removePurchase(purchase: Purchase) {
   for (let i = 0; i < entries.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db)
     for (const [productId, agg] of entries.slice(i, i + BATCH_LIMIT)) {
-      batch.update(doc(db, PRODUCTS, productId), {
+      batch.update(doc(db, shopPath(PRODUCTS), productId), {
         quantity: increment(-agg.qty),
         boughtQty: increment(-agg.qty),
         boughtCost: increment(-agg.cost),
@@ -180,5 +181,5 @@ export async function removePurchase(purchase: Purchase) {
     await batch.commit()
   }
 
-  await deleteDoc(doc(db, PURCHASES, purchase.id))
+  await deleteDoc(doc(db, shopPath(PURCHASES), purchase.id))
 }

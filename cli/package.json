@@ -1,0 +1,14 @@
+{
+  "name": "lib-manager-cli",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Local admin CLI: provision shops, manage plans, migrate legacy data. Never shipped to the browser.",
+  "bin": { "lib": "./lib.mjs" },
+  "scripts": {
+    "lib": "node lib.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.2"
+  }
+}

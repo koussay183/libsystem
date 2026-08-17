@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { doc, onSnapshot, setDoc } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
 import type { ShopSettings } from '@/types/models'
 
-const REF = () => doc(db, 'settings', 'shop')
+const REF = () => doc(db, shopPath('settings'), 'shop')
 
 export const DEFAULT_SHOP: ShopSettings = {
   name: 'Librairie',

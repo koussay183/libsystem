@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore'
 import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
 import type { Sale, SaleItem, PaymentMode } from '@/types/models'
 
@@ -70,7 +71,7 @@ export function useSales(max = 200) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const q = query(collection(db, SALES), orderBy('date', 'desc'), limit(max))
+    const q = query(collection(db, shopPath(SALES)), orderBy('date', 'desc'), limit(max))
     return onSnapshot(
       q,
       (snap) => {
@@ -83,6 +84,48 @@ export function useSales(max = 200) {
       },
     )
   }, [max])
+
+  return { sales, loading, error }
+}
+
+/**
+ * The tickets from a date onwards, newest first, with a hard ceiling.
+ *
+ * The money page used to ask for a COUNT — the newest 500, 1500, 4000 or 12000
+ * tickets depending on the period on screen. Two things were wrong with that.
+ * The query changes with the period, so clicking through the four of them
+ * issued four separate reads of up to eighteen thousand documents between
+ * them; and asking for the newest twelve thousand tickets to report on today
+ * reads a year of history to add up an afternoon.
+ *
+ * A range on the same field it is ordered by needs no composite index, and
+ * reads only the tickets the period actually covers. The ceiling stays as a
+ * backstop so a shop with years of history can never issue an unbounded read.
+ */
+export function useSalesSince(since: number, cap: number) {
+  const [sales, setSales] = useState<Sale[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    const q = query(
+      collection(db, shopPath(SALES)),
+      where('date', '>=', since),
+      orderBy('date', 'desc'),
+      limit(cap),
+    )
+    return onSnapshot(
+      q,
+      (snap) => {
+        setSales(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Sale, 'id'>) })))
+        setLoading(false)
+      },
+      (err) => {
+        setError(err.message)
+        setLoading(false)
+      },
+    )
+  }, [since, cap])
 
   return { sales, loading, error }
 }
@@ -101,7 +144,7 @@ export function useTodaySales() {
     const start = new Date()
     start.setHours(0, 0, 0, 0)
     const q = query(
-      collection(db, SALES),
+      collection(db, shopPath(SALES)),
       where('date', '>=', start.getTime()),
       orderBy('date', 'desc'),
     )
@@ -159,7 +202,7 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
   const ticketNo = makeTicketNo(now)
   const batch = writeBatch(db)
 
-  const saleRef = doc(collection(db, SALES))
+  const saleRef = doc(collection(db, shopPath(SALES)))
   batch.set(saleRef, {
     ticketNo,
     items: input.items,
@@ -192,7 +235,7 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
   }
 
   for (const [productId, agg] of perProduct) {
-    batch.update(doc(db, PRODUCTS, productId), {
+    batch.update(doc(db, shopPath(PRODUCTS), productId), {
       quantity: increment(-agg.qty),
       soldQty: increment(agg.qty),
       soldRevenue: increment(agg.revenue),
@@ -205,7 +248,7 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
   }
 
   if (unpaid > 0 && input.customerId) {
-    batch.set(doc(collection(db, ENTRIES)), {
+    batch.set(doc(collection(db, shopPath(ENTRIES))), {
       customerId: input.customerId,
       type: 'debit',
       amount: unpaid,
@@ -215,7 +258,7 @@ export async function recordSale(input: RecordSaleInput): Promise<RecordedSale> 
       date: now,
       createdAt: now,
     })
-    batch.update(doc(db, CUSTOMERS, input.customerId), {
+    batch.update(doc(db, shopPath(CUSTOMERS), input.customerId), {
       balance: increment(unpaid),
       updatedAt: now,
     })

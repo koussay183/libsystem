@@ -16,6 +16,7 @@ import {
   deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import { track } from '@/lib/syncStatus'
 import type { Customer, CreditEntry } from '@/types/models'
@@ -33,7 +34,7 @@ export interface CustomerInput {
 
 /** Live list of all customers, ordered by name — one shared subscription. */
 const customersStore = createLiveCollection<Customer>(() =>
-  query(collection(db, CUSTOMERS), orderBy('name')),
+  query(collection(db, shopPath(CUSTOMERS)), orderBy('name')),
 )
 
 export function useCustomers() {
@@ -57,7 +58,7 @@ export function useCustomer(id: string | undefined) {
       return
     }
     return onSnapshot(
-      doc(db, CUSTOMERS, id),
+      doc(db, shopPath(CUSTOMERS), id),
       (snap) => {
         setCustomer(
           snap.exists() ? { id: snap.id, ...(snap.data() as Omit<Customer, 'id'>) } : null,
@@ -88,7 +89,7 @@ export function useCustomerLedger(id: string | undefined) {
       setLoading(false)
       return
     }
-    const q = query(collection(db, ENTRIES), where('customerId', '==', id))
+    const q = query(collection(db, shopPath(ENTRIES)), where('customerId', '==', id))
     return onSnapshot(
       q,
       (snap) => {
@@ -126,7 +127,7 @@ export function useAllCreditEntries(max = 3000) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    const q = query(collection(db, ENTRIES), orderBy('date', 'desc'), limit(max))
+    const q = query(collection(db, shopPath(ENTRIES)), orderBy('date', 'desc'), limit(max))
     return onSnapshot(
       q,
       (snap) => {
@@ -156,7 +157,7 @@ export function useAllCreditEntries(max = 3000) {
  */
 export function createCustomer(input: CustomerInput): string {
   const now = Date.now()
-  const ref = doc(collection(db, CUSTOMERS))
+  const ref = doc(collection(db, shopPath(CUSTOMERS)))
   void track(
     setDoc(ref, {
       name: input.name,
@@ -175,7 +176,7 @@ export async function updateCustomer(id: string, input: CustomerInput) {
   // deleteField() removes a cleared optional field. Plain undefined would be
   // silently ignored (db is created with ignoreUndefinedProperties), leaving
   // the stale value in place.
-  await updateDoc(doc(db, CUSTOMERS, id), {
+  await updateDoc(doc(db, shopPath(CUSTOMERS), id), {
     name: input.name,
     phone: input.phone ? input.phone : deleteField(),
     cin: input.cin ? input.cin : deleteField(),
@@ -203,12 +204,12 @@ export class OutstandingBalanceError extends Error {
  * second ago still blocks the delete.
  */
 export async function removeCustomer(id: string) {
-  const snap = await getDoc(doc(db, CUSTOMERS, id))
+  const snap = await getDoc(doc(db, shopPath(CUSTOMERS), id))
   const balance = snap.exists() ? ((snap.data() as Customer).balance ?? 0) : 0
   if (balance !== 0) throw new OutstandingBalanceError(balance)
 
   const entries = await getDocs(
-    query(collection(db, ENTRIES), where('customerId', '==', id)),
+    query(collection(db, shopPath(ENTRIES)), where('customerId', '==', id)),
   )
   const refs = entries.docs.map((d) => d.ref)
   const CHUNK = 450
@@ -218,7 +219,7 @@ export async function removeCustomer(id: string) {
     await batch.commit()
   }
   const finalBatch = writeBatch(db)
-  finalBatch.delete(doc(db, CUSTOMERS, id))
+  finalBatch.delete(doc(db, shopPath(CUSTOMERS), id))
   await finalBatch.commit()
 }
 
@@ -244,7 +245,7 @@ export async function addCreditEntry(
   }
   const now = Date.now()
   const batch = writeBatch(db)
-  batch.set(doc(collection(db, ENTRIES)), {
+  batch.set(doc(collection(db, shopPath(ENTRIES))), {
     customerId,
     type,
     amount: amountMinor,
@@ -253,7 +254,7 @@ export async function addCreditEntry(
     createdAt: now,
   })
   const delta = type === 'debit' ? amountMinor : -amountMinor
-  batch.update(doc(db, CUSTOMERS, customerId), {
+  batch.update(doc(db, shopPath(CUSTOMERS), customerId), {
     balance: increment(delta),
     updatedAt: now,
   })

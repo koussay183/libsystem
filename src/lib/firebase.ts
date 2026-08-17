@@ -1,4 +1,5 @@
 import { initializeApp } from 'firebase/app'
+import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth'
 import {
   initializeFirestore,
   memoryLocalCache,
@@ -30,13 +31,19 @@ export const app = initializeApp(
     : { apiKey: 'not-configured', projectId: 'not-configured', appId: 'not-configured' },
 )
 
-// Firebase Authentication is deliberately NOT loaded. The app is gated by the
-// static password in src/auth/AuthContext.tsx (demo mode), so pulling in
-// firebase/auth would cost ~35 kB gzipped on the critical path for an export
-// nothing reads. Put the import, `export const auth = getAuth(app)` and a
-// setPersistence(auth, browserLocalPersistence) call back here — and
-// 'firebase/auth' back into vite.config.ts's manualChunks — if real accounts
-// ever come back.
+/**
+ * Real accounts, remembered on the device.
+ *
+ * browserLocalPersistence is what lets the shop open the till in the morning
+ * without signing in again, and — because the ID token is cached with it — what
+ * lets them do it before the line is up. See src/auth/AuthContext.tsx for why
+ * nothing in the startup path is allowed to wait on the network.
+ *
+ * setPersistence is not awaited: it resolves against IndexedDB, and the default
+ * is already local, so awaiting it would only delay the first paint.
+ */
+export const auth = getAuth(app)
+void setPersistence(auth, browserLocalPersistence).catch(() => {})
 
 // ignoreUndefinedProperties lets us pass optional fields as `undefined`
 // (e.g. an empty "category") without Firestore throwing.

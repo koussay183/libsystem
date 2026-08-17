@@ -19,15 +19,19 @@ import { useAuth } from '@/auth/AuthContext'
 import { LanguageToggle } from '@/components/LanguageToggle'
 
 /**
- * One password field. The shop is opened with a single shared password — no
- * email, no jargon for a non-technical owner. (See AuthContext for what this
- * does and does not protect.)
+ * Email and password, one account per shop.
+ *
+ * Accounts are not created here and there is no "sign up" — the owner of the
+ * product creates them from the admin CLI. A shop that cannot get in has to
+ * ring him, which is exactly the intended flow for a paid product with a
+ * handful of customers.
  */
 export function LoginPage() {
   const { t } = useTranslation()
   const { login } = useAuth()
   const navigate = useNavigate()
 
+  const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
@@ -37,10 +41,18 @@ export function LoginPage() {
     setError('')
     setBusy(true)
     try {
-      await login(password)
+      await login(email, password)
       navigate('/', { replace: true })
-    } catch {
-      setError(t('auth.wrongPassword'))
+    } catch (err) {
+      // Firebase's codes, said in words a shopkeeper can act on. Wrong email
+      // and wrong password are deliberately the SAME message: telling an
+      // attacker which of the two was right is how account lists get
+      // enumerated.
+      const code = (err as { code?: string } | null)?.code ?? ''
+      if (code === 'auth/network-request-failed') setError(t('auth.offline'))
+      else if (code === 'auth/too-many-requests') setError(t('auth.tooMany'))
+      else if (code === 'auth/user-disabled') setError(t('auth.disabled'))
+      else setError(t('auth.invalid'))
     } finally {
       setBusy(false)
     }
@@ -71,18 +83,33 @@ export function LoginPage() {
           <Card.Body p={7}>
             <Heading size="2xl">{t('auth.title')}</Heading>
             <Text mt={1} mb={6} color="fg.muted">
-              {t('auth.passwordPrompt')}
+              {t('auth.subtitle')}
             </Text>
 
             <form onSubmit={submit}>
               <Stack gap={4}>
+                <Field.Root>
+                  <Field.Label>{t('auth.email')}</Field.Label>
+                  <Input
+                    size="xl"
+                    type="email"
+                    inputMode="email"
+                    autoComplete="username"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    autoFocus
+                    value={email}
+                    onChange={(e: ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
+                    required
+                  />
+                </Field.Root>
+
                 <Field.Root>
                   <Field.Label>{t('auth.password')}</Field.Label>
                   <Input
                     size="xl"
                     type="password"
                     autoComplete="current-password"
-                    autoFocus
                     value={password}
                     onChange={(e: ChangeEvent<HTMLInputElement>) =>
                       setPassword(e.target.value)
@@ -109,6 +136,10 @@ export function LoginPage() {
                 >
                   {busy ? t('auth.signingIn') : t('auth.signIn')}
                 </Button>
+
+                <Text fontSize="sm" color="fg.subtle" textAlign="center">
+                  {t('auth.noAccountHint')}
+                </Text>
               </Stack>
             </form>
           </Card.Body>

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -53,7 +53,7 @@ import {
 } from 'recharts'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate, formatPercent } from '@/lib/format'
-import { useSales } from '@/features/sales/useSales'
+import { useSalesSince } from '@/features/sales/useSales'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { useProducts } from '@/features/stock/useProducts'
@@ -61,7 +61,7 @@ import { DashboardKpi } from './DashboardKpi'
 import { FixGroupCard } from './FixGroupCard'
 import { useDashboardStats } from './useDashboardStats'
 import type { FixKind } from './useDashboardStats'
-import { PERIODS, axisInterval, salesCapFor } from './periods'
+import { PERIODS, axisInterval, salesCapFor, previousRange } from './periods'
 import type { Period } from './periods'
 
 /** Chart colours, matching the app's brand and "sortie" orange. */
@@ -110,7 +110,18 @@ export function DashboardPage() {
   }))
   const { period, now } = view
 
-  const { sales, loading: salesLoading, error: salesError } = useSales(salesCapFor(period))
+  /**
+   * The stats compare the period against the one before it, so the earliest
+   * ticket anything on this page can need is the start of the PREVIOUS period.
+   * Asking for exactly that, instead of "the newest N tickets", is the
+   * difference between reading two days to report on today and reading a year.
+   */
+  const since = useMemo(() => previousRange(period, now).start, [period, now])
+  const {
+    sales,
+    loading: salesLoading,
+    error: salesError,
+  } = useSalesSince(since, salesCapFor(period))
   const { purchases, loading: purchasesLoading, error: purchasesError } = usePurchases()
   const { customers, error: customersError } = useCustomers()
   const { entries: creditEntries } = useAllCreditEntries()

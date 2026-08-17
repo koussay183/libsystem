@@ -23,7 +23,7 @@ export default defineConfig({
         // the browser keeps the rest from cache.
         manualChunks: {
           react: ['react', 'react-dom', 'react-dom/client', 'react-router-dom'],
-          firebase: ['firebase/app', 'firebase/firestore'],
+          firebase: ['firebase/app', 'firebase/firestore', 'firebase/auth'],
           chakra: ['@chakra-ui/react', '@emotion/react'],
           i18n: ['i18next', 'react-i18next'],
           // Charting is only ever needed by the dashboard. Pinning it to its

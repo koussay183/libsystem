@@ -21,12 +21,23 @@ export interface SyncState {
   pending: number
   /** When the queue was last known to be completely empty. */
   syncedAt: number | null
+  /**
+   * A write came back refused rather than merely delayed.
+   *
+   * Offline writes are normal here and are not errors. This is the other
+   * thing: the server said no — the plan lapsed, or the account no longer
+   * owns this shop — and Firestore's answer is to roll the change back
+   * locally. Without this flag that rollback is completely silent: the article
+   * appears, then disappears, and nothing on screen explains why.
+   */
+  denied: boolean
 }
 
 let state: SyncState = {
   online: typeof navigator === 'undefined' ? true : navigator.onLine,
   pending: 0,
   syncedAt: null,
+  denied: false,
 }
 
 const watchers = new Set<() => void>()
@@ -69,8 +80,21 @@ export function track<T>(promise: Promise<T>): Promise<T> {
     const pending = Math.max(0, state.pending - 1)
     publish({ pending, syncedAt: pending === 0 ? Date.now() : state.syncedAt })
   }
-  promise.then(done, done)
+  promise.then(done, (err: unknown) => {
+    done()
+    const code = (err as { code?: string } | null)?.code
+    if (code === 'permission-denied' || code === 'unauthenticated') {
+      publish({ denied: true })
+    }
+  })
+  // Returned untouched on purpose: every caller keeps awaiting exactly what it
+  // awaited before, and the ones that deliberately ignore rejection still do.
   return promise
+}
+
+/** Called once the owner has been told. */
+export function clearDenied() {
+  if (state.denied) publish({ denied: false })
 }
 
 export const syncStore = {

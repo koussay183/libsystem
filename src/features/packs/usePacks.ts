@@ -9,6 +9,7 @@ import {
   deleteDoc,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import { track } from '@/lib/syncStatus'
 import type { Pack, PackInput, PackItem, Product } from '@/types/models'
@@ -17,7 +18,7 @@ import type { Minor } from '@/lib/money'
 const COL = 'packs'
 
 const packsStore = createLiveCollection<Pack>(() =>
-  query(collection(db, COL), orderBy('name')),
+  query(collection(db, shopPath(COL)), orderBy('name')),
 )
 
 export function usePacks() {
@@ -37,19 +38,19 @@ export function usePacks() {
  */
 export function createPack(input: PackInput): string {
   const now = Date.now()
-  const ref = doc(collection(db, COL))
+  const ref = doc(collection(db, shopPath(COL)))
   void track(setDoc(ref, { ...input, createdAt: now, updatedAt: now })).catch(() => {})
   return ref.id
 }
 
 export async function updatePack(id: string, input: PackInput) {
   await track(
-    updateDoc(doc(db, COL, id), { ...input, updatedAt: Date.now() }),
+    updateDoc(doc(db, shopPath(COL), id), { ...input, updatedAt: Date.now() }),
   )
 }
 
 export async function removePack(id: string) {
-  await track(deleteDoc(doc(db, COL, id)))
+  await track(deleteDoc(doc(db, shopPath(COL), id)))
 }
 
 // ---------------------------------------------------------------------------

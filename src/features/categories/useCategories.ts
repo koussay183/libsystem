@@ -12,6 +12,7 @@ import {
   doc,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import type { Category } from '@/types/models'
 
@@ -23,7 +24,7 @@ const BATCH_LIMIT = 400
 
 /** Live list of managed product categories, ordered by name. */
 const categoriesStore = createLiveCollection<Category>(() =>
-  query(collection(db, COL), orderBy('name')),
+  query(collection(db, shopPath(COL)), orderBy('name')),
 )
 
 export function useCategories() {
@@ -38,7 +39,7 @@ export function useCategories() {
 }
 
 export async function createCategory(name: string): Promise<string> {
-  const ref = await addDoc(collection(db, COL), {
+  const ref = await addDoc(collection(db, shopPath(COL)), {
     name: name.trim(),
     createdAt: Date.now(),
   })
@@ -54,10 +55,10 @@ export async function renameCategory(id: string, from: string, to: string) {
   const next = to.trim()
   if (next === '' || next === from) return
 
-  await updateDoc(doc(db, COL, id), { name: next })
+  await updateDoc(doc(db, shopPath(COL), id), { name: next })
 
   const affected = await getDocs(
-    query(collection(db, PRODUCTS), where('category', '==', from)),
+    query(collection(db, shopPath(PRODUCTS)), where('category', '==', from)),
   )
   for (let i = 0; i < affected.docs.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db)
@@ -71,12 +72,12 @@ export async function renameCategory(id: string, from: string, to: string) {
 /** How many products currently sit in this category. */
 export async function countProductsInCategory(name: string): Promise<number> {
   const snap = await getDocs(
-    query(collection(db, PRODUCTS), where('category', '==', name)),
+    query(collection(db, shopPath(PRODUCTS)), where('category', '==', name)),
   )
   return snap.size
 }
 
 /** Removes the category. Products keep their label; they just stop matching. */
 export async function removeCategory(id: string) {
-  await deleteDoc(doc(db, COL, id))
+  await deleteDoc(doc(db, shopPath(COL), id))
 }

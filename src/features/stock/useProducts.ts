@@ -15,6 +15,7 @@ import {
   increment,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import { track } from '@/lib/syncStatus'
 import type { Product, ProductInput } from '@/types/models'
@@ -33,7 +34,7 @@ const IN_LIMIT = 30
  * instead of opening one each.
  */
 const productsStore = createLiveCollection<Product>(() =>
-  query(collection(db, COL), orderBy('name')),
+  query(collection(db, shopPath(COL)), orderBy('name')),
 )
 
 export function useProducts() {
@@ -59,7 +60,7 @@ export function useProducts() {
  */
 export function createProduct(input: ProductInput): string {
   const now = Date.now()
-  const ref = doc(collection(db, COL))
+  const ref = doc(collection(db, shopPath(COL)))
   void track(
     setDoc(ref, { ...input, createdAt: now, updatedAt: now }),
   ).catch(() => {
@@ -74,7 +75,7 @@ export async function updateProduct(id: string, input: ProductInput) {
   // The lifetime aggregates (soldQty/soldRevenue/soldCost/boughtQty/boughtCost/
   // lastSoldAt) are deliberately absent: the till and the purchase flow own
   // them, and writing them here would destroy the profit report.
-  await updateDoc(doc(db, COL, id), {
+  await updateDoc(doc(db, shopPath(COL), id), {
     barcode: input.barcode,
     name: input.name,
     category: input.category ?? deleteField(),
@@ -107,7 +108,7 @@ export async function createProducts(inputs: ProductInput[]): Promise<number> {
   for (let i = 0; i < inputs.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db)
     for (const input of inputs.slice(i, i + BATCH_LIMIT)) {
-      batch.set(doc(collection(db, COL)), { ...input, createdAt: now, updatedAt: now })
+      batch.set(doc(collection(db, shopPath(COL))), { ...input, createdAt: now, updatedAt: now })
     }
     await batch.commit()
   }
@@ -121,7 +122,7 @@ export async function createProducts(inputs: ProductInput[]): Promise<number> {
 export async function addStock(id: string, delta: number) {
   const units = Math.trunc(delta)
   if (!Number.isFinite(units) || units === 0) return
-  await updateDoc(doc(db, COL, id), {
+  await updateDoc(doc(db, shopPath(COL), id), {
     quantity: increment(units),
     updatedAt: Date.now(),
   })
@@ -129,14 +130,14 @@ export async function addStock(id: string, delta: number) {
 
 /** Corrects the count to what was actually found on the shelf (inventory). */
 export async function setStock(id: string, quantity: number) {
-  await updateDoc(doc(db, COL, id), {
+  await updateDoc(doc(db, shopPath(COL), id), {
     quantity: Math.max(0, Math.trunc(quantity)),
     updatedAt: Date.now(),
   })
 }
 
 export async function removeProduct(id: string) {
-  await deleteDoc(doc(db, COL, id))
+  await deleteDoc(doc(db, shopPath(COL), id))
 }
 
 /** The product a barcode already belongs to — enough to name it in an error. */
@@ -150,7 +151,7 @@ export async function findProductByBarcode(barcode: string): Promise<BarcodeOwne
   const code = barcode.trim()
   if (code === '') return null
   const snap = await getDocs(
-    query(collection(db, COL), where('barcode', '==', code), limit(1)),
+    query(collection(db, shopPath(COL)), where('barcode', '==', code), limit(1)),
   )
   const found = snap.docs[0]
   if (!found) return null
@@ -168,7 +169,7 @@ export async function findProductsByBarcodes(
   const owners = new Map<string, BarcodeOwner>()
   for (let i = 0; i < codes.length; i += IN_LIMIT) {
     const snap = await getDocs(
-      query(collection(db, COL), where('barcode', 'in', codes.slice(i, i + IN_LIMIT))),
+      query(collection(db, shopPath(COL)), where('barcode', 'in', codes.slice(i, i + IN_LIMIT))),
     )
     for (const d of snap.docs) {
       const data = d.data() as Omit<Product, 'id'>

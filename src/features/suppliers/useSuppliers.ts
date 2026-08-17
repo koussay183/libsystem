@@ -10,6 +10,7 @@ import {
   deleteField,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import type { Supplier } from '@/types/models'
 
@@ -23,7 +24,7 @@ export interface SupplierInput {
 
 /** Live list of managed suppliers (fournisseurs), ordered by name. */
 const suppliersStore = createLiveCollection<Supplier>(() =>
-  query(collection(db, COL), orderBy('name')),
+  query(collection(db, shopPath(COL)), orderBy('name')),
 )
 
 export function useSuppliers() {
@@ -37,7 +38,7 @@ export function useSuppliers() {
 
 export async function createSupplier(input: SupplierInput): Promise<string> {
   const now = Date.now()
-  const ref = await addDoc(collection(db, COL), {
+  const ref = await addDoc(collection(db, shopPath(COL)), {
     name: input.name.trim(),
     phone: input.phone || undefined,
     note: input.note || undefined,
@@ -48,7 +49,7 @@ export async function createSupplier(input: SupplierInput): Promise<string> {
 }
 
 export async function updateSupplier(id: string, input: SupplierInput) {
-  await updateDoc(doc(db, COL, id), {
+  await updateDoc(doc(db, shopPath(COL), id), {
     name: input.name.trim(),
     phone: input.phone ? input.phone : deleteField(),
     note: input.note ? input.note : deleteField(),
@@ -57,5 +58,5 @@ export async function updateSupplier(id: string, input: SupplierInput) {
 }
 
 export async function removeSupplier(id: string) {
-  await deleteDoc(doc(db, COL, id))
+  await deleteDoc(doc(db, shopPath(COL), id))
 }

@@ -247,6 +247,19 @@ export const fr = {
     genericError: 'Une erreur est survenue. Réessayez.',
     passwordPrompt: 'Entrez le mot de passe pour ouvrir la caisse',
     wrongPassword: 'Mot de passe incorrect',
+    offline: 'Pas de connexion — impossible de vérifier le compte',
+    tooMany: 'Trop d’essais. Attendez une minute puis réessayez.',
+    disabled: 'Ce compte est désactivé. Contactez votre fournisseur.',
+    noAccountHint: 'Pas de compte ? Votre fournisseur vous en crée un.',
+    noShopTitle: 'Compte pas encore activé',
+    noShopBody:
+      'Ce compte existe mais n’est rattaché à aucune boutique, donc il n’y a rien à ouvrir.',
+    noShopHint: 'Contactez votre fournisseur : il l’active en une minute.',
+    lapsedTitle: 'Abonnement expiré',
+    lapsedBody:
+      'Vous pouvez tout consulter et faire une sauvegarde, mais rien ne peut être enregistré tant que l’abonnement n’est pas renouvelé.',
+    deniedWrite:
+      'Enregistrement refusé par le serveur. Abonnement expiré ou session à renouveler — reconnectez-vous.',
   },
   setup: {
     title: 'Configuration requise',

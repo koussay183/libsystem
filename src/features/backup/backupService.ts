@@ -1,5 +1,6 @@
 import { collection, getDocs, doc, writeBatch } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { shopPath } from '@/lib/tenant'
 
 /** Every collection the app owns — the whole shop lives in these. */
 export const BACKUP_COLLECTIONS = [
@@ -31,7 +32,7 @@ export interface BackupFile {
 export async function exportAll(): Promise<BackupFile> {
   const collections: Record<string, BackupRow[]> = {}
   for (const name of BACKUP_COLLECTIONS) {
-    const snap = await getDocs(collection(db, name))
+    const snap = await getDocs(collection(db, shopPath(name)))
     collections[name] = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as BackupRow)
   }
   return {
@@ -148,7 +149,7 @@ export async function restoreAll(backup: BackupFile): Promise<number> {
       for (const row of slice) {
         const { id, ...data } = row
         if (!id) continue
-        batch.set(doc(db, name, id), data)
+        batch.set(doc(db, shopPath(name), id), data)
       }
       await batch.commit()
       written += slice.length

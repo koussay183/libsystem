@@ -74,3 +74,30 @@ export function generateInStoreCode(taken: Iterable<unknown>): string {
   // fallback simply never returns nothing.
   return `2${Date.now()}`.slice(0, 13)
 }
+
+/**
+ * The id a barcode gets in the SHARED catalogue, or null when it may not have
+ * one.
+ *
+ * Deliberately far stricter than {@link looksLikeCode}, for three separate
+ * reasons, each of which has already bitten something:
+ *
+ *  - It becomes a Firestore document id. An empty string, a '/', a '.' or a
+ *    name like "cahier 100p/24x32" makes doc() throw synchronously — and the
+ *    call sites that would use this sit on the scan path, where a throw takes
+ *    the whole till down with no error boundary to catch it.
+ *  - Codes minted by {@link generateInStoreCode} start with 2 and are checked
+ *    for collisions against ONE shop's codes only, so by construction two
+ *    shops mint the same one. They must never enter a shared namespace.
+ *  - Case: Firestore ids are byte-exact, and an ISBN-10 check digit is
+ *    literally the letter X. Numeric-only sidesteps the question entirely.
+ *
+ * 8 to 14 digits covers EAN-8, UPC-A, EAN-13 and ITF-14, which is every code
+ * a real supplier prints.
+ */
+export function catalogKey(value: unknown): string | null {
+  const key = loose(codeOf(value))
+  if (!/^[0-9]{8,14}$/.test(key)) return null
+  if (/^2[0-9]{12}$/.test(key)) return null
+  return key
+}

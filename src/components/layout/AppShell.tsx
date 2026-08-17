@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next'
 import type { LucideIcon } from 'lucide-react'
 import {
   LogOut,
+  ShieldAlert,
   BookMarked,
   Package,
   Boxes,
@@ -35,6 +36,7 @@ import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
 import { SyncStatus, UpdateBanner } from '@/components/SyncStatus'
+import { syncStore, clearDenied } from '@/lib/syncStatus'
 
 interface NavItem {
   to: string
@@ -72,7 +74,8 @@ const VIEWPORT_ROUTES = new Set(['/caisse'])
  */
 export function AppShell() {
   const { t } = useTranslation()
-  const { logout } = useAuth()
+  const { logout, lapsed } = useAuth()
+  const sync = useSyncExternalStore(syncStore.subscribe, syncStore.getSnapshot, syncStore.getSnapshot)
   const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -325,6 +328,53 @@ export function AppShell() {
         h={fullHeight ? '100dvh' : undefined}
       >
         <UpdateBanner />
+
+        {/*
+          Two things the shop must never meet in silence.
+
+          A lapsed plan makes every write fail, and Firestore's answer to a
+          refused write is to roll the change back locally — the article
+          appears, then vanishes, with nothing on screen to explain it. And a
+          refused write can also mean the session simply needs renewing. Either
+          way the answer is a sentence, not a disappearing row.
+        */}
+        {lapsed && (
+          <Flex
+            align="center"
+            gap={3}
+            px={{ base: 3, md: 6 }}
+            py={2}
+            bg="orange.solid"
+            color="orange.contrast"
+            flexShrink={0}
+          >
+            <ShieldAlert size={20} />
+            <Box minW={0}>
+              <Text fontWeight="bold">{t('auth.lapsedTitle')}</Text>
+              <Text fontSize="sm">{t('auth.lapsedBody')}</Text>
+            </Box>
+          </Flex>
+        )}
+
+        {sync.denied && !lapsed && (
+          <Flex
+            align="center"
+            gap={3}
+            px={{ base: 3, md: 6 }}
+            py={2}
+            bg="red.solid"
+            color="red.contrast"
+            flexShrink={0}
+          >
+            <ShieldAlert size={20} />
+            <Text minW={0} fontWeight="semibold">
+              {t('auth.deniedWrite')}
+            </Text>
+            <Button size="sm" variant="outline" ms="auto" flexShrink={0} onClick={clearDenied}>
+              {t('common.close')}
+            </Button>
+          </Flex>
+        )}
         <Flex
           as="header"
           position="sticky"

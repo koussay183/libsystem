@@ -1,0 +1,24 @@
+rules_version = '2';
+
+// ⚠️  ROLLBACK ONLY — THIS FILE RE-OPENS THE DATABASE TO THE WHOLE INTERNET.
+//
+// This is the permissive rule set the app ran under before it became a SaaS.
+// It exists for exactly one purpose: aborting the cutover. If the new bundle
+// turns out to be broken at the till and the shop cannot sell, deploying this
+// puts the old app — which reads the ROOT collections — back in business
+// immediately:
+//
+//     firebase deploy --only firestore:rules   (with firebase.json pointed here)
+//
+// While it is deployed, anyone who can read the API key out of the app bundle
+// can read, change or delete every document in the project. That is an
+// accepted risk for the few minutes of an abort, and for nothing else.
+//
+// PUT firestore.rules BACK THE MOMENT THE ABORT IS OVER.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}
