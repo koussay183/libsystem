@@ -169,8 +169,150 @@ token — which is stronger, since it tests what is actually deployed:
 | the shop reads its own record | 200 |
 | **the shop extends its own plan** | **403** |
 | the shop invents a new shop record | 403 |
+| a shop `get`s one catalogue entry | 200 |
+| **a shop `list`s the catalogue** | **403** |
+| a shop writes, or invents, a catalogue entry | 403 |
+| a stranger with only the bundled key reads, or lists, the catalogue | 403 |
+| a shop writes its own `catalog_contributions` | 200 |
+| **a shop reads, or writes, another shop's contributions** | **403** |
 
-Re-run that after any change to `firestore.rules`.
+15/15 as of the catalogue deploy. Re-run it after any change to
+`firestore.rules`. The script is not in the repo because it needs a throwaway
+shop's password; the pattern is: `shops:create` a `TEST — delete me` shop, sign
+in over `identitytoolkit` with the API key from `.env.local`, walk the table with
+`fetch`, then delete the account **and** its documents — subcollections first,
+since deleting a document leaves its children orphaned.
+
+---
+
+## The shared barcode catalogue
+
+`/catalog` is the only path outside `shops/{shopId}/…`, and it is **read-only for
+every client**. It holds what a manufacturer's barcode is called. No price, no
+cost, no category, no shop id.
+
+```
+/catalog/{code}            get: signed in AND carries a shopId claim
+                           list: false        ← walking it is the whole risk
+                           write: false       ← for everyone, always
+/shops/{id}/catalog_contributions/{code}      the shop's own subtree
+```
+
+A shop publishes by writing into **its own subtree**, and `catalog:harvest`
+promotes those with the Admin SDK. That indirection is the entire security
+design: with no client-writable root collection there is nothing to flood,
+nothing to poison, and no per-account bookkeeping needed to make `confirms`
+trustworthy. It costs immediacy, which was never the valuable part.
+
+```bash
+node lib.mjs catalog:seed --shop <shopId>            # publish a shop's GTIN names
+node lib.mjs catalog:seed --shop <shopId> --cnp      # ALSO the 6-digit CNP books
+node lib.mjs catalog:harvest [--shop <id>] [--clear] # promote what shops offered
+node lib.mjs catalog:fix <code> --name "..."         # settle a disagreement
+node lib.mjs catalog:purge <code>                    # the remedy of last resort
+```
+
+**The first writer is authoritative; everything after it is evidence.** An absent
+code is created. The same name increments `confirms` and touches nothing else. A
+*different* name is recorded under `alts` with a count and **does not overwrite**
+— a shop calling a pen "Bic bleu" is not evidence that "STYLO BIC CRISTAL" is
+wrong, and the last run of a command is the worst possible tiebreaker.
+`catalog:fix` is how a human settles one, on purpose.
+
+`--clear` is opt-in, and keeping contributions is the safer default: a kept
+contribution is re-offered next harvest, where it either adds a confirmation or
+shows up as the same unresolved disagreement — a standing reminder. Deleted, a
+disagreement is gone and nobody ever settles it.
+
+**Two id rules, and they must not drift.** `catalogKey()` in
+`src/features/stock/barcode.ts` and `catalogId()` in `cli/lib.mjs` are the same
+rule written twice, and a disagreement between them raises no error anywhere — it
+silently stops finding things.
+
+- 8–14 digits: EAN-8, UPC-A, EAN-13, ITF-14. Always a legal document id.
+- **Never a leading `2`**, which GS1 reserves for in-store codes a shop mints
+  against its own stock and which therefore collide across tenants by
+  construction. The exception is length 14, where the first digit is an ITF-14
+  packaging indicator, so the GTIN inside is what is judged.
+- Six-digit **CNP** school-book numbers live under `cnp-`. **No shop can
+  contribute one** — contributions go through the GTIN rule only. They are a
+  national standard, the same titles under the same numbers in every bookshop in
+  the country, so they are curated from a checked list. It is the one place a
+  wrong name would be wrong for everybody at once.
+
+That id space cannot be widened cheaply later: entries already written under the
+old rule become unreachable. It was settled before the first seed for that reason.
+
+**The lookup is off the scan path**, and must stay off it. `lookup()` at the till
+sees raw typed and pasted text dozens of times a minute, and an article the shop
+already stocks needs no catalogue. It runs from "create this product" instead,
+bounded at 700 ms, swallowing every failure into a plain `null`, and it never
+overwrites a field the owner has already typed in.
+
+Seeded: 546 entries from Librairie Sofiene's 740 products (194 skipped — no
+usable code, a code shared by two of its own articles, or an unusable name).
+
+---
+
+## Signing up a new bookshop
+
+Everything runs from `cli/`, against the service-account key in
+`cli/service-account.json`. One command creates the account, the shop and the
+plan together:
+
+```bash
+cd cli
+node lib.mjs shops:create \
+  --email librairie.exemple@libsystem.tn \
+  --password "un-mot-de-passe-solide" \
+  --name "Librairie Exemple" \
+  --days 365
+```
+
+It prints the three things to hand over: the email, the password, and the shop
+id. Then give them **https://libsystem-tn.netlify.app** and nothing else — there
+is no sign-up page, on purpose, and there must never be one.
+
+Four things worth knowing before you run it:
+
+- **`--email` is a login, not a mailbox.** Firebase never sends to it and never
+  verifies it. `librairie.<something>@libsystem.tn` keeps them tidy and does not
+  need the address to exist. There is no `email:set`, so changing one later means
+  `shops:repair` onto a new account — pick it deliberately.
+- **`--name` is printed on their tickets.** Getting it wrong is visible to their
+  customers by the afternoon. It is also the tell that a settings path is wrong:
+  a ticket header reading "Librairie" instead of the real name means the shop
+  document is not being read.
+- **`--days` is the plan, and the rules add a fortnight to it.** A 365-day plan
+  really stops writing on day 379. That grace exists so a till that sold offline
+  across its own expiry does not have its whole queue refused and rolled back on
+  reconnect — see the note on `graceMs()` below.
+- **It is safe to run twice.** If the account already exists it attaches to it
+  rather than failing, which is exactly what happens after a half-finished first
+  attempt. It refuses only if that account already owns a different shop.
+
+Expect `shops:create` to time out occasionally with `app/network-timeout` after
+about 25 seconds. That is the Admin SDK's **Auth** cold start, not a failure —
+Firestore calls in the same process are fine. Run it again; it checks before it
+writes, so a timed-out attempt leaves nothing behind.
+
+Then, so their first day is not a week of typing:
+
+```bash
+node lib.mjs catalog:seed --shop <shopId> --cnp --dry-run   # the CNP school books
+node lib.mjs catalog:harvest --dry-run                      # what shops have offered
+```
+
+And when they call:
+
+```bash
+node lib.mjs shops:show librairie.exemple@libsystem.tn
+node lib.mjs password:set --email librairie.exemple@libsystem.tn --password "..."
+node lib.mjs plan:extend  librairie.exemple@libsystem.tn --days 365
+node lib.mjs backup --shop <shopId>
+```
+
+`--dry-run` works on everything that writes. Use it first, always.
 
 ---
 
@@ -188,9 +330,21 @@ node cli/lib.mjs stats                             # docs per shop, against the 
 ```
 
 A plan change reaches an open browser within the hour, or at once on reload.
-`suspend` revokes the refresh token so it takes effect on the next reload rather
-than at the end of that hour — rewriting a claim cannot invalidate the token
-still carrying the old one.
+
+**`shops:suspend` no longer revokes the session, and that is deliberate.** It
+used to, which made the suspension bite on the next reload instead of at the end
+of that hour — but revoking strands an offline till: its next token refresh fails
+permanently, it lands on `/login`, and signing in needs the network it does not
+have. Every ticket it queued during the outage is refused in the same instant. A
+suspension for a late invoice must never be able to destroy takings a shop has
+already collected. So the default is the claim change alone, and the shop keeps
+writing for up to an hour on the token it already holds. That hour is the price.
+
+`--revoke` is still there for the case that actually wants it — a compromised
+account, where locking it out is worth more than its data. It records `revokedAt`
+on the shop, because **revocation cannot be undone**: `shops:resume` warns you,
+but the shop still has to sign in again, on the till, with a working line. Have
+the password ready.
 
 The Admin SDK's **Auth** calls time out from a cold start often enough to notice
 (`app/network-timeout` after 25 s). Firestore calls in the same process are
@@ -222,26 +376,44 @@ costs a few cents. Know the caveat: a budget alert **notifies, it does not cap**
 
 ---
 
-## What is deliberately NOT in this deploy
+## Still open
 
-**The shared barcode catalogue.** It is the only client-writable collection
-outside a shop and the only cross-tenant read surface in the design, so it does
-not ship on cutover day. The groundwork is in: `catalogKey()` in
-`src/features/stock/barcode.ts` (8–14 digits, never a `2…` in-store code, which
-shops mint per-shop and therefore collide by construction) and
-`cli/lib.mjs catalog:seed`. Three things to settle first:
+Written down because a known gap is cheaper than a rediscovered one.
 
-- **Names and units only. Never a price.** The receiving shop computes its sale
-  price from its own margin on the cost *it* paid, and the till defaults an
-  unknown cost to `0` — so a borrowed sale price with no cost behind it mints a
-  100 %-margin phantom into that shop's profit report. Category is a free-text
-  key into the *contributing* shop's own list and means nothing elsewhere.
-- **`allow get`, never `allow read`.** `read` includes `list`, and `list` lets
-  one account walk the entire catalogue.
-- **Read it off the scan path.** `lookup()` receives raw typed text and pasted
-  strings, and there is no error boundary anywhere in `src/` — one
-  `doc(db, 'catalog', '')` throws and takes the till with it. Do the lookup from
-  "create this product" only.
+**A hard reload while offline still lands on the browser's error page.** Chrome
+and Edge bypass the service worker for a shift-reload, for the navigation and
+every subresource, so the request goes to a network that is not there. This is
+exactly what a shopkeeper does when the screen looks wrong. There is no
+worker-side API to opt back in — the honest mitigation is `controlledAtLoad` in
+`src/lib/serviceWorker.ts`: when it is false after registration settles, this tab
+is not offline-protected and the app could say so and ask for a plain F5. Not
+built.
+
+**Idempotency for a delivery or a ledger line.** `recordPurchase` mints a fresh
+document id per call, so a browser crash or a device swap mid-entry can still
+produce two invoices for one delivery — nothing in the data says "this is the
+same facture". The cancel-then-retry route that used to cause it is closed, but
+the shape remains. A deterministic id, or a client-supplied operation key, is the
+fix.
+
+**`removeCustomer` can orphan ledger lines.** It deletes what the query returns,
+and offline that query answers from the cache — a line the cache has evicted is
+not deleted and outlives the customer under a `customerId` nothing resolves. It
+refuses outright when it cannot read the ledger at all, which is the half that
+matters; the eviction case needs a CLI sweep to find. Do a delete with a line up
+if there is a choice.
+
+**`credit_entries` is excluded from the cross-project migration** (`MIGRATE_SKIP`
+in `cli/lib.mjs`), so a shop moved between projects arrives with customer
+`balance` values that no ledger lines support: `buildLedger`'s running balance and
+`customer.balance` then disagree on every carnet page. Fine for the one shop that
+was moved with a deliberate fresh start; a trap for the next one.
+
+**Three copies of the grace window.** `graceMs()` in `firestore.rules`,
+`RULES_GRACE_MS` in `cli/lib.mjs`, and `RULES_GRACE_MS` in
+`src/auth/AuthContext.tsx`. They cannot be shared — one is a rules expression on
+Google's servers, one is in a Node script holding the admin key, one is compiled
+into the bundle — so each names the other two. Change one, change three.
 
 **Read-cost work**, once a week of real numbers exists in the usage graph:
 denormalise `debtStartedAt`/`lastPaymentAt` onto the customer document so
