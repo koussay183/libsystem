@@ -16,20 +16,18 @@ import {
 } from '@chakra-ui/react'
 import { Coins, HandCoins, CheckCheck, TriangleAlert } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { formatMoney, fromMinor, parseMoney, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import {
+  formatMoney,
+  fromMinor,
+  parseMoney,
+  toInput,
+  moneySymbolKey,
+  moneyPlaceholder,
+} from '@/lib/money'
 import { addCreditEntry } from '@/features/customers/useCustomers'
 
 /** Round sums the owner actually handles: 5, 10, 20 and 50 dinars. */
 const QUICK_AMOUNTS = [5_000, 10_000, 20_000, 50_000]
-
-/**
- * Millimes -> the text the money field expects, in whichever way the shop
- * writes prices. `.toFixed(3)` here used to hard-code the dinar form, which
- * would have put "5000.000" in the box for a shop counting in millimes.
- */
-function toInput(minor: number): string {
-  return String(fromMinor(minor))
-}
 
 export function CreditEntryForm({
   open,

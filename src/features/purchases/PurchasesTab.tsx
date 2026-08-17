@@ -74,6 +74,18 @@ export function PurchasesTab() {
     )
   })
 
+  /**
+   * removePurchase enqueues the stock reversal and the delete and returns, so the
+   * row leaves this table on the next local snapshot whether or not there is a
+   * line. That matters as much as the old hang did: while the reversal batch was
+   * awaited the stock had already been rolled back in the cache, yet the invoice
+   * stayed on screen with its Supprimer button, so a second impatient click took
+   * the delivery off the shelf again.
+   *
+   * The catch is still earning its place — shopPath() throws synchronously when no
+   * shop is selected — but a write the server refuses is reported by the sync
+   * badge in the header, not here.
+   */
   const onDelete = async (p: Purchase) => {
     if (!window.confirm(t('purchases.deleteConfirm'))) return
     setActionError('')

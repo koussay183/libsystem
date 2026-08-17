@@ -144,8 +144,12 @@ export const fr = {
     deletedBadge: 'Supprimé',
     removeStale: 'Retirer ces lignes',
     scanRefused: 'Article non ajouté — terminez l’opération en cours puis scannez à nouveau',
-    savedOffline:
-      'Enregistré sur cet ordinateur. Ce sera envoyé automatiquement au retour d’internet.',
+    // Dit sur le ticket encaissé, en ligne comme hors ligne : la seule chose
+    // que la caisse peut promettre à cette seconde est que le ticket est sur
+    // cette machine. Le voyage jusqu’au serveur n’est promis nulle part ici,
+    // c’est le voyant de l’en-tête qui le suit.
+    recordedHere:
+      'Le ticket est enregistré sur cet ordinateur. L’envoi au serveur se fait tout seul — le voyant en haut de l’écran indique où il en est.',
   },
   packs: {
     title: 'Packs',
@@ -255,11 +259,21 @@ export const fr = {
     noShopBody:
       'Ce compte existe mais n’est rattaché à aucune boutique, donc il n’y a rien à ouvrir.',
     noShopHint: 'Contactez votre fournisseur : il l’active en une minute.',
+    // La nuance entre ces deux messages n’est pas cosmétique : pendant les
+    // quatorze jours de tolérance, la caisse enregistre normalement. Dire
+    // « rien ne peut être enregistré » à ce moment-là pousse le libraire à
+    // écrire ses tickets sur papier, et donc à les saisir deux fois — ou pas du
+    // tout.
     lapsedTitle: 'Abonnement expiré',
     lapsedBody:
-      'Vous pouvez tout consulter et faire une sauvegarde, mais rien ne peut être enregistré tant que l’abonnement n’est pas renouvelé.',
+      'Vos ventes continuent d’être enregistrées normalement pendant quelques jours encore. Renouvelez l’abonnement avant la fin de ce délai pour ne rien perdre.',
+    blockedTitle: 'Abonnement expiré — enregistrement arrêté',
+    blockedBody:
+      'Le délai de tolérance est écoulé : vous pouvez tout consulter et faire une sauvegarde, mais plus rien ne peut être enregistré. Renouvelez l’abonnement pour reprendre la vente.',
     deniedWrite:
-      'Enregistrement refusé par le serveur. Abonnement expiré ou session à renouveler — reconnectez-vous.',
+      'Le serveur a refusé un enregistrement : abonnement expiré ou session à renouveler. La dernière opération n’a pas été conservée.',
+    lostWrite:
+      'Une opération a été refusée et annulée : elle n’a pas été conservée. Vérifiez la dernière saisie et refaites-la.',
   },
   setup: {
     title: 'Configuration requise',
@@ -429,6 +443,8 @@ export const fr = {
     totalPaid: 'Total versé',
     cannotDeleteDebtor:
       'Impossible de supprimer : ce client doit encore {{amount}}. Soldez son compte d’abord.',
+    cannotDeleteOffline:
+      'Impossible de supprimer maintenant : l’historique de ce client n’a pas pu être lu. Réessayez quand la connexion sera revenue — le reste de l’application continue de fonctionner.',
   },
   sales: {
     title: 'Ventes',
@@ -474,6 +490,8 @@ export const fr = {
     searchProduct: 'Chercher un produit…',
     save: 'Enregistrer l’achat',
     updatesStock: 'Le stock sera augmenté automatiquement.',
+    savedOnDevice:
+      'La facture est enregistrée sur cet ordinateur dès que vous validez, puis envoyée toute seule au retour d’internet.',
     emptyItemsError: 'Ajoutez au moins un article',
     items: 'articles',
     // --- supplier payment ------------------------------------------------
@@ -538,7 +556,12 @@ export const fr = {
     bestHour: 'Heure de pointe',
     salesByDay: 'Ventes par jour',
     topCategories: 'Meilleures catégories',
-    marginOverall: 'Marge globale',
+    // « Part du bénéfice », pas « marge ». Deux ratios différents portaient le
+    // même mot : celui-ci est le bénéfice divisé par le chiffre d’affaires (bon
+    // pour un compte de résultat), tandis que stock.margin est la marge que le
+    // libraire applique sur son prix d’achat. Sur la même boutique le premier
+    // affiche 26 % et le second 35 %, et rien n’expliquait l’écart.
+    marginOverall: 'Part du bénéfice',
     restockSuggestions: 'À réapprovisionner',
     restockHint: 'Ça se vend bien et le stock descend',
     neverSold: 'Jamais vendu',
@@ -569,7 +592,12 @@ export const fr = {
     bought: 'Acheté',
     cost: 'Coût des ventes',
     profit: 'Bénéfice',
-    margin: 'Marge',
+    // Bénéfice ÷ chiffre d’affaires. Voir dashboard.marginOverall : ce n’est pas
+    // la marge de stock.margin, qui se calcule sur le prix d’achat.
+    margin: 'Part du bénéfice',
+    uncosted: 'Prix d’achat manquant',
+    uncostedHint:
+      'Cet article a été vendu sans prix d’achat renseigné : sa rentabilité ne peut pas être calculée. Ouvrez-le dans le stock et entrez son prix d’achat.',
     empty: 'Pas encore de données de vente',
     emptyHint: 'Encaissez quelques tickets à la caisse pour voir la rentabilité.',
     sortBy: 'Trier par',
@@ -596,16 +624,32 @@ export const fr = {
     restoreConfirm: 'Restaurer cette sauvegarde ? Les données actuelles portant le même identifiant seront remplacées.',
     working: 'Traitement en cours…',
     exported: 'Sauvegarde téléchargée',
+    // Un export tiré du cache est remis quand même, mais annoncé comme un
+    // avertissement : « Sauvegarde téléchargée » au-dessus d’un fichier qui ne
+    // contient peut-être pas tout est la phrase qui coûte la boutique le jour
+    // où l’on restaure.
+    exportedPartial: 'Sauvegarde téléchargée sans connexion, peut-être incomplète',
+    partialDetail:
+      'Ces listes n’ont pas pu être vérifiées auprès du serveur et peuvent être incomplètes : {{list}}.',
     restored: 'Sauvegarde restaurée : {{count}} documents',
+    // La restauration n’attend plus l’accusé du serveur : « restauré » veut
+    // dire écrit ici et mis en file, pas téléversé. La note le dit au lieu de
+    // laisser croire à un envoi que personne n’a vu finir.
+    restoredLocalNote:
+      'Les données sont déjà enregistrées sur cet ordinateur. L’envoi au serveur se termine tout seul dès que la connexion revient.',
     invalidFile: 'Fichier de sauvegarde invalide',
     records: 'documents',
     lastBackup: 'Dernière sauvegarde : {{when}}',
     neverBackedUp: 'Vous n’avez encore jamais fait de sauvegarde',
     backupOld:
       'Plus de {{days}} jours sans sauvegarde. Téléchargez le fichier et gardez-le sur une clé USB ou dans votre boîte mail.',
+    lastBackupPartial:
+      'Cette sauvegarde a été faite sans connexion et peut être incomplète. Refaites-en une dès que la connexion revient.',
     exportHint: 'Fonctionne aussi sans internet, à partir des données de cet ordinateur.',
     reviewTitle: 'Vérifiez avant de restaurer',
     fileFrom: 'Fichier créé le {{date}}',
+    filePartial: 'Ce fichier a été créé sans connexion et peut être incomplet',
+    unverified: 'Non vérifié auprès du serveur',
     restoreNow: 'Restaurer maintenant',
     keepSafe: 'Gardez une copie ailleurs que sur cet ordinateur.',
   },
@@ -661,6 +705,11 @@ export const fr = {
     categoryDeleteConfirm: 'Supprimer cette catégorie ? Les produits ne seront pas supprimés.',
     categoryInUse: '{{count}} produits utilisent cette catégorie',
     categoryRenameHint: 'Les produits concernés seront mis à jour automatiquement.',
+    // Renommer ou compter une catégorie avant l’arrivée du stock renommerait
+    // la catégorie en laissant les articles derrière, sous une étiquette à
+    // laquelle plus rien ne répond. Attendre est réparable, cela ne l’est pas.
+    categoryProductsWait:
+      'La liste des produits n’est pas encore chargée sur cet ordinateur. Attendez un instant, puis réessayez.',
     nameRequired: 'Le nom est obligatoire',
     duplicate: 'Ce nom existe déjà',
   },
@@ -674,15 +723,71 @@ export const fr = {
     comingSoon: 'Bientôt disponible',
     comingSoonHint: 'Ce module arrive dans la prochaine étape.',
   },
+  // Ce que voit un libraire quand un écran plante. Le mot « erreur » ne suffit
+  // pas : la première question qu’il se pose est si la recette de la journée
+  // est perdue, alors la réponse est dans la deuxième phrase.
+  crash: {
+    title: 'Cet écran s’est arrêté',
+    body:
+      'Une erreur a interrompu l’affichage. Les ventes déjà encaissées sont enregistrées sur cet ordinateur : rien n’est perdu.',
+    reload: 'Recharger la page',
+    details: 'Détail technique',
+    hint: 'Si cela se reproduit, lisez ce texte à la personne qui s’occupe de la maintenance.',
+  },
   sync: {
     online: 'En ligne',
+    onlineHint: 'Le serveur répond. Tout ce qui est enregistré part aussitôt.',
     offline: 'Hors ligne',
+    offlineWaiting: 'Hors ligne — {{count}} à envoyer',
     offlineHint:
       'Pas d’internet. Vous pouvez continuer à vendre : tout est enregistré ici et envoyé automatiquement au retour de la connexion.',
-    sending: 'Envoi en cours…',
-    saved: 'Tout est enregistré',
+    sendingCount: 'Envoi en cours — {{count}}',
+    sendingHint: 'Vos enregistrements partent vers le serveur. Vous pouvez continuer à travailler.',
+    savedAt: 'Tout est enregistré — {{time}}',
+    checking: 'Vérification…',
+    checkingHint: 'On vérifie si le serveur répond.',
+    // Des écritures d’une session précédente : rien dans celle-ci ne peut les
+    // faire aboutir, donc on ne dit ni « envoyé » ni « en cours », on dit
+    // exactement ce que l’on sait — le serveur ne les a pas encore confirmées.
+    unconfirmed: 'Pas encore confirmé — {{count}}',
+    unconfirmedHint:
+      'Des enregistrements faits avant le dernier redémarrage n’ont pas encore été confirmés par le serveur. Laissez l’application ouverte le temps que la connexion revienne : elle termine toute seule.',
+    refused: 'Refusé par le serveur',
+    // Sans « reconnectez-vous ». Ce drapeau est conservé sur le disque, donc il
+    // réapparaît le lendemain matin — parfois sans connexion. Un libraire qui
+    // suit l’instruction se déconnecte et se retrouve devant un écran de
+    // connexion qu’il ne peut pas franchir hors ligne : la caisse est hors
+    // service pour le reste de la panne. Le message dit donc quoi vérifier, et
+    // la bannière rouge en haut de l’écran porte la marche à suivre.
+    refusedHint:
+      'Le serveur a refusé un enregistrement : abonnement expiré ou session à renouveler. La dernière opération n’a pas été conservée — vérifiez-la.',
+    lost: 'Opération annulée',
+    lostHint:
+      'Le serveur a refusé une opération et elle a été annulée : elle n’a pas été conservée. Le reste fonctionne normalement — vérifiez la dernière saisie et refaites-la.',
+    // Les quatre raisons pour lesquelles les listes se figent, dans les mots du
+    // libraire. Chacune dit la même chose en premier — les chiffres affichés ne
+    // bougent plus, donc ne vous fiez pas au stock — puis ce qui la distingue :
+    // qui a refusé, si cela vient de la boutique, et ce qui peut y changer
+    // quelque chose. « Erreur de synchronisation » ne dirait rien de tout cela.
+    frozenRefusedTitle: 'Le serveur a refusé l’accès aux données',
+    frozenRefusedBody:
+      'Les quantités et les prix affichés sont les derniers que le serveur a confirmés et ne changent plus. Abonnement expiré ou session à renouveler : reconnectez-vous, puis réessayez.',
+    frozenExhaustedTitle: 'Service saturé — les données ne se mettent plus à jour',
+    frozenExhaustedBody:
+      'La limite journalière du service est atteinte : cela ne vient pas de votre boutique et rien sur cet ordinateur n’y change quelque chose. Les quantités affichées ne bougent plus — réessayez plus tard.',
+    frozenBrokenTitle: 'Impossible de charger les données',
+    frozenBrokenBody:
+      'L’application demande ces données d’une façon que le serveur refuse. Une mise à jour de l’application corrige cela. En attendant, les quantités affichées ne bougent plus.',
+    frozenStaleTitle: 'Liaison aux données perdue',
+    frozenStaleBody:
+      'La connexion n’a pas tenu assez longtemps pour que les données suivent : les quantités et les prix affichés ne se mettent plus à jour. Réessayez.',
+    frozenReload: 'Recharger l’application',
     updateReady: 'Une nouvelle version est prête',
     updateNow: 'Mettre à jour',
+    // Une version installée par-dessus celle que cet onglet fait tourner. Rien
+    // ne se recharge pendant une vente, donc on le propose au lieu de le faire.
+    staleBuild: 'Cette page utilise une version remplacée — rechargez dès que la caisse est libre.',
+    reloadNow: 'Recharger',
   },
   money: {
     symbol: 'DT',

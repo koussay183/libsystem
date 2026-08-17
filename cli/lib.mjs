@@ -65,11 +65,31 @@ async function confirm(question) {
 const argv = process.argv.slice(2)
 const command = argv[0] ?? 'help'
 const positional = []
+/**
+ * Flags that are a yes/no and therefore never eat the next argument.
+ *
+ * Without this list the parser gave every flag a value if one looked available,
+ * so `shops:suspend --revoke librairie@x.tn` bound the EMAIL as the value of
+ * --revoke, left nothing in `positional`, and the command died complaining it
+ * did not know which shop to suspend. Putting the target first worked and
+ * putting the flag first did not, which is the kind of difference nobody guesses
+ * from an error message.
+ *
+ * Declared here rather than handled inside the one command that hit it, because
+ * the next boolean flag anybody adds would arrive with the same bug already in
+ * place.
+ */
+const BOOLEAN_FLAGS = new Set(['yes', 'dry-run', 'revoke', 'include-history', 'keep-counters'])
+
 const flags = {}
 for (let i = 1; i < argv.length; i += 1) {
   const a = argv[i]
   if (a.startsWith('--')) {
     const key = a.slice(2)
+    if (BOOLEAN_FLAGS.has(key)) {
+      flags[key] = true
+      continue
+    }
     const next = argv[i + 1]
     if (next === undefined || next.startsWith('--')) flags[key] = true
     else {
@@ -495,27 +515,74 @@ commands['plan:extend'] = {
 }
 
 commands['shops:suspend'] = {
-  blurb: 'Stop a shop writing, now  <email|shopId>',
+  blurb: 'Stop a shop writing, now  <email|shopId> [--revoke]',
   async run() {
     const { db } = await connect()
     const { shopId, user, doc } = await resolveShop(positional[0] ?? flags.email ?? flags.shop)
-    if (!(await confirm(`Suspend "${doc?.name ?? shopId}"? They keep read access and can still export.`))) {
+
+    /**
+     * Revoking the refresh token is OPT-IN, and must stay that way.
+     *
+     * This command's usual reason is a late invoice, and the shop it is aimed at
+     * spends days at a time with no line. Revocation makes that till's next
+     * refresh fail permanently: onIdTokenChanged fires null, AuthContext clears
+     * the uid and the shopId, and the operator is dropped on /login — where
+     * signing in requires the network, which is the one thing he does not have.
+     * Every ticket queued during the outage is refused in the same instant, by
+     * the sign-out branch rather than by logout(), so nothing has deliberately
+     * preserved or wiped the write queue. A suspension for money owed must never
+     * be able to destroy takings the shop has already collected.
+     *
+     * The price of not revoking is that the token the shop already holds keeps
+     * satisfying paid() until it expires, up to an hour. An extra hour of writes
+     * from a shop that has not paid is a rounding error; a fortnight of lost
+     * sales is not. --revoke remains for the case that genuinely needs it — a
+     * compromised account, where locking it out is worth more than its data.
+     */
+    const revoke = Boolean(flags.revoke)
+
+    const question = revoke
+      ? `Suspend "${doc?.name ?? shopId}" AND revoke its session? Signs the till out at once; ` +
+        'if it is offline it cannot sign back in, and anything it queued is lost.'
+      : `Suspend "${doc?.name ?? shopId}"? They keep read access and can still export.`
+    if (!(await confirm(question))) {
       return
     }
+
     // Past the rules grace window, not merely into the past. paidUntil - 1s
     // would leave the shop writing for another fourteen days.
     const paidUntil = Date.now() - RULES_GRACE_MS - DAY_MS
-    await db.collection('shops').doc(shopId).set({ paidUntil, updatedAt: Date.now() }, { merge: true })
+    await db
+      .collection('shops')
+      .doc(shopId)
+      .set(
+        {
+          paidUntil,
+          updatedAt: Date.now(),
+          // Recorded because revocation is the one thing shops:resume CANNOT
+          // undo, and without a note of it the operator resumes a shop, is told
+          // it is fine, and the shop is still sitting on a login screen. There
+          // is no un-revoke in the Admin SDK: the shop has to sign in again.
+          ...(revoke ? { revokedAt: Date.now() } : {}),
+        },
+        { merge: true },
+      )
     if (user) {
       await mergeClaims(user.uid, { paidUntil })
-      // Rewriting a claim cannot invalidate the token that is already carrying
-      // the old one, and that token is good for up to an hour. Revoking the
-      // refresh token is what makes the suspension take effect on the next
-      // reload instead of at the end of the hour.
-      await _auth.revokeRefreshTokens(user.uid)
+      if (revoke) await _auth.revokeRefreshTokens(user.uid)
     }
     ok(`${doc?.name ?? shopId} suspended — writes stop, reading and backup still work.`)
-    log(c.dim('  Takes effect on their next reload; the outstanding token expires within the hour.'))
+    if (revoke) {
+      log(c.dim('  Session revoked: the shop is signed out on its next token refresh.'))
+      warn('If that till is offline right now it lands on the login screen when it comes back,')
+      log(c.dim('  and it cannot get past it without a connection. Its unsent sales go with it.'))
+    } else {
+      log(c.dim('  The claim is written, but the token they already hold keeps working until it'))
+      log(c.dim('  expires — up to an hour. That hour is the deliberate price of not stranding a'))
+      log(c.dim('  till that is offline: revoking would drop it on a login screen it cannot pass'))
+      log(c.dim('  without a line, taking its queued sales with it. Use --revoke only for a'))
+      log(c.dim('  compromised account.'))
+    }
   },
 }
 
@@ -523,6 +590,34 @@ commands['shops:resume'] = {
   blurb: 'Let a suspended shop write again  <email|shopId> --days N',
   async run() {
     flags.days = flags.days ?? 30
+
+    /**
+     * Extending the plan is all a resume normally is — but if the suspension
+     * revoked the session, that half does not come back with it.
+     *
+     * revokeRefreshTokens has no inverse. The shop's stored credential is dead,
+     * so however much plan it now has, its till stays on the login screen until
+     * somebody signs in on it WITH A WORKING CONNECTION. An operator who does
+     * not know that tells the shop it is sorted and then cannot explain why it
+     * is not, which is exactly the call this warning exists to prevent.
+     */
+    const target = positional[0] ?? flags.email ?? flags.shop
+    if (target) {
+      try {
+        const { doc } = await resolveShop(target)
+        if (doc?.revokedAt) {
+          warn(`This shop's session was revoked on ${fmtDate(doc.revokedAt)} and that cannot be`)
+          log(c.dim('  undone here. Extending the plan is not enough: somebody has to sign in on'))
+          log(c.dim('  the till itself, and that needs a connection. Have the password ready —'))
+          log(c.dim('  `password:set` if it is lost — and do it while the shop has a line.'))
+          log('')
+        }
+      } catch {
+        // Let plan:extend produce the real error about an unknown shop; this
+        // check is advisory and must never be the thing that fails the command.
+      }
+    }
+
     await commands['plan:extend'].run()
   },
 }

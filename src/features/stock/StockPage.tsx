@@ -223,6 +223,12 @@ export function StockPage() {
     if (!window.confirm(t('stock.deleteConfirm'))) return
     setActionError('')
     try {
+      // removeProduct queues the deletion rather than awaiting the acknowledgement,
+      // so this resolves at once and the row leaves the table from the local cache
+      // even with the line down. The catch is therefore only for a synchronous
+      // failure such as shopPath() throwing with no shop id: a deletion the server
+      // later refuses is rolled back by Firestore and announced by the header sync
+      // badge, which is the only thing on screen that knows about the server.
       await removeProduct(p.id)
     } catch (err) {
       if (alive.current) {
@@ -364,6 +370,13 @@ export function StockPage() {
         </Alert.Root>
       )}
 
+      {/* This banner speaks for THIS MACHINE and nothing more. The writes behind
+          it are queued in the local cache and already visible in the table below,
+          which is why it can appear with the line down — "enregistrées" here means
+          what sync.offlineHint means by it. Whether the rows have reached the
+          server is the header sync badge's business, and now that every write in
+          useProducts goes through track() the badge really does show them
+          leaving. Never reword this into a promise about the server. */}
       {notice && (
         <Alert.Root status="success" mb={4}>
           <Alert.Indicator />

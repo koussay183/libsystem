@@ -202,7 +202,13 @@ export interface DashboardStats {
 
 export interface DashboardInput {
   period: Period
-  /** Frozen at the moment the period was chosen, so the memos stay stable. */
+  /**
+   * The clock, frozen so the memos below stay stable across renders. Every
+   * boundary on the page comes from it, so the caller must re-read it whenever
+   * the local calendar day turns over as well as when the period changes —
+   * otherwise a page left open overnight reports yesterday as "aujourd'hui".
+   * `DashboardPage` does this through `useDayStart`.
+   */
   now: number
   sales: Sale[]
   purchases: Purchase[]

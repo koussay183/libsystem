@@ -148,6 +148,20 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     return d.isSame(dayjs(), 'day') ? Date.now() : d.valueOf()
   }
 
+  /**
+   * recordPurchase hands the invoice and the stock it brings in to the local
+   * cache and returns, so this await settles in a microtask instead of waiting
+   * for a server acknowledgement. Closing the dialog therefore now claims
+   * exactly one thing — the delivery is recorded on this machine — and that
+   * claim is true with the line down. Whether the facture has reached Firestore
+   * is the header's sync badge's business; it used to be answered by a spinner
+   * that, offline, simply never stopped, and the owner's only way out was to
+   * cancel and re-enter the delivery.
+   *
+   * The try/catch stays: recordPurchase still rejects on the two failures the
+   * owner can act on — an invoice with more distinct products than one batch
+   * holds, and no shop selected.
+   */
   const save = async () => {
     if (cart.length === 0) {
       setError(t('purchases.emptyItemsError'))
@@ -387,8 +401,12 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                   </SimpleGrid>
                 </Box>
 
+                {/* The second sentence is the one that matters on a line that
+                    drops for days: the facture is kept on this machine as soon
+                    as it is saved, and the badge in the header — not this
+                    dialog — says when it has actually reached the server. */}
                 <Text fontSize="sm" color="fg.muted">
-                  {t('purchases.updatesStock')}
+                  {t('purchases.updatesStock')} {t('purchases.savedOnDevice')}
                 </Text>
 
                 {error && (

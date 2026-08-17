@@ -26,7 +26,10 @@ import {
   isBackupFile,
   countDocs,
   summarise,
+  isPartialBackup,
+  partialCollections,
   readLastBackupAt,
+  readLastBackupPartial,
   writeLastBackupAt,
   STALE_BACKUP_DAYS,
 } from './backupService'
@@ -45,6 +48,9 @@ const COLLECTION_LABEL: Record<string, string> = {
   settings: 'settings.title',
 }
 
+/** Alert.Root speaks its own vocabulary; the three outcomes map onto it here. */
+const ALERT_STATUS = { ok: 'success', warning: 'warning', error: 'error' } as const
+
 /**
  * Download the whole shop to a file, or put a file back.
  *
@@ -55,13 +61,25 @@ export function BackupPanel() {
   const { t } = useTranslation()
   const fileRef = useRef<HTMLInputElement>(null)
   const [busy, setBusy] = useState(false)
-  const [status, setStatus] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  const [status, setStatus] = useState<{
+    kind: keyof typeof ALERT_STATUS
+    text: string
+    /** The second line: why the outcome is not simply "done". */
+    note?: string
+  } | null>(null)
   const [lastAt, setLastAt] = useState<number | null>(readLastBackupAt)
+  /** Whether that last backup was the offline, possibly-incomplete kind. */
+  const [lastPartial, setLastPartial] = useState<boolean>(readLastBackupPartial)
   /** A file that has been read and understood, waiting for a yes. */
   const [pending, setPending] = useState<BackupFile | null>(null)
 
   const staleDays = lastAt === null ? null : dayjs().diff(dayjs(lastAt), 'day')
   const isStale = lastAt === null || (staleDays ?? 0) >= STALE_BACKUP_DAYS
+  const wasPartial = lastAt !== null && lastPartial
+
+  /** Collection names in the words the owner uses, for a warning sentence. */
+  const nameList = (names: string[]) =>
+    names.map((n) => (COLLECTION_LABEL[n] ? t(COLLECTION_LABEL[n]) : n)).join(', ')
 
   const doExport = async (kind: 'json' | 'csv') => {
     setBusy(true)
@@ -73,12 +91,23 @@ export function BackupPanel() {
       } else {
         downloadCsvFiles(backup)
       }
+      // A cache-sourced export is still handed over — see exportAll — but it is
+      // reported as a warning, not a success, and the collections that could
+      // not be confirmed are named. The one thing this screen must never do is
+      // let the owner walk away believing an incomplete file is his whole shop.
+      const partial = isPartialBackup(backup)
       const now = Date.now()
-      writeLastBackupAt(now)
+      writeLastBackupAt(now, partial)
       setLastAt(now)
+      setLastPartial(partial)
       setStatus({
-        kind: 'ok',
-        text: `${t('backup.exported')} (${countDocs(backup)} ${t('backup.records')})`,
+        kind: partial ? 'warning' : 'ok',
+        text: `${t(partial ? 'backup.exportedPartial' : 'backup.exported')} (${countDocs(
+          backup,
+        )} ${t('backup.records')})`,
+        note: partial
+          ? t('backup.partialDetail', { list: nameList(partialCollections(backup)) })
+          : undefined,
       })
     } catch (err) {
       setStatus({ kind: 'error', text: (err as Error).message })
@@ -114,7 +143,15 @@ export function BackupPanel() {
     setBusy(true)
     try {
       const written = await restoreAll(backup)
-      setStatus({ kind: 'ok', text: t('backup.restored', { count: written }) })
+      // restoreAll no longer waits for the server, so "restauré" here means
+      // "written to this computer and queued" — durable in IndexedDB and
+      // replayed in order on reconnect. The note says exactly that instead of
+      // implying an upload nobody has watched finish.
+      setStatus({
+        kind: 'ok',
+        text: t('backup.restored', { count: written }),
+        note: t('backup.restoredLocalNote'),
+      })
     } catch (err) {
       setStatus({ kind: 'error', text: (err as Error).message })
     } finally {
@@ -127,18 +164,21 @@ export function BackupPanel() {
   return (
     <Box>
       {status && (
-        <Alert.Root status={status.kind === 'ok' ? 'success' : 'error'} mb={5}>
+        <Alert.Root status={ALERT_STATUS[status.kind]} mb={5}>
           <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>{status.text}</Alert.Title>
+            {status.note && <Alert.Description>{status.note}</Alert.Description>}
           </Alert.Content>
         </Alert.Root>
       )}
 
-      {/* When was the shop last written to a file the owner actually holds? */}
-      <Alert.Root status={isStale ? 'warning' : 'success'} mb={5}>
+      {/* When was the shop last written to a file the owner actually holds —
+          and was that file a complete one? A date under a green shield reads as
+          "you are covered", so a partial export has to take the shield away. */}
+      <Alert.Root status={isStale || wasPartial ? 'warning' : 'success'} mb={5}>
         <Alert.Indicator>
-          {isStale ? <TriangleAlert size={20} /> : <ShieldCheck size={20} />}
+          {isStale || wasPartial ? <TriangleAlert size={20} /> : <ShieldCheck size={20} />}
         </Alert.Indicator>
         <Alert.Content>
           <Alert.Title>
@@ -146,9 +186,12 @@ export function BackupPanel() {
               ? t('backup.neverBackedUp')
               : t('backup.lastBackup', { when: dayjs(lastAt).format('DD/MM/YYYY HH:mm') })}
           </Alert.Title>
-          {isStale && (
+          {(isStale || wasPartial) && (
             <Alert.Description>
-              {t('backup.backupOld', { days: STALE_BACKUP_DAYS })}
+              <Stack gap={1}>
+                {isStale && <Text>{t('backup.backupOld', { days: STALE_BACKUP_DAYS })}</Text>}
+                {wasPartial && <Text>{t('backup.lastBackupPartial')}</Text>}
+              </Stack>
             </Alert.Description>
           )}
         </Alert.Content>
@@ -249,14 +292,40 @@ export function BackupPanel() {
                     </Text>
                   )}
 
+                  {/* The file says so itself. Shown before the counts, because
+                      the counts are what look reassuring, and on a partial file
+                      a low count is the symptom rather than the truth. */}
+                  {pending && isPartialBackup(pending) && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator>
+                        <TriangleAlert size={20} />
+                      </Alert.Indicator>
+                      <Alert.Content>
+                        <Alert.Title>{t('backup.filePartial')}</Alert.Title>
+                        <Alert.Description>
+                          {t('backup.partialDetail', {
+                            list: nameList(partialCollections(pending)),
+                          })}
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   <Stack gap={2}>
                     {rows.map((row) => (
                       <Flex key={row.name} justify="space-between" align="center" gap={3}>
                         <Text minW={0} truncate>
                           {COLLECTION_LABEL[row.name] ? t(COLLECTION_LABEL[row.name]) : row.name}
                         </Text>
-                        <Badge colorPalette={row.count > 0 ? 'brand' : 'gray'} variant="subtle">
+                        <Badge
+                          colorPalette={
+                            row.fromCache ? 'orange' : row.count > 0 ? 'brand' : 'gray'
+                          }
+                          variant="subtle"
+                          title={row.fromCache ? t('backup.unverified') : undefined}
+                        >
                           {row.count}
+                          {row.fromCache && ' ?'}
                         </Badge>
                       </Flex>
                     ))}

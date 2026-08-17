@@ -66,6 +66,22 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
     setSaveError('')
   }
 
+  /**
+   * Neither addStock nor setStock waits for the server (see their docblocks in
+   * useProducts.ts), so this resolves on the next microtask: the dialog closes,
+   * the row behind it already shows the new count from the local cache, and
+   * `busy` is true for an instant rather than for the length of the outage.
+   *
+   * That is precisely what stops the double increment. While the write was
+   * awaited, an outage left the spinner up forever, so the owner cancelled,
+   * reopened and entered the same units again — and increment() applied twice on
+   * reconnect. There is now no window in which he can conclude nothing happened.
+   *
+   * The catch is therefore only for a synchronous failure, such as shopPath()
+   * throwing with no shop id. A write the server later REFUSES cannot be reported
+   * here, because this dialog is long gone by then: track() raises the denied
+   * flag and the header sync badge is what tells the owner.
+   */
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     if (!product) return
@@ -207,6 +223,11 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
             </Dialog.Body>
 
             <Dialog.Footer>
+              {/* Deliberately NOT disabled while busy, and it does not need to
+                  be: submit queues its write and closes the dialog within one
+                  microtask, so no click can land in between. Make the write
+                  awaited again and this button turns back into the way to queue
+                  the same increment a second time. */}
               <Button size="lg" variant="outline" onClick={onClose}>
                 {t('common.cancel')}
               </Button>

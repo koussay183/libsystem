@@ -12,6 +12,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
+import { track } from '@/lib/syncStatus'
 import type { Purchase } from '@/types/models'
 
 const PURCHASES = 'purchases'
@@ -81,6 +82,24 @@ export function usePurchases() {
 /**
  * Records a purchase atomically: writes the purchase and, for each line linked
  * to a product, increments its stock and refreshes its cost price.
+ *
+ * The commit is deliberately NOT awaited. Firestore resolves a write only when
+ * the server acknowledges it, so with the line down `await batch.commit()` never
+ * settled — and it never rejected either, so the try/catch in NewPurchase.save
+ * could not help and its `finally setBusy(false)` never ran. The owner watched a
+ * spinner on a delivery that was in fact already durable in IndexedDB, cancelled,
+ * re-entered the whole invoice, and on reconnect the shop had two facture d'achat
+ * documents for one delivery and twice the stock: an inventory error that looks
+ * exactly like theft when the shelves are counted.
+ *
+ * Everything below is applied to the local cache the moment commit() is called
+ * and is replayed, in order, on reconnect. track() puts it in the header's
+ * pending count, which is the only honest place to answer "has my facture
+ * actually gone up".
+ *
+ * It stays `async` so callers keep awaiting exactly what they awaited before —
+ * the batch-size refusal below and a shopPath() throw still surface as a
+ * rejection, and those two are the only failures a caller can act on.
  */
 export async function recordPurchase(input: RecordPurchaseInput) {
   const now = Date.now()
@@ -94,6 +113,12 @@ export async function recordPurchase(input: RecordPurchaseInput) {
     items: input.items,
     total: input.total,
     paid: input.paid,
+    // All three stamps are client clock values, and must stay that way. The
+    // listener above orders by `date`, and serverTimestamp() reads back as null
+    // in the local cache until the server fills it in — so an invoice entered
+    // offline would drop out of the Achats list, out of the supplier's history
+    // and out of the dashboard's supplier debt until the line came back, which
+    // is precisely when the owner needs to see it.
     date: input.date ?? now,
     createdAt: now,
     updatedAt: now,
@@ -133,15 +158,31 @@ export async function recordPurchase(input: RecordPurchaseInput) {
     })
   }
 
-  await batch.commit()
+  void track(batch.commit()).catch(() => {
+    /* replayed by the SDK; a refusal surfaces through the sync badge */
+  })
 }
 
-/** Records money handed to the supplier against an existing invoice. */
+/**
+ * Records money handed to the supplier against an existing invoice.
+ *
+ * Not awaited, for the reason spelled out on recordPurchase. The consequence
+ * here was its own kind of bad: the payment dialog hung, the owner cancelled and
+ * settled the invoice again, and increment() applied both amounts on reconnect.
+ * purchaseOwed() floors the result at 0, so nothing but the Payé column — hidden
+ * on a narrow screen — ever showed that the supplier had been paid twice. Now the
+ * increment reaches the local cache immediately, owed goes to 0 on the spot and
+ * PurchasesTab stops rendering the Payer button for that row at all.
+ */
 export async function settlePurchase(id: string, amount: number) {
   if (amount <= 0) return
-  await updateDoc(doc(db, shopPath(PURCHASES), id), {
-    paid: increment(amount),
-    updatedAt: Date.now(),
+  void track(
+    updateDoc(doc(db, shopPath(PURCHASES), id), {
+      paid: increment(amount),
+      updatedAt: Date.now(),
+    }),
+  ).catch(() => {
+    /* replayed by the SDK; a refusal surfaces through the sync badge */
   })
 }
 
@@ -154,6 +195,15 @@ export async function settlePurchase(id: string, amount: number) {
  * only the document went away the two pages would disagree forever, with no
  * way to correct it from the UI. The cost price is deliberately NOT rolled
  * back — there is no record of what it was before, and guessing is worse.
+ *
+ * Nothing here is awaited either, and this one was the nastiest of the three.
+ * The reversal batch was awaited BEFORE the deleteDoc, so with the line down the
+ * stock was rolled back in the local cache while the invoice never left the list
+ * — the delete was never even reached. The row still sitting there with its
+ * Supprimer button invites exactly one thing, and every extra click subtracted
+ * the delivery from the shelf again. Queued mutations are replayed in the order
+ * they were enqueued, so dropping the awaits changes nothing about what the
+ * server ends up doing.
  */
 export async function removePurchase(purchase: Purchase) {
   const now = Date.now()
@@ -178,8 +228,12 @@ export async function removePurchase(purchase: Purchase) {
         updatedAt: now,
       })
     }
-    await batch.commit()
+    void track(batch.commit()).catch(() => {
+      /* replayed by the SDK; a refusal surfaces through the sync badge */
+    })
   }
 
-  await deleteDoc(doc(db, shopPath(PURCHASES), purchase.id))
+  void track(deleteDoc(doc(db, shopPath(PURCHASES), purchase.id))).catch(() => {
+    /* replayed by the SDK; a refusal surfaces through the sync badge */
+  })
 }

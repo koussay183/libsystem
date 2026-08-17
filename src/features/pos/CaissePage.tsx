@@ -1490,7 +1490,12 @@ export function CaissePage() {
       total: cart.total,
     }
     try {
-      const rec = await recordSale({
+      // Not a network wait: recordSale mints the ticket id locally, applies the
+      // batch to this device's durable cache and hands it to track() without
+      // awaiting the server (see useSales.recordSale). The ticket below is
+      // therefore printable straight away, offline or not — and it must be, or
+      // the cashier is left holding a customer while the ADSL thinks about it.
+      const rec = recordSale({
         items: snapshot.lines.map(({ productId, name, qty, unitPrice, unitCost }) => ({
           productId,
           name,
@@ -1519,7 +1524,6 @@ export function CaissePage() {
         received: receivedNow,
         mode,
         clientName: customers.find((c) => c.id === client)?.name,
-        pending: rec.pending,
       }
       setTicket(data)
       setLastTicket(data)
@@ -1532,6 +1536,12 @@ export function CaissePage() {
       setCustomerId('')
       setReceived('')
     } catch {
+      // Only a refusal raised before anything was queued reaches here now — an
+      // unpaid balance with no client attached, or a shop id that has gone. A
+      // rejection from the SERVER cannot: it arrives long after this ticket was
+      // printed, so it is track()'s `denied` flag and the header banner that
+      // report it, not this line.
+      //
       // The basket is deliberately left untouched: nothing was written, so the
       // cashier can simply try again instead of re-scanning the whole ticket.
       // The dialog stays open on purpose: the cashier is mid-payment and the
@@ -2973,17 +2983,21 @@ export function CaissePage() {
                         </Text>
                       </Flex>
                     )}
-                    {ticket.pending && (
-                      <Alert.Root status="info" mt={2}>
-                        <Alert.Indicator />
-                        <Alert.Content>
-                          <Alert.Title>{t('pos.savedOffline')}</Alert.Title>
-                        </Alert.Content>
-                      </Alert.Root>
-                    )}
                   </Stack>
                 )}
+                {/* What this dialog claims has to be true with the line up AND
+                    with it down. "Enregistré" is: the ticket is durable on this
+                    machine before this dialog is painted. "Envoyé" is not
+                    knowable yet, so it is not said here — the header badge is
+                    the one place that tracks the trip to the server, and it
+                    keeps saying "en cours d'envoi" until the queue is actually
+                    empty. This replaces a conditional "saved offline" alert
+                    that was decided by a 3.5 s race and told the owner a sale
+                    had not been sent when it had. */}
                 <Text mt={4} color="fg.subtle" fontSize="sm">
+                  {t('pos.recordedHere')}
+                </Text>
+                <Text mt={2} color="fg.subtle" fontSize="sm">
                   {t('pos.nextCustomerHint')}
                 </Text>
               </Dialog.Body>

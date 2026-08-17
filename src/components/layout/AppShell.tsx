@@ -1,10 +1,12 @@
-import { useEffect, useState, useSyncExternalStore } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { Outlet, Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { LucideIcon } from 'lucide-react'
 import {
   LogOut,
   ShieldAlert,
+  AlertTriangle,
+  CloudOff,
   BookMarked,
   Package,
   Boxes,
@@ -35,8 +37,14 @@ import { ROUTE_PALETTE, paletteFor } from '@/lib/navColors'
 import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
-import { SyncStatus, UpdateBanner } from '@/components/SyncStatus'
+import { SyncStatus, UpdateBanner, StaleBuildBanner } from '@/components/SyncStatus'
 import { syncStore, clearDenied } from '@/lib/syncStatus'
+import { retryLiveCollections } from '@/lib/liveCollection'
+import { useProductsFatal } from '@/features/stock/useProducts'
+import { useCustomersFatal } from '@/features/customers/useCustomers'
+import { useCategoriesFatal } from '@/features/categories/useCategories'
+import { useSuppliersFatal } from '@/features/suppliers/useSuppliers'
+import { usePacksFatal } from '@/features/packs/usePacks'
 
 interface NavItem {
   to: string
@@ -65,6 +73,79 @@ const SIDEBAR_W = '18.5rem'
 const VIEWPORT_ROUTES = new Set(['/caisse'])
 
 /**
+ * The kinds of giving-up that are worth a sentence, worst first.
+ *
+ * The shell speaks about the first one it finds and stays silent about the rest:
+ * these arrive together anyway — a lapsed plan, a revoked session or a blown
+ * quota kills all five shared listeners within seconds of each other — and five
+ * stacked banners over the till would push the basket below the fold to say one
+ * thing five times.
+ *
+ * 'no-shop' is deliberately absent, and must stay absent. It means the query
+ * could not even be built because no shop is selected: the account is signing
+ * out or changing hands and a redirect is already on its way, so there is no
+ * frozen data and nothing was sold against anything. Announcing it would put a
+ * red banner on top of every logout.
+ */
+const FROZEN_ORDER = ['refused', 'exhausted', 'broken', 'retries'] as const
+
+/**
+ * One sentence per reason, because they call for four different actions.
+ *
+ * `needsDeploy` marks the reason where "try again" would be a button that does
+ * nothing — the query itself is malformed or its index is missing, and it will
+ * answer the same way however often it is asked.
+ */
+const FROZEN_COPY: Record<
+  (typeof FROZEN_ORDER)[number],
+  {
+    icon: LucideIcon
+    bg: string
+    fg: string
+    title: string
+    body: string
+    needsDeploy?: boolean
+  }
+> = {
+  // Red, like the refused-write banner further down, and for the same reason:
+  // the server said no. Nothing on this machine argues with that.
+  refused: {
+    icon: ShieldAlert,
+    bg: 'red.solid',
+    fg: 'red.contrast',
+    title: 'sync.frozenRefusedTitle',
+    body: 'sync.frozenRefusedBody',
+  },
+  // Not this shop's fault and not this shop's to fix: the whole project's daily
+  // quota is gone, so every till on the platform is frozen at the same moment.
+  exhausted: {
+    icon: AlertTriangle,
+    bg: 'red.solid',
+    fg: 'red.contrast',
+    title: 'sync.frozenExhaustedTitle',
+    body: 'sync.frozenExhaustedBody',
+  },
+  broken: {
+    icon: AlertTriangle,
+    bg: 'red.solid',
+    fg: 'red.contrast',
+    title: 'sync.frozenBrokenTitle',
+    body: 'sync.frozenBrokenBody',
+    needsDeploy: true,
+  },
+  // Orange, not red: nobody refused anything, the line was simply too poor to
+  // hold a stream open. It is also the one reason where pressing "try again"
+  // regularly works on its own.
+  retries: {
+    icon: CloudOff,
+    bg: 'orange.solid',
+    fg: 'orange.contrast',
+    title: 'sync.frozenStaleTitle',
+    body: 'sync.frozenStaleBody',
+  },
+}
+
+/**
  * Two-part shell: a fixed sidebar from `lg` up, the same navigation inside a
  * drawer below that. The old single-row navbar could not fit eight modules —
  * it overflowed and pushed a horizontal scrollbar onto every page.
@@ -74,7 +155,7 @@ const VIEWPORT_ROUTES = new Set(['/caisse'])
  */
 export function AppShell() {
   const { t } = useTranslation()
-  const { logout, lapsed } = useAuth()
+  const { logout, lapsed, blocked } = useAuth()
   const sync = useSyncExternalStore(syncStore.subscribe, syncStore.getSnapshot, syncStore.getSnapshot)
   const navigate = useNavigate()
   const location = useLocation()
@@ -97,6 +178,86 @@ export function AppShell() {
   useEffect(() => {
     if (shop.moneyMode) setMoneyMode(shop.moneyMode)
   }, [shop.moneyMode])
+
+  /**
+   * Whether any of the five shared listeners has stopped for good.
+   *
+   * This is the one thing in the app that used to happen in complete silence:
+   * liveCollection publishes "I have given up" — after a refusal, after a blown
+   * quota, or after five failures in a row — keeps the last snapshot on screen,
+   * and never revives the listener by itself. Every screen went on rendering
+   * this morning's stock, and the till went on selling against a count nobody
+   * could confirm any more, for the rest of the session.
+   *
+   * The shell is the right place to say it because it is the only component
+   * mounted on every screen, and because it holds these five subscriptions for
+   * the whole session: liveCollection retries a transient failure in the
+   * background only while somebody is watching, so a store nobody is subscribed
+   * to is a store that cannot report and cannot recover either. Each of these
+   * hooks subscribes with a reason string rather than the collection, so the
+   * ordinary flood of snapshots does not re-render the navigation — see
+   * useProductsFatal in src/features/stock/useProducts.ts.
+   */
+  const gaveUp = [
+    useProductsFatal(),
+    useCustomersFatal(),
+    useCategoriesFatal(),
+    useSuppliersFatal(),
+    usePacksFatal(),
+  ]
+  const worst = FROZEN_ORDER.find((reason) => gaveUp.includes(reason)) ?? null
+
+  /**
+   * A listener that gave up while the line was down heals itself the moment the
+   * line comes back, and does it before anybody is told anything.
+   *
+   * Without this the banner would be right and useless: 'retries' means five
+   * ordinary failures in a row, which is what an afternoon with no line looks
+   * like, and liveCollection stops its own retry timer once it has given up. So
+   * the store would stay dead through the reconnect, the sync badge would go
+   * green, and the owner would be asked to press a button to fix something the
+   * app could see was fixable.
+   *
+   * One attempt per return of the line, tracked in a ref: retrying re-arms the
+   * listener, and if it fails five more times the store goes fatal again — so a
+   * dependency on `worst` alone would be a loop that re-downloads all five
+   * collections every fifteen seconds for as long as the fault lasted. If the
+   * automatic attempt does not stick, the banner below asks the owner instead.
+   */
+  const healedLine = useRef(false)
+  useEffect(() => {
+    if (!sync.online) {
+      healedLine.current = false
+      return
+    }
+    if (worst !== 'retries' || healedLine.current) return
+    healedLine.current = true
+    retryLiveCollections()
+  }, [sync.online, worst])
+
+  /**
+   * WHAT MAY BE SAID OUT LOUD, which is less than what is known.
+   *
+   * BEING OFFLINE IS THE NORMAL STATE OF THIS APP — the line goes for hours, and
+   * that is precisely what the cache and the write queue are for. So a give-up
+   * that is only the outage wearing the listener out ('retries' with no line)
+   * stays quiet: the sync badge already says there is no line, the effect above
+   * will re-arm the listener when it returns, and a red banner during every
+   * ordinary afternoon would teach the owner to ignore all three of these.
+   *
+   * A refusal is suppressed only when the orange banner above is already up,
+   * which says the same thing better: the plan lapsed. The same rule the
+   * refused-write banner follows.
+   */
+  const frozen =
+    worst === null ||
+    (worst === 'retries' && !sync.online) ||
+    (worst === 'refused' && lapsed)
+      ? null
+      : worst
+  const frozenCopy = frozen === null ? null : FROZEN_COPY[frozen]
+  // Capitalised so JSX reads it as a component and not as an HTML tag.
+  const FrozenIcon = frozenCopy?.icon ?? AlertTriangle
 
   const groups: NavGroup[] = [
     {
@@ -328,6 +489,7 @@ export function AppShell() {
         h={fullHeight ? '100dvh' : undefined}
       >
         <UpdateBanner />
+        <StaleBuildBanner />
 
         {/*
           Two things the shop must never meet in silence.
@@ -338,25 +500,57 @@ export function AppShell() {
           refused write can also mean the session simply needs renewing. Either
           way the answer is a sentence, not a disappearing row.
         */}
+        {/*
+          TWO WINDOWS, TWO MESSAGES, AND THE DIFFERENCE MATTERS MORE THAN IT LOOKS.
+
+          `lapsed` goes true the moment paidUntil passes, but the rules grant a
+          fortnight past it (graceMs() in firestore.rules), so for those fourteen
+          days every sale still saves normally. This banner nevertheless read
+          "rien ne peut être enregistré" from the first minute — telling a
+          shopkeeper his till had stopped recording when it had not. A
+          shopkeeper who believes that starts writing tickets on paper, and then
+          either enters nothing or enters everything twice; the message meant to
+          protect his data was the thing most likely to cost him some.
+
+          So: orange while there is runway — the plan has run out, renew it,
+          selling continues. Red only once `blocked` says the grace has closed
+          and the server really is refusing.
+        */}
         {lapsed && (
           <Flex
             align="center"
             gap={3}
             px={{ base: 3, md: 6 }}
             py={2}
-            bg="orange.solid"
-            color="orange.contrast"
+            bg={blocked ? 'red.solid' : 'orange.solid'}
+            color={blocked ? 'red.contrast' : 'orange.contrast'}
             flexShrink={0}
           >
             <ShieldAlert size={20} />
             <Box minW={0}>
-              <Text fontWeight="bold">{t('auth.lapsedTitle')}</Text>
-              <Text fontSize="sm">{t('auth.lapsedBody')}</Text>
+              <Text fontWeight="bold">
+                {blocked ? t('auth.blockedTitle') : t('auth.lapsedTitle')}
+              </Text>
+              <Text fontSize="sm">{blocked ? t('auth.blockedBody') : t('auth.lapsedBody')}</Text>
             </Box>
           </Flex>
         )}
 
-        {sync.denied && !lapsed && (
+        {/*
+          NOT gated on `lapsed`, and it used to be.
+
+          The Close button below is the only call site of clearDenied() in the
+          whole app, so `sync.denied && !lapsed` meant the latch could not be
+          released during a lapsed period — which is precisely the period in
+          which the server refuses writes and the flag is certain to be up. The
+          owner was left with a permanent red badge he had no way to acknowledge,
+          on the one occasion the app most needed him to still be reading it.
+
+          Both banners showing at once is the correct outcome anyway: they say
+          different things. This one says a change was rolled back; the one above
+          says why.
+        */}
+        {sync.denied && (
           <Flex
             align="center"
             gap={3}
@@ -368,11 +562,86 @@ export function AppShell() {
           >
             <ShieldAlert size={20} />
             <Text minW={0} fontWeight="semibold">
-              {t('auth.deniedWrite')}
+              {/*
+                Two remedies, so two sentences. 'refused' means nothing will
+                save until the plan or the sign-in is put right; 'lost' means
+                everything still works and one change has to be entered again.
+                Telling him to sign in again for a rolled-back stock adjustment
+                would send him to a login screen that fixes nothing — and
+                offline, cannot even be passed.
+              */}
+              {sync.deniedReason === 'lost' ? t('auth.lostWrite') : t('auth.deniedWrite')}
             </Text>
             <Button size="sm" variant="outline" ms="auto" flexShrink={0} onClick={clearDenied}>
               {t('common.close')}
             </Button>
+          </Flex>
+        )}
+
+        {/*
+          The third thing the shop must never meet in silence, and the one that
+          hides the best: the numbers on screen have stopped being updated.
+
+          A refused write at least makes a row appear and vanish. A dead listener
+          shows nothing at all — the stock table still lists everything, the
+          prices still look right, and the till still rings up sales, all against
+          whatever this machine last managed to confirm. There is no dismiss
+          button on purpose: nothing here is news the owner can acknowledge and
+          move on from, it goes away when the data is live again.
+        */}
+        {frozenCopy !== null && (
+          <Flex
+            align="center"
+            gap={3}
+            px={{ base: 3, md: 6 }}
+            py={2}
+            bg={frozenCopy.bg}
+            color={frozenCopy.fg}
+            flexShrink={0}
+          >
+            <FrozenIcon size={20} />
+            <Box minW={0}>
+              <Text fontWeight="bold">{t(frozenCopy.title)}</Text>
+              <Text fontSize="sm">{t(frozenCopy.body)}</Text>
+            </Box>
+            {frozenCopy.needsDeploy ? (
+              /*
+                The only case where re-arming the listener is pointless: the query
+                is malformed or its index is missing, so it answers the same way
+                however often it is asked, and only a new build changes that.
+                Picking one up needs a line, and with the line down a reload is
+                the single action that can cost the shop the app entirely — the
+                service worker may be holding a half-installed set of chunks — so
+                offline the sentence stands alone and offers nothing.
+              */
+              sync.online && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  ms="auto"
+                  flexShrink={0}
+                  onClick={() => window.location.reload()}
+                >
+                  {t('sync.frozenReload')}
+                </Button>
+              )
+            ) : (
+              /*
+                Every other reason gets the hand-wound recovery liveCollection
+                exposes: it re-arms all five listeners at once, costs one attempt,
+                and is the only way back that does not risk the app the way a
+                reload does.
+              */
+              <Button
+                size="sm"
+                variant="outline"
+                ms="auto"
+                flexShrink={0}
+                onClick={retryLiveCollections}
+              >
+                {t('common.retry')}
+              </Button>
+            )}
           </Flex>
         )}
         <Flex

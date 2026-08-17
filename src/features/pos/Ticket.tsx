@@ -4,6 +4,15 @@ import { formatDateTime } from '@/lib/format'
 import type { PosLine } from './usePosCart'
 import type { PaymentMode, ShopSettings } from '@/types/models'
 
+/**
+ * Everything the receipt prints, captured at the moment the sale was rung up.
+ *
+ * There is deliberately no "not yet sent to the server" flag here. The sale is
+ * durable on this machine before this component is ever rendered, but whether
+ * the server has taken it is unknown at print time and will change after the
+ * paper is already in the customer's hand — so a receipt claiming either thing
+ * is a receipt that lies. The header sync badge owns that question.
+ */
 export interface TicketData {
   ticketNo: string
   date: number
@@ -17,8 +26,6 @@ export interface TicketData {
   received: number
   mode: PaymentMode
   clientName?: string
-  /** Written on this device but not yet acknowledged by the server. */
-  pending?: boolean
 }
 
 const row: CSSProperties = { display: 'flex', justifyContent: 'space-between' }

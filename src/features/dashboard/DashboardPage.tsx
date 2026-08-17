@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -53,7 +53,7 @@ import {
 } from 'recharts'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate, formatPercent } from '@/lib/format'
-import { useSalesSince } from '@/features/sales/useSales'
+import { useSalesSince, useDayStart } from '@/features/sales/useSales'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { useProducts } from '@/features/stock/useProducts'
@@ -109,6 +109,21 @@ export function DashboardPage() {
     now: Date.now(),
   }))
   const { period, now } = view
+
+  /**
+   * Every range on this page is derived from `now`, and this tab is not
+   * reloaded for days on a shop PC. Frozen at mount, "Aujourd'hui" went on
+   * reporting the day the page was opened — a KPI headed "today" showing
+   * yesterday's takings, with the growth comparison shifted by a day too. The
+   * day boundary re-renders us the moment the local date changes, which is
+   * exactly when every range on the page becomes wrong, so re-read the clock
+   * then. The guard keeps this from firing on mount, where `dayStart` is
+   * necessarily already behind `now`.
+   */
+  const dayStart = useDayStart()
+  useEffect(() => {
+    setView((v) => (v.now >= dayStart ? v : { ...v, now: Date.now() }))
+  }, [dayStart])
 
   /**
    * The stats compare the period against the one before it, so the earliest

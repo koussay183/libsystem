@@ -53,6 +53,18 @@ export function setShopId(id: string): void {
   }
 }
 
+/**
+ * Forget which shop this browser is looking at — logout, and nothing else.
+ *
+ * This clears the id and only the id. Every row the shop's screens have already
+ * read is still held twice over: in the shared live collection stores, which keep
+ * their last snapshot on purpose so a route change is instant, and in Firestore's
+ * IndexedDB cache. Clearing the id without emptying those is how the next account
+ * to sign in on the same machine gets a frame of somebody else's stock, so the
+ * caller pairs this with `resetLiveCollections()` from '@/lib/liveCollection' —
+ * called AFTER this function, never before, because that reset re-arms whatever
+ * is still mounted against the tenant as it stands at that moment.
+ */
 export function clearShopId(): void {
   setShopId('')
 }
@@ -65,6 +77,20 @@ export function clearShopId(): void {
  * into the shared root, where the old permissive world used to live, and no
  * error would ever be raised. Every caller runs behind RequireAuth, which does
  * not render until a shop is known, so reaching this is a bug and should say so.
+ *
+ * There is exactly one caller that must never let this throw reach React, and it
+ * is not fixed by softening this function. `createLiveCollection` builds its
+ * query inside a subscription, so during the window between `clearShopId()` and
+ * the redirect the throw came out of a render, and the app went to a blank page
+ * instead of to the login screen. That is caught in `start()`
+ * (liveCollection.ts), which publishes a "not subscribed" state and lets the
+ * router do its job — a better outcome than the error boundary that now stands
+ * over the tree, which would at least explain the crash but would still have
+ * taken the screen away from a shop that is merely signing out. Anyone tempted to make this
+ * return a fallback path instead should read the paragraph above again: a
+ * shopPath() that answers with no shop selected is a shopPath() that can file one
+ * shop's sale in another shop's books, silently, for as long as it takes somebody
+ * to notice.
  */
 export function shopPath(collectionName: string): string {
   if (shopId === '') {

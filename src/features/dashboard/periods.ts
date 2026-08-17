@@ -5,6 +5,13 @@
  *
  * Kept free of React and of i18n on purpose: pure date maths, easy to reason
  * about and to check by hand.
+ *
+ * Every function here takes `now` and reads no clock of its own, so none of
+ * these boundaries can go stale on their own — but that puts the burden on the
+ * caller: a `now` captured once at mount silently turns "aujourd'hui" into "the
+ * day the page was opened" on a shop PC whose tab is never closed. Nothing in
+ * this file may be memoised at module scope for the same reason. See
+ * `useDayStart` and how `DashboardPage` refreshes `now` at midnight.
  */
 
 import dayjs from 'dayjs'

@@ -176,19 +176,28 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     }
   }
 
-  const ensureCategory = async (nm: string) => {
+  /**
+   * Adds the freely typed name to the category list so it is offered next time.
+   *
+   * Synchronous on purpose. createCategory mints its id locally and queues the
+   * write (see its docblock), so there is nothing to await; and the try/catch
+   * stays because it can still throw synchronously — shopPath() throws when the
+   * shop id is missing. Seeding a list is never worth losing a whole family of
+   * products over.
+   */
+  const ensureCategory = (nm: string) => {
     if (nm === '' || categoryNames.includes(nm)) return
     try {
-      await createCategory(nm)
+      createCategory(nm)
     } catch {
       // Saving the products matters more than seeding the list.
     }
   }
 
-  const ensureSupplier = async (nm: string) => {
+  const ensureSupplier = (nm: string) => {
     if (nm === '' || supplierNames.includes(nm)) return
     try {
-      await createSupplier({ name: nm })
+      createSupplier({ name: nm })
     } catch {
       // Saving the products matters more than seeding the list.
     }
@@ -257,8 +266,15 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
           return
         }
       }
-      await ensureCategory(category.trim())
-      await ensureSupplier(supplier.trim())
+      // These two used to be awaited, and awaited BEFORE the products were
+      // written: createCategory was an awaited addDoc, whose promise never
+      // settles with the line down, so submit stopped here and the family the
+      // owner actually came to create was never written at all. Nothing below
+      // depends on their result — a product stores its category and supplier by
+      // name — so they only ever seed the pick-lists, and they can no longer
+      // stand between the owner and his stock.
+      ensureCategory(category.trim())
+      ensureSupplier(supplier.trim())
       const count = await createProducts(inputs)
       if (alive.current) {
         onSaved?.(count)

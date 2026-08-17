@@ -1,8 +1,10 @@
 import { lazy, useEffect, Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import type { ReactNode } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from '@/auth/AuthContext'
 import { RequireAuth } from '@/auth/RequireAuth'
 import { AppShell } from '@/components/layout/AppShell'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { SetupNeeded } from '@/features/setup/SetupNeeded'
 import { Flex, Spinner } from '@chakra-ui/react'
@@ -58,6 +60,34 @@ function PageFallback() {
   )
 }
 
+/**
+ * Everything one routed page needs: its loading spinner while the chunk arrives,
+ * and its own error boundary.
+ *
+ * The boundary is INSIDE AppShell (these elements render into its `<Outlet/>`),
+ * which is the whole point: a page that throws leaves the navigation on screen,
+ * so the owner can walk to another screen instead of looking at a dead app. It
+ * wraps the Suspense rather than sitting under it, because a `lazy()` import
+ * that fails to download surfaces as a throw from the suspended tree — that is
+ * the missing-chunk case from a service worker installed over a flaky line, and
+ * it has to be caught here.
+ *
+ * The key is load-bearing. React Router renders the matched route's element in
+ * the same position in the tree, and these elements are all the same component
+ * type, so React reuses this instance across a navigation — a boundary stuck in
+ * its error state would follow the owner to every page he tried. Keying on the
+ * path remounts it, which is exactly the "walk away from the broken screen"
+ * recovery this exists to give him.
+ */
+function PageBoundary({ children }: { children: ReactNode }) {
+  const location = useLocation()
+  return (
+    <ErrorBoundary key={location.pathname} where={`route${location.pathname}`}>
+      <Suspense fallback={<PageFallback />}>{children}</Suspense>
+    </ErrorBoundary>
+  )
+}
+
 export function App() {
   /**
    * Warm the till in the background as soon as the browser is idle. Opening the
@@ -100,97 +130,97 @@ export function App() {
             <Route
               path="/"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <HomePage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/caisse"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <CaissePage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/stock"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <StockPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/packs"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <PacksPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/invoices"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <InvoicesPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/suppliers"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <SuppliersPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/credit"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <CreditPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/credit/:id"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <CustomerDetailPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/dashboard"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <DashboardPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/reports"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <ReportsPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/backup"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <BackupPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
             <Route
               path="/settings"
               element={
-                <Suspense fallback={<PageFallback />}>
+                <PageBoundary>
                   <SettingsPage />
-                </Suspense>
+                </PageBoundary>
               }
             />
           </Route>

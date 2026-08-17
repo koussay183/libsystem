@@ -37,6 +37,7 @@ import {
   useCustomerLedger,
   removeCustomer,
   OutstandingBalanceError,
+  LedgerUnreadableError,
 } from '@/features/customers/useCustomers'
 import { CreditEntryForm } from './CreditEntryForm'
 import { CustomerForm } from './CustomerForm'
@@ -117,9 +118,15 @@ export function CustomerDetailPage() {
             ? t('credit.cannotDeleteDebtor', {
                 amount: formatMoney(err.balance, { symbol }),
               })
-            : err instanceof Error
-              ? err.message
-              : t('common.error'),
+            : // Not an error message but an instruction, and the only one in the
+              // app that asks the owner to wait for a line: his ledger lines
+              // could not be read, and deleting him without them would leave
+              // money on the books under a name nobody can look up.
+              err instanceof LedgerUnreadableError
+              ? t('credit.cannotDeleteOffline')
+              : err instanceof Error
+                ? err.message
+                : t('common.error'),
         )
       }
     } finally {

@@ -29,6 +29,8 @@ interface Row {
   soldQty: number
   soldRevenue: number
   soldCost: number
+  /** Sold, but with no purchase price behind it. @see rows */
+  uncosted: boolean
   boughtQty: number
   boughtCost: number
   profit: number
@@ -49,6 +51,23 @@ export function ReportsPage() {
     const soldRevenue = p.soldRevenue ?? 0
     const soldCost = p.soldCost ?? 0
     const profit = soldRevenue - soldCost
+    /*
+      AN ARTICLE WITH NO PURCHASE PRICE IS NOT AN ARTICLE THAT COST NOTHING.
+
+      The till's quick-create dialog lets the cashier save a scanned book with
+      the cost field blank, because a queue at the counter beats a correct
+      margin — and it writes costPrice 0. Every unit sold then adds 0 to
+      soldCost, so this page reported those articles as 100 % profit for ever,
+      and they sorted straight to the top of "les plus rentables". The owner was
+      being told his best-performing stock was whichever articles nobody had
+      taken the time to cost.
+
+      A bookshop does not sell anything for nothing, so revenue with no cost
+      behind it means "not costed yet", not "free". Say that instead of a
+      number: an honest blank sends him to the article to fill the price in,
+      where a confident 100 % never would.
+    */
+    const uncosted = (p.soldQty ?? 0) > 0 && soldCost === 0 && soldRevenue > 0
     return {
       id: p.id,
       name: p.name,
@@ -58,7 +77,8 @@ export function ReportsPage() {
       boughtQty: p.boughtQty ?? 0,
       boughtCost: p.boughtCost ?? 0,
       profit,
-      margin: soldRevenue > 0 ? (profit / soldRevenue) * 100 : null,
+      uncosted,
+      margin: uncosted || soldRevenue <= 0 ? null : (profit / soldRevenue) * 100,
     }
   })
 
@@ -207,15 +227,29 @@ export function ReportsPage() {
                           <Table.Cell textAlign="end">
                             {r.boughtQty} {t('reports.units')}
                           </Table.Cell>
-                          <Table.Cell textAlign="end">{money(r.soldCost)}</Table.Cell>
+                          <Table.Cell textAlign="end">
+                            {r.uncosted ? (
+                              <Badge colorPalette="orange" size="sm">
+                                {t('reports.uncosted')}
+                              </Badge>
+                            ) : (
+                              money(r.soldCost)
+                            )}
+                          </Table.Cell>
                           <Table.Cell
                             textAlign="end"
                             fontWeight="bold"
-                            color={r.profit >= 0 ? 'green.600' : 'red.600'}
+                            // A profit computed against no cost is not a profit,
+                            // so it is not painted as one.
+                            color={
+                              r.uncosted ? 'fg.muted' : r.profit >= 0 ? 'green.600' : 'red.600'
+                            }
                           >
                             {money(r.profit)}
                           </Table.Cell>
-                          <Table.Cell textAlign="end">{formatPercent(r.margin)}</Table.Cell>
+                          <Table.Cell textAlign="end" title={r.uncosted ? t('reports.uncostedHint') : undefined}>
+                            {r.uncosted ? '—' : formatPercent(r.margin)}
+                          </Table.Cell>
                         </Table.Row>
                       )
                     })}

@@ -21,7 +21,7 @@ import {
 } from '@chakra-ui/react'
 import { Copy, Package, ScanLine, X, Zap } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { fromMinor, parseMoney, parseQuantity, marginPercent, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import { toInput, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
 import { createProduct, updateProduct, findProductByBarcode } from './useProducts'
 import {
@@ -52,8 +52,6 @@ interface ProductFormProps {
   /** Opens on the short path: only the name and the sale price are asked for. */
   quick?: boolean
 }
-
-const money = (minor: number) => (minor ? String(fromMinor(minor)) : '')
 
 /** Sentinel option value meaning "type a new one". */
 const NEW = '__new__'
@@ -135,11 +133,11 @@ export function ProductForm({
     const sale = source?.salePrice ?? 0
     const rate = source?.vatRate ?? defaultVatFor(shop)
     setVat(rate)
-    setCostPrice(money(cost))
+    setCostPrice(toInput(cost))
     // No stored HT means the article predates the split — derive it from what
     // the shop paid rather than showing an empty field.
-    setCostHT(money(source?.costPriceHT ?? (cost > 0 ? htFromTtc(cost, rate) : 0)))
-    setSalePrice(money(sale))
+    setCostHT(toInput(source?.costPriceHT ?? (cost > 0 ? htFromTtc(cost, rate) : 0)))
+    setSalePrice(toInput(sale))
     const known =
       source?.margin ??
       (cost > 0 && sale > 0 ? marginFromPrices(cost, sale) : null) ??
@@ -170,7 +168,7 @@ export function ProductForm({
   const priceFrom = (ttcMinor: number, percentText: string) => {
     const pct = parsePercent(percentText)
     if (pct === null) return
-    setSalePrice(money(saleFromCost(ttcMinor, pct)))
+    setSalePrice(toInput(saleFromCost(ttcMinor, pct)))
   }
 
   const applyHt = (text: string) => {
@@ -178,7 +176,7 @@ export function ProductForm({
     const ht = parseMoney(text)
     if (ht === null) return
     const ttc = ttcFromHt(ht, vat)
-    setCostPrice(money(ttc))
+    setCostPrice(toInput(ttc))
     priceFrom(ttc, marginText)
   }
 
@@ -187,7 +185,7 @@ export function ProductForm({
     const ht = parseMoney(costHT)
     if (ht === null) return
     const ttc = ttcFromHt(ht, next)
-    setCostPrice(money(ttc))
+    setCostPrice(toInput(ttc))
     priceFrom(ttc, marginText)
   }
 
@@ -195,7 +193,7 @@ export function ProductForm({
     setCostPrice(text)
     const ttc = parseMoney(text)
     if (ttc === null) return
-    setCostHT(money(htFromTtc(ttc, vat)))
+    setCostHT(toInput(htFromTtc(ttc, vat)))
     priceFrom(ttc, marginText)
   }
 
@@ -233,7 +231,21 @@ export function ProductForm({
 
   const costMinor = parseMoney(costPrice) ?? 0
   const saleMinor = parseMoney(salePrice) ?? 0
-  const actualMargin = marginPercent(costMinor, saleMinor)
+  /**
+   * The readout under the price fields, and it has to be the SAME definition of
+   * margin as the field the owner typed into three rows above: `saleFromCost`
+   * put the sale price there as cost x (1 + marge/100), so only
+   * `marginFromPrices` reads it back as the number he entered. This used to call
+   * `money.marginPercent`, which was margin of the sale price, so cost 1000 and
+   * marge 35 showed a sale price of 1350 and a readout of "25,9 %" — one dialog,
+   * two answers, both called marge. That function is now gone; see the note left
+   * where it lived in src/lib/money.ts.
+   *
+   * Guarded on the sale price as well as on the cost, because margin on cost is
+   * -100 % for a sale price of nothing, and an empty field must read as no
+   * answer rather than as a 100 % loss.
+   */
+  const actualMargin = saleMinor > 0 ? marginFromPrices(costMinor, saleMinor) : null
   const belowCost = saleMinor > 0 && costMinor > 0 && saleMinor < costMinor
   const categoryNames = categories.map((c) => c.name)
   const supplierNames = suppliers.map((s) => s.name)

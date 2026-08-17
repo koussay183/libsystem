@@ -154,12 +154,6 @@ export function formatMoney(
 }
 
 /**
- * Stored millimes -> the text a price field should start with.
- *
- * Zero comes back empty: a field pre-filled with "0" is a field the owner has
- * to clear before he can type, and one he can leave at zero by accident.
- */
-/**
  * The greyed-out example inside an empty price field.
  *
  * "0.000" next to a field that wants whole millimes teaches the wrong thing on
@@ -169,6 +163,23 @@ export function moneyPlaceholder(): string {
   return mode === 'millime' ? '0' : '0.000'
 }
 
+/**
+ * Stored millimes -> the text a price field should start with.
+ *
+ * Zero comes back empty: a field pre-filled with "0" is a field the owner has
+ * to clear before he can type, and one he can leave at zero by accident.
+ *
+ * It fills through `fromMinor`, so it follows the money mode. A hand-rolled
+ * copy of this in the credit dialog used `.toFixed(3)`, which hard-codes the
+ * dinar form and would have put "5000.000" in the box for a shop counting in
+ * millimes.
+ *
+ * This is the one implementation of both rules, and it has to stay the one:
+ * the product form and the credit dialog each carried a private copy, which is
+ * how the zero-is-empty rule gets corrected in one dialog and stays wrong in
+ * the other two. Every price field that starts from a stored amount comes
+ * through here.
+ */
 export function toInput(minor: Minor): string {
   if (!minor) return ''
   return String(fromMinor(minor))
@@ -190,8 +201,25 @@ export function parseQuantity(input: string | number | null | undefined): number
   return Math.trunc(value)
 }
 
-/** Profit margin as a percentage of the sale price. Guards divide-by-zero. */
-export function marginPercent(costMinor: Minor, saleMinor: Minor): number | null {
-  if (saleMinor <= 0) return null
-  return ((saleMinor - costMinor) / saleMinor) * 100
-}
+/**
+ * There is deliberately no margin helper in this module, and adding one back
+ * would reopen a bug that cost real confusion.
+ *
+ * Margin is a pricing decision, not a currency concern, and it lives in exactly
+ * one place: `marginFromPrices` in src/features/stock/pricing.ts, which is
+ * margin ON COST — the definition the product form's margin field asks for and
+ * the one `saleFromCost` prices with.
+ *
+ * This file used to export a `marginPercent` that was margin OF THE SALE price.
+ * Its single caller was the readout under the product form's price fields, so
+ * cost 1000 with margin 35 produced a sale price of 1350 and a readout of
+ * "25,9 %": the owner reading the number he had typed and a different number
+ * the app had derived from it, both labelled marge, in the same dialog, with no
+ * way to tell which one his shelf labels ran on.
+ *
+ * Profit as a share of revenue is a reporting quantity, not a price input. The
+ * two places that want it (ReportsPage.tsx:61, useDashboardStats.ts:89) divide
+ * a profit they have already summed by a revenue they have already summed,
+ * where the divisor is named on the spot and cannot be mistaken for a margin
+ * somebody typed.
+ */

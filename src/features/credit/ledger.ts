@@ -24,9 +24,44 @@ export function signedAmount(entry: CreditEntry): number {
   return entry.type === 'debit' ? entry.amount : -entry.amount
 }
 
+/**
+ * When a line happened, as a number that can always be compared.
+ *
+ * Both `date` and `createdAt` are plain `Date.now()` millisecond integers
+ * stamped on the machine that wrote the line — `addCreditEntry`
+ * (useCustomers.ts) and `recordSale` (useSales.ts) are the only two writers and
+ * neither uses `serverTimestamp()`. That is not an oversight and must not be
+ * "improved": a `serverTimestamp()` sentinel reads back as `null` on a document
+ * that is still queued in IndexedDB, so with the line down every sort and
+ * comparison in this module would fold the shop's newest lines onto one end of
+ * the carnet — or, through an `orderBy` on the field, drop them from the query
+ * altogether. A local stamp is the only value that exists at the moment the
+ * owner writes the line, and it is the value the ledger has to be ordered by.
+ *
+ * The fallbacks are for lines this app did not write. A restored backup goes in
+ * through `backupService` as raw JSON rows with no per-row validation, so `date`
+ * can be missing or a string. `a.date - b.date` on such a row is `NaN`, and a
+ * comparator that returns `NaN` leaves `Array.prototype.sort`'s ordering
+ * implementation-defined — which silently scrambles the running-balance column
+ * of a book the shop settles real money on. Coercing to a finite number keeps
+ * the order deterministic and keeps the line in the ledger instead of losing it.
+ */
+export function entryTime(entry: CreditEntry): number {
+  if (Number.isFinite(entry.date)) return entry.date
+  if (Number.isFinite(entry.createdAt)) return entry.createdAt
+  return 0
+}
+
+/** When the line was written, used only to break a same-instant tie. */
+function writtenAt(entry: CreditEntry): number {
+  return Number.isFinite(entry.createdAt) ? entry.createdAt : entryTime(entry)
+}
+
 /** Oldest first. `createdAt` breaks ties so two same-day lines keep their order. */
 function chronological(entries: CreditEntry[]): CreditEntry[] {
-  return [...entries].sort((a, b) => a.date - b.date || a.createdAt - b.createdAt)
+  return [...entries].sort(
+    (a, b) => entryTime(a) - entryTime(b) || writtenAt(a) - writtenAt(b),
+  )
 }
 
 export interface LedgerRow {
@@ -81,17 +116,26 @@ export function debtStartedAt(entries: CreditEntry[]): number | null {
   for (const e of chronological(entries)) {
     const before = running
     running += signedAmount(e)
-    if (before <= 0 && running > 0) startedAt = e.date
+    if (before <= 0 && running > 0) startedAt = entryTime(e)
     if (running <= 0) startedAt = null
   }
   return running > 0 ? startedAt : null
 }
 
-/** Date of the last money he handed over, whatever the balance is now. */
+/**
+ * Date of the last money he handed over, whatever the balance is now.
+ *
+ * Read through `entryTime` rather than `e.date` directly: a row whose `date` is
+ * not a number compares false against everything, so the payment would drop out
+ * of "when did he last pay?" without a trace — and `needsReminder` below would
+ * then chase a client who settled up last week.
+ */
 export function lastPaymentAt(entries: CreditEntry[]): number | null {
   let last: number | null = null
   for (const e of entries) {
-    if (e.type === 'payment' && (last === null || e.date > last)) last = e.date
+    if (e.type !== 'payment') continue
+    const at = entryTime(e)
+    if (last === null || at > last) last = at
   }
   return last
 }

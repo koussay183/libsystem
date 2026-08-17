@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -50,6 +50,7 @@ import {
   removeCategory,
   countProductsInCategory,
 } from '@/features/categories/useCategories'
+import { useProducts } from '@/features/stock/useProducts'
 import { useShopSettings, saveShopSettings } from './useShopSettings'
 import type { Category, ShopSettings } from '@/types/models'
 
@@ -64,12 +65,33 @@ function ShopTab() {
   const [done, setDone] = useState(false)
   const [error, setError] = useState('')
 
-  // The live document is the source of truth until the owner starts editing.
+  /**
+   * True from the first keystroke until the next successful save.
+   *
+   * A ref rather than state: nothing renders differently because of it, and it
+   * has to be readable by the effect below in the same commit as the keystroke
+   * that set it — a state update would arrive a render too late, which is
+   * exactly the race this exists to close.
+   */
+  const dirty = useRef(false)
+
+  /**
+   * The live document is the source of truth UNTIL THE OWNER STARTS EDITING —
+   * which is what this comment already claimed and nothing enforced.
+   *
+   * It ran on every settings snapshot, and a snapshot arrives whenever anything
+   * writes to the document: another device, another tab, or this very app doing
+   * something unrelated. Renaming a category now carries its margin across
+   * (useShopSettings.carryCategoryMargin), so a rename performed while the
+   * Boutique tab was half filled in wiped the half — shop name, address, phone,
+   * the ticket footer — with no warning and nothing to undo it.
+   */
   useEffect(() => {
-    if (!loading) setForm(shop)
+    if (!loading && !dirty.current) setForm(shop)
   }, [loading, shop])
 
   const set = (k: keyof ShopSettings) => (e: { target: { value: string } }) => {
+    dirty.current = true
     setForm((f) => ({ ...f, [k]: e.target.value }))
     setDone(false)
   }
@@ -80,6 +102,10 @@ function ShopTab() {
     setError('')
     try {
       await saveShopSettings({ ...form, name: form.name.trim() || 'Librairie' })
+      // Saved, so the document is authoritative again and a later snapshot may
+      // overwrite the form. Cleared before the alive check on purpose: the write
+      // happened whether or not this component is still mounted to hear about it.
+      dirty.current = false
       if (alive.current) setDone(true)
     } catch {
       if (alive.current) setError(t('common.error'))
@@ -353,6 +379,12 @@ function CategoriesTab() {
   const { t } = useTranslation()
   const alive = useAlive()
   const { categories, loading } = useCategories()
+  // Renaming a category re-tags every product carrying the old name, and it
+  // reads them from this snapshot rather than asking the server: offline a
+  // `where('category','==',…)` query never answers. Subscribing here is what
+  // makes that reliable — the shared products listener is warm for as long as
+  // this tab is on screen, so the rename does not run against an empty list.
+  const { products, loading: productsLoading } = useProducts()
 
   const [open, setOpen] = useState(false)
   const [editing, setEditing] = useState<Category | null>(null)
@@ -389,10 +421,18 @@ function CategoriesTab() {
       setError(t('settings.duplicate'))
       return
     }
+    // A rename re-tags the products it can see, so renaming before the stock
+    // snapshot has arrived would rename the category and leave every article
+    // behind under a label nothing answers to. Waiting a moment is recoverable;
+    // that is not.
+    if (editing && productsLoading) {
+      setError(t('settings.categoryProductsWait'))
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      if (editing) await renameCategory(editing.id, editing.name, next)
+      if (editing) await renameCategory(editing.id, editing.name, next, products)
       else await createCategory(next)
       if (alive.current) setOpen(false)
     } catch {
@@ -404,8 +444,14 @@ function CategoriesTab() {
 
   const confirmDelete = async (c: Category) => {
     setListError('')
+    // The count comes from the resident snapshot; before it arrives it would
+    // read zero and the confirmation would claim the category is unused.
+    if (productsLoading) {
+      setListError(t('settings.categoryProductsWait'))
+      return
+    }
     try {
-      const used = await countProductsInCategory(c.name)
+      const used = await countProductsInCategory(c.name, products)
       const message =
         used > 0
           ? `${t('settings.categoryInUse', { count: used })}\n${t('settings.categoryDeleteConfirm')}`

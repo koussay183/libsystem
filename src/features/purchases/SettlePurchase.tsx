@@ -55,6 +55,15 @@ export function SettlePurchase({
   const amount = parsed === null ? 0 : Math.min(parsed, owed)
   const leftAfter = Math.max(0, owed - amount)
 
+  /**
+   * settlePurchase writes into the local cache and returns without waiting for
+   * the server, so closing here means "the payment is recorded on this machine",
+   * which is the strongest honest claim when the line is down. The new balance
+   * shows on the Achats row immediately because the listener serves it from the
+   * same cache. It used to await the acknowledgement: offline that never arrived,
+   * the owner cancelled and paid the supplier a second time in the app, and
+   * increment() applied both amounts on reconnect.
+   */
   const save = async () => {
     if (parsed === null || parsed <= 0) {
       setError(t('credit.amountRequired'))

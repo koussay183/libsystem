@@ -48,7 +48,7 @@ import type { Pack, PackItem, Product } from '@/types/models'
  */
 export function PacksPage() {
   const { t } = useTranslation()
-  const { packs, loading, error } = usePacks()
+  const { packs, loading, error, fatal, fatalReason, retry } = usePacks()
   const { products, loading: productsLoading } = useProducts()
   const [editing, setEditing] = useState<Pack | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -114,17 +114,43 @@ export function PacksPage() {
         </Alert.Root>
       )}
 
-      {loading ? (
-        <Flex justify="center" py={16}>
-          <Spinner size="xl" colorPalette="brand" />
-        </Flex>
-      ) : error ? (
-        <Alert.Root status="error">
+      {/*
+        THE WARNING GOES ABOVE THE LIST, NOT INSTEAD OF IT.
+
+        This was `error ? <Alert> : <table>`, which threw away the one thing
+        liveCollection goes out of its way to keep: when a listener dies it
+        publishes the failure WITH the last good snapshot still in `data`,
+        precisely so a screen can go on being useful. Replacing the list with a
+        red box meant a dropped listener took the shop's packs off the screen
+        while the app still knew every one of them — and packs are sold at the
+        till, so it took away something the owner was in the middle of using.
+
+        Stale and labelled beats absent. He can read a pack's price off a row
+        that is an hour old; he can do nothing at all with an error message.
+      */}
+      {error && (
+        <Alert.Root status={fatal && fatalReason !== 'no-shop' ? 'error' : 'warning'} mb={4}>
           <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>{error}</Alert.Title>
           </Alert.Content>
+          {/* The listener gave up and Firestore never revives one by itself, so
+              without this button the only way back is a page reload — and with
+              the line down a reload can cost the shop the app. 'no-shop' is
+              excluded: there is nothing to re-arm, a redirect is already on its
+              way. */}
+          {fatal && fatalReason !== 'no-shop' && (
+            <Button size="sm" variant="outline" onClick={retry}>
+              {t('common.retry')}
+            </Button>
+          )}
         </Alert.Root>
+      )}
+
+      {loading ? (
+        <Flex justify="center" py={16}>
+          <Spinner size="xl" colorPalette="brand" />
+        </Flex>
       ) : packs.length === 0 ? (
         <EmptyState.Root size="lg">
           <EmptyState.Content>

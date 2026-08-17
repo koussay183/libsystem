@@ -11,6 +11,7 @@ import {
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
+import type { LiveFatalReason } from '@/lib/liveCollection'
 import { track } from '@/lib/syncStatus'
 import type { Pack, PackInput, PackItem, Product } from '@/types/models'
 import type { Minor } from '@/lib/money'
@@ -21,13 +22,51 @@ const packsStore = createLiveCollection<Pack>(() =>
   query(collection(db, shopPath(COL)), orderBy('name')),
 )
 
+/**
+ * The pack list, plus what a screen needs when the subscription has DIED rather
+ * than merely fallen behind.
+ *
+ * `fatal` used to be dropped here: liveCollection published "I have given up"
+ * — after a refusal, a blown quota, or five failures in a row — and this return
+ * threw the flag away, so the till went on selling packs off whatever snapshot
+ * happened to be resident, with nothing on any screen to say the prices could
+ * no longer be confirmed. `retry` comes out with it because reporting a dead
+ * listener without offering to re-arm it leaves the owner only a page reload,
+ * and with the line down a reload is the single action that can cost him the
+ * app entirely.
+ *
+ * `fatalReason === 'no-shop'` is not an alarm: it means the account is signed
+ * out or between shops and a redirect is already on its way. Callers must check
+ * it before warning about anything.
+ */
 export function usePacks() {
   const state = useSyncExternalStore(
     packsStore.subscribe,
     packsStore.getSnapshot,
     packsStore.getSnapshot,
   )
-  return { packs: state.data, loading: state.loading, error: state.error }
+  return {
+    packs: state.data,
+    loading: state.loading,
+    error: state.error,
+    fatal: state.fatal,
+    fatalReason: state.fatalReason,
+    retry: packsStore.retry,
+  }
+}
+
+/**
+ * The give-up on its own, for the one banner in the app shell. See
+ * useProductsFatal in src/features/stock/useProducts.ts for why the snapshot is
+ * narrowed to a reason string rather than the whole state.
+ */
+const packsFatal = (): LiveFatalReason | null => {
+  const state = packsStore.getSnapshot()
+  return state.fatal ? state.fatalReason : null
+}
+
+export function usePacksFatal(): LiveFatalReason | null {
+  return useSyncExternalStore(packsStore.subscribe, packsFatal, packsFatal)
 }
 
 /**
@@ -43,14 +82,35 @@ export function createPack(input: PackInput): string {
   return ref.id
 }
 
+/**
+ * Neither of the two writes below is awaited, for the same reason createPack is
+ * not: Firestore settles a write only on server acknowledgement, so with the
+ * line down the promise NEVER settles — it does not reject either, so the
+ * try/catch in PackForm.submit cannot help and its `finally setBusy(false)`
+ * never runs. The dialog then spins with no way out but Cancel, and Cancel
+ * unmounts the form, so the owner reopens it and saves again — a second queued
+ * mutation for one intended edit.
+ *
+ * They stay `async` so every caller keeps awaiting exactly what it awaited
+ * before; what changed is that the promise now resolves as soon as the change
+ * is in the local cache, which is the moment the pack list behind the dialog
+ * already shows it. A refusal from the server (lapsed plan, wrong shop) no
+ * longer reaches the caller's catch — it is reported by track() through the
+ * sync badge, which is the only place that can report it after the dialog has
+ * closed anyway.
+ */
 export async function updatePack(id: string, input: PackInput) {
-  await track(
+  void track(
     updateDoc(doc(db, shopPath(COL), id), { ...input, updatedAt: Date.now() }),
-  )
+  ).catch(() => {
+    /* replayed by the SDK; a refusal surfaces on the sync badge */
+  })
 }
 
 export async function removePack(id: string) {
-  await track(deleteDoc(doc(db, shopPath(COL), id)))
+  void track(deleteDoc(doc(db, shopPath(COL), id))).catch(() => {
+    /* replayed by the SDK; a refusal surfaces on the sync badge */
+  })
 }
 
 // ---------------------------------------------------------------------------

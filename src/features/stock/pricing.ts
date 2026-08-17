@@ -42,9 +42,19 @@ export function saleFromCost(costTtcMinor: Minor, marginPercent: number): Minor 
 }
 
 /**
- * The margin a chosen sale price actually represents. Null when there is no
- * purchase price to compare against, so the caller shows nothing rather than
- * a confident "0%".
+ * The margin a chosen sale price actually represents — the exact inverse of
+ * `saleFromCost`, so what the owner reads back is the number he typed. Null
+ * when there is no purchase price to compare against, so the caller shows
+ * nothing rather than a confident "0%".
+ *
+ * Margin here is ON COST: 1000 bought and 1350 sold is 35 %, not 25,9 %. That
+ * is what the shop means by marge, what the form's margin field asks for, and
+ * what `defaultMarginFor` and `shop.categoryMargins` store. So this is the only
+ * function allowed to turn a cost and a sale price into a margin anywhere in
+ * the app. A second one — margin of the sale price — used to sit in
+ * src/lib/money.ts and drove the product form's own readout, which therefore
+ * contradicted the field one row above it; the note left in its place explains
+ * why it is not coming back.
  */
 export function marginFromPrices(costTtcMinor: Minor, saleMinor: Minor): number | null {
   if (costTtcMinor <= 0) return null

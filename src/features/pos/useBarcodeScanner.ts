@@ -20,6 +20,14 @@ import { useCallback, useEffect, useMemo, useRef } from 'react'
  * the cashier has clicked somewhere else on the page — the code is never lost
  * and the field is refocused for him.
  *
+ * Two invariants hold whatever the scanner sends. A field the burst was typed
+ * into is always given back, because the restore lives in one function that
+ * only {@link reset} calls and `reset` is on every path out. And nothing thrown
+ * in here is allowed to escape: both entry points — the keydown listener and
+ * the flush — catch, restore, and log. A throw from here does not reach React
+ * at all (it is a native listener and a timer callback), so an escaping one
+ * unmounts the till to a blank page and takes the open basket with it.
+ *
  * The hook never decides whether a scan is *welcome*; it only reports one. The
  * caller ignores it when a dialog is up. That split is deliberate: the burst is
  * still recognised while a dialog is open, so the scanner's trailing Enter is
@@ -161,6 +169,10 @@ export interface BarcodeScanner {
    * Drops the buffer. Call it whenever the code was consumed by another path
    * (the exact-barcode match on typing, or a manual Enter) — otherwise the
    * pending burst would fire a second time and ring the article up twice.
+   *
+   * It also hands back the field the burst was typed into, if it borrowed one,
+   * so a code consumed elsewhere does not leave its characters behind in a
+   * quantity cell. Safe to call twice: the second call restores nothing.
    */
   reset: () => void
 }
@@ -203,31 +215,111 @@ export function useBarcodeScanner({
     }
   }
 
-  const reset = useCallback(() => {
-    clearTimer()
-    typed.current = ''
-    physical.current = ''
+  /**
+   * Gives back the field the burst was typed into.
+   *
+   * This is the ONLY place that restores it, and {@link reset} is the only
+   * caller — which is what makes the restore unmissable, because every path out
+   * of this module goes through `reset`. It used to be a line near the end of
+   * `flush`, and two paths reached the exit without it: the sub-`minLength`
+   * early return, and `reset` itself (called when a non-printable key ends the
+   * burst). A cashier who had clicked into a ticket quantity cell and then
+   * scanned a short code, or pressed an arrow key mid-burst, kept the burst
+   * characters in that cell — and `usePosCart.setQty` clamps to MAX_QTY, so the
+   * customer's ticket showed a quantity of up to 999.
+   *
+   * `burst` is the buffer as it stood; it is what tells a scan apart from a
+   * cashier's own keystrokes.
+   */
+  const giveBack = useCallback((burst: string) => {
+    const stolen = hijacked.current
+    // Cleared first and unconditionally, so a second call can never write this
+    // snapshot again: several exit paths run in sequence (flush → reset, then
+    // the catch that guards the handler), and a repeated restore is exactly how
+    // a value from before the scan ends up on top of what the cashier has typed
+    // since.
     hijacked.current = null
+    if (!stolen) return
+
+    // A single character is never a burst. The machine test is the *gap*
+    // between characters (INTERCHAR_MAX_MS), so a buffer that never grew past
+    // one character was typed by a hand — each of those keystrokes is "fresh"
+    // and re-snapshots the field, and undoing it would silently delete a
+    // character every time somebody types anywhere outside the scan field.
+    if (burst.length < 2) return
+
+    // The field can have been re-rendered away in the meantime (the ticket row
+    // it belonged to removed by the scan itself). Writing to a detached node
+    // repairs nothing and dispatches an input event into a dead tree.
+    if (!stolen.el.isConnected) return
+
+    // Already back to what it was: React reverted it, or the burst never
+    // reached it. Nothing to give back, and writing would be a no-op event.
+    if (stolen.el.value === stolen.value) return
+
+    // Restore only while the field is still recognisably the one we borrowed.
+    // A literal "does it still contain the burst" test is not enough on its
+    // own: the ticket's quantity cell is controlled, so React has already run
+    // the burst through setQty's MAX_QTY clamp and the field reads 999 rather
+    // than the digits that were sent. Focus never left it in that case — we
+    // deliberately do not steal it, see the hijack branch below — so "still the
+    // active element" covers the controlled inputs and the substring test
+    // covers the plain ones whose focus has moved on.
+    if (!stolen.el.value.includes(burst) && document.activeElement !== stolen.el) return
+
+    setNativeValue(stolen.el, stolen.value)
   }, [])
 
+  const reset = useCallback(() => {
+    clearTimer()
+    // Before the buffer is dropped: giveBack needs it to recognise its own
+    // characters. This ordering is load-bearing.
+    giveBack(typed.current)
+    typed.current = ''
+    physical.current = ''
+  }, [giveBack])
+
   useEffect(() => {
-    const flush = () => {
+    const emit = () => {
       const code = typed.current
       const alt = physical.current
-      const stolen = hijacked.current
+      // reset() puts the borrowed field back (see giveBack) — including on the
+      // sub-minLength return just below, which is the path that used to leave a
+      // short burst sitting in the cashier's quantity cell. The restore happens
+      // before onScan, as it always did: the caller decides where the focus
+      // goes next.
       reset()
       if (code.length < minLength) return
       flushedAt.current = performance.now()
-
-      // The characters landed in some other field on their way here (the
-      // cashier had clicked into a quantity box). Put that field back the way
-      // it was — the caller decides where the focus goes next.
-      if (stolen) setNativeValue(stolen.el, stolen.value)
-
       onScanRef.current(code, alt !== code ? alt : null)
     }
 
-    const onKeyDown = (e: KeyboardEvent) => {
+    /**
+     * `emit` calls straight into the caller's `onScan`, which on the till is the
+     * whole synchronous lookup over three in-memory indexes. If that throws, the
+     * throw must not leave this module: it is reached either from a native
+     * window listener or from a setTimeout, so React never sees it and there is
+     * nothing above to catch it — the till would go to a blank page mid-sale,
+     * open basket included. Contain it, put the buffer and the borrowed field
+     * back into a sane state, and say so loudly on the console since there is no
+     * telemetry here.
+     */
+    const flush = () => {
+      try {
+        emit()
+      } catch (err) {
+        // reset() has already run inside emit() unless the throw came before it,
+        // and it is idempotent (giveBack has nulled the ref), so this is the
+        // unconditional cleanup that makes the guarantee hold either way.
+        reset()
+        console.error(
+          '[useBarcodeScanner] onScan threw and was contained; the scan was dropped, the buffer cleared and the borrowed field restored.',
+          err,
+        )
+      }
+    }
+
+    const handleKey = (e: KeyboardEvent) => {
       // A held-down key repeats every ~30 ms and would read exactly like a
       // scan; an IME composition reports a meaningless key.
       if (e.repeat || e.isComposing || e.keyCode === 229) return
@@ -335,10 +427,41 @@ export function useBarcodeScanner({
       timer.current = setTimeout(flush, END_OF_SCAN_MS)
     }
 
+    /**
+     * The listener the window actually gets. Everything above runs inside a
+     * native capture-phase handler, so a throw does not even reach React's event
+     * dispatch: it escapes as an uncaught error, and until it is caught nowhere
+     * the whole till unmounts to a blank page with the basket in it. The caller's
+     * `isComplete` is the realistic source — it is asked on every character once
+     * the buffer is long enough — and a throw there lands between the last
+     * character and `e.preventDefault()`, leaving the previous character's timer
+     * armed and a stray digit in the field. So: drop the buffer, give the
+     * borrowed field back, swallow the character that caused it rather than let
+     * it corrupt the next scan, and keep selling.
+     */
+    const onKeyDown = (e: KeyboardEvent) => {
+      try {
+        handleKey(e)
+      } catch (err) {
+        reset()
+        if (e.cancelable) e.preventDefault()
+        console.error(
+          '[useBarcodeScanner] the keydown handler threw and was contained; the buffer was dropped and the borrowed field restored. Key:',
+          e.key,
+          err,
+        )
+      }
+    }
+
     window.addEventListener('keydown', onKeyDown, true)
     return () => {
       window.removeEventListener('keydown', onKeyDown, true)
-      clearTimer()
+      // Unmounting mid-burst is an exit too, and the borrowed field can live
+      // outside the tree that is going away (the shell's search box while the
+      // till navigates). reset() rather than clearTimer() alone so it is given
+      // back; giveBack checks the node is still in the document, so a field that
+      // is unmounting with us is left alone.
+      reset()
     }
   }, [minLength, reset, targetRef])
 
