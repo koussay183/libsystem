@@ -68,7 +68,7 @@ service cloud.firestore {
      * Holding a shop's own history hostage would be the wrong way to ask for
      * money, and it would make "let me export my data first" impossible.
      */
-    match /shops/{shopId}/{document=**} {
+    match /shops/{shopId}/{collection}/{document=**} {
       allow read: if owns(shopId);
       allow write: if owns(shopId) && paid();
     }
@@ -79,6 +79,29 @@ service cloud.firestore {
      * `get` only, never `list`: list would let one shop enumerate every other
      * shop on the platform. Writes are refused outright; the admin CLI uses the
      * Admin SDK, which does not pass through these rules at all.
+     *
+     * WHY THE BLOCK ABOVE MATCHES ON {collection}/{document=**} AND NOT ON
+     * {document=**} ALONE — this is load-bearing, do not "simplify" it:
+     *
+     * Under rules_version '2' a recursive wildcard matches ZERO or more path
+     * segments, so `/shops/{shopId}/{document=**}` also matches
+     * `/shops/{shopId}` itself, with document bound to the empty path. And
+     * Firestore ORs every matching rule together — one allow is enough, a
+     * later `allow write: if false` refuses nothing that another match already
+     * granted. Written the obvious way, therefore, this very block was dead
+     * and a shop could PATCH its own record.
+     *
+     * That mattered more than it looks. paidUntil lives in this document, and
+     * although the rules read the plan from the signed CLAIM (which no client
+     * can forge), `plan:extend` reads the DOCUMENT to work out the new date.
+     * A shop that rewrote its own paidUntil would be feeding a number of its
+     * choosing into the next claim the back office issues — a real extension,
+     * arriving one step later.
+     *
+     * Requiring {collection} means the shortest path that can match is
+     * /shops/X/products/Y, so the shop document is left to this block alone,
+     * which refuses writes. Deep subcollections are still covered, because
+     * {document=**} absorbs the rest of the path.
      */
     match /shops/{shopId} {
       allow get: if owns(shopId);
