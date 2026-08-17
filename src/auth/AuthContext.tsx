@@ -34,6 +34,14 @@ import { syncStore } from '@/lib/syncStatus'
  */
 
 const UID_KEY = 'lib.uid.v1'
+const PAID_KEY = 'lib.paidUntil.v1'
+
+/**
+ * How long logout waits for the write queue to reach the server before it
+ * gives up and keeps the local cache. Long enough for a slow line to finish a
+ * few tickets, short enough that nobody decides the button is broken.
+ */
+const DRAIN_TIMEOUT_MS = 4000
 
 /** What the CLI writes into the token, and what the rules read back out. */
 interface ShopClaims {
@@ -69,6 +77,35 @@ function readUid(): string {
   }
 }
 
+/**
+ * The plan deadline, kept on disk next to the uid.
+ *
+ * Without this, paidUntil starts null after every reload and stays null until
+ * a token can be read — which offline never happens. The lapsed banner then
+ * cannot appear on the one device that most needs it: a till offline for days,
+ * whose queued writes are about to be refused, and whose owner has nothing on
+ * screen explaining why rows change and then change back.
+ */
+function readPaidUntil(): number | null {
+  try {
+    const raw = localStorage.getItem(PAID_KEY)
+    if (raw === null) return null
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : null
+  } catch {
+    return null
+  }
+}
+
+function writePaidUntil(until: number | null) {
+  try {
+    if (until === null) localStorage.removeItem(PAID_KEY)
+    else localStorage.setItem(PAID_KEY, String(until))
+  } catch {
+    /* private mode */
+  }
+}
+
 function writeUid(uid: string) {
   try {
     if (uid === '') localStorage.removeItem(UID_KEY)
@@ -83,7 +120,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // the till or the login screen, with or without a connection.
   const [user, setUser] = useState<boolean>(() => readUid() !== '')
   const [shopId, setShop] = useState<string>(() => currentShopId())
-  const [paidUntil, setPaidUntil] = useState<number | null>(null)
+  const [paidUntil, setPaidUntil] = useState<number | null>(() => readPaidUntil())
   const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(true)
 
@@ -133,6 +170,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           else clearShopId()
           setShop(next)
           setPaidUntil(until)
+          writePaidUntil(until)
         })
         .catch(() => {
           /* No token to read yet — keep whatever the last session knew. */
@@ -167,15 +205,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
    */
   const logout = async () => {
     const pending = syncStore.getSnapshot()
-    const safeToWipe = pending.pending === 0 && pending.online
+    /**
+     * `let`, not `const`. This was const, which made the catch below a comment
+     * rather than a guard: it said "fall through and keep the cache" and then
+     * wiped it anyway, because nothing could lower the flag.
+     */
+    let safeToWipe = pending.pending === 0 && pending.online
 
     if (safeToWipe) {
-      try {
-        // Confirms with the server, not just with the counter.
-        await waitForPendingWrites(db)
-      } catch {
-        /* the line went — fall through and keep the cache */
-      }
+      /**
+       * Raced against a timer, because waitForPendingWrites does not reject when
+       * the line is down — it simply never settles. Awaited bare, logout hung
+       * forever and the redirect at the end of this function never ran, so the
+       * owner sat on a dead screen. And navigator.onLine reads true on a dead
+       * ADSL line and behind a captive portal, so `pending.online` is precisely
+       * the premise that cannot be trusted here.
+       *
+       * A timeout counts as "not drained", which keeps the cache. Leaving a cache
+       * on a shared machine is a privacy cost; wiping a queue that still holds
+       * sales is money the shop has already taken.
+       */
+      const drained = await Promise.race([
+        waitForPendingWrites(db).then(
+          () => true,
+          () => false,
+        ),
+        new Promise<boolean>((resolve) => {
+          setTimeout(() => resolve(false), DRAIN_TIMEOUT_MS)
+        }),
+      ])
+      if (!drained) safeToWipe = false
     }
 
     try {
@@ -184,6 +243,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       /* signing out locally is what matters; the reload below finishes it */
     }
     writeUid('')
+    writePaidUntil(null)
     clearShopId()
 
     if (safeToWipe) {

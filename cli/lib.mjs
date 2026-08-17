@@ -81,6 +81,19 @@ for (let i = 1; i < argv.length; i += 1) {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+/**
+ * MUST match graceMs() in firestore.rules.
+ *
+ * The rules let a shop write for this long after paidUntil, so that a till
+ * which sold offline across its own expiry does not have its whole queue
+ * refused and rolled back on reconnect. Two consequences the back office has
+ * to respect:
+ *   · every plan is effectively this much longer than the date it prints;
+ *   · suspending a shop must push paidUntil back PAST this window, or the
+ *     suspension does nothing for a fortnight.
+ */
+const RULES_GRACE_MS = 14 * DAY_MS
+
 /** Every collection a shop owns. Order matters only for readability. */
 const SHOP_COLLECTIONS = [
   'products',
@@ -489,7 +502,9 @@ commands['shops:suspend'] = {
     if (!(await confirm(`Suspend "${doc?.name ?? shopId}"? They keep read access and can still export.`))) {
       return
     }
-    const paidUntil = Date.now() - 1000
+    // Past the rules grace window, not merely into the past. paidUntil - 1s
+    // would leave the shop writing for another fourteen days.
+    const paidUntil = Date.now() - RULES_GRACE_MS - DAY_MS
     await db.collection('shops').doc(shopId).set({ paidUntil, updatedAt: Date.now() }, { merge: true })
     if (user) {
       await mergeClaims(user.uid, { paidUntil })

@@ -125,11 +125,16 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     if (supplierNames.includes(name)) return
     if (createdRef.current.has(name)) return
     createdRef.current.add(name)
-    createSupplier({ name }).catch(() => {
+    // createSupplier is synchronous now (it no longer waits for the server),
+    // so there is no promise to catch. Wrapped instead, because shopPath()
+    // throws if no shop is selected.
+    try {
+      createSupplier({ name })
+    } catch {
       // Seeding the shared list is best-effort, but let it be retried rather
       // than leaving a name marked "created" that never reached Firestore.
       createdRef.current.delete(name)
-    })
+    }
   }
 
   /**

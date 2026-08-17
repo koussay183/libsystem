@@ -5,6 +5,7 @@ import {
   memoryLocalCache,
   persistentLocalCache,
   persistentMultipleTabManager,
+  CACHE_SIZE_UNLIMITED,
 } from 'firebase/firestore'
 
 const firebaseConfig = {
@@ -59,10 +60,62 @@ void setPersistence(auth, browserLocalPersistence).catch(() => {})
 // stock in another. The single-tab manager would refuse persistence to the
 // second tab. Where there is no IndexedDB at all (a locked-down profile), the
 // memory cache keeps everything working, just without the speed.
+/**
+ * Can this browser actually give us a durable cache?
+ *
+ * `typeof indexedDB === 'undefined'` is not the same question. A locked-down
+ * profile, private browsing in some builds, and certain embedded webviews all
+ * expose the object and then throw the moment it is opened. Getting that wrong
+ * is the worst failure in this file: persistentLocalCache would be selected,
+ * its open would fail asynchronously where nothing can catch it, and the app
+ * would run on a memory cache while behaving exactly as though sales were being
+ * queued durably. Every offline ticket would be lost on the next reload, with
+ * nothing on screen to say so.
+ *
+ * The open() call below is the cheap half of the answer: it catches every
+ * implementation that refuses synchronously. A purely asynchronous failure
+ * cannot be detected here — see the note in src/lib/syncStatus.ts.
+ */
+function canPersist(): boolean {
+  if (typeof indexedDB === 'undefined') return false
+  try {
+    const probe = indexedDB.open('lib-persist-probe')
+    // Nothing to await: we only care whether asking was allowed at all.
+    probe.onsuccess = () => {
+      try {
+        probe.result.close()
+        indexedDB.deleteDatabase('lib-persist-probe')
+      } catch {
+        /* tidy-up only */
+      }
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
 export const db = initializeFirestore(app, {
   ignoreUndefinedProperties: true,
-  localCache:
-    typeof indexedDB === 'undefined'
-      ? memoryLocalCache()
-      : persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+  /**
+   * CACHE_SIZE_UNLIMITED, deliberately.
+   *
+   * The default is 40 MB with LRU garbage collection, and GC evicts documents
+   * that no listener currently pins. liveCollection unpins a collection 30 s
+   * after its last unmount, and the raw onSnapshot hooks drop their target at
+   * once — so on a till that has been offline for days, a product the owner has
+   * not looked at recently can be evicted and then cannot be re-fetched,
+   * because there is no network to re-fetch it from. Queued writes are never
+   * evicted, so this is not about losing sales; it is about the catalogue
+   * quietly developing holes in the middle of a long outage.
+   *
+   * A whole shop is on the order of a megabyte (817 documents measured), so
+   * removing the ceiling costs nothing real and removes the failure entirely.
+   */
+  localCache: canPersist()
+    ? persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+        cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+      })
+    : memoryLocalCache(),
 })

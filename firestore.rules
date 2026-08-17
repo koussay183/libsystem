@@ -51,9 +51,28 @@ service cloud.firestore {
      *
      * Both mistakes now land on the same side: no write.
      */
+    /**
+     * 14 days, in milliseconds. KEEP IN STEP WITH RULES_GRACE_MS in cli/lib.mjs.
+     *
+     * Why a grace window exists at all — this is the most important comment in
+     * the file. A till sells offline for a fortnight. Firestore queues every
+     * ticket in IndexedDB and submits them all on reconnect, stamped with
+     * request.time of the RECONNECT, not of the sale. There is no way for a rule
+     * to know a write was rung days ago. So if the plan lapsed at any point
+     * during the outage, a strict comparison refuses the entire queue — and
+     * Firestore’s answer to a refused write is to roll it back locally. The
+     * tickets were printed, the money was taken, and the sales are simply gone.
+     *
+     * The cost of the fix is that every plan is really worth 14 days more than it
+     * says, and a shop that stops paying keeps writing for a fortnight. That is a
+     * price worth paying to never destroy a queue. shops:suspend is the hard stop
+     * and deliberately sets paidUntil further back than this window.
+     */
+    function graceMs() { return 1209600000; }
+
     function paid() {
       return request.auth.token.get('paidUntil', 0) is int
-        && request.time.toMillis() < request.auth.token.get('paidUntil', 0);
+        && request.time.toMillis() < request.auth.token.get('paidUntil', 0) + graceMs();
     }
 
     // ---------------------------------------------------------------------

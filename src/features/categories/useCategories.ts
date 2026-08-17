@@ -5,7 +5,7 @@ import {
   orderBy,
   where,
   getDocs,
-  addDoc,
+  setDoc,
   updateDoc,
   deleteDoc,
   writeBatch,
@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
+import { track } from '@/lib/syncStatus'
 import { createLiveCollection } from '@/lib/liveCollection'
 import type { Category } from '@/types/models'
 
@@ -38,10 +39,27 @@ export function useCategories() {
   return { categories: state.data, loading: state.loading, error: state.error }
 }
 
-export async function createCategory(name: string): Promise<string> {
-  const ref = await addDoc(collection(db, shopPath(COL)), {
-    name: name.trim(),
-    createdAt: Date.now(),
+/**
+ * Mints the id locally and does NOT await the server.
+ *
+ * This used to be addDoc, whose promise resolves only on acknowledgement. With
+ * the line down it never resolves at all — and because ProductForm.submit awaits
+ * ensureCategory and ensureSupplier BEFORE createProduct, that one unresolved
+ * promise made adding a product offline completely impossible. The try/catch
+ * around the call could not help: the promise was not rejecting, it was hanging.
+ *
+ * The document is durable in IndexedDB the moment setDoc is called, so the id
+ * returned here is safe to reference immediately. Returning it synchronously,
+ * rather than as an already-resolved promise, is deliberate: a promise that
+ * resolves before the write lands would invite exactly the misreading that
+ * caused this bug.
+ */
+export function createCategory(name: string): string {
+  const ref = doc(collection(db, shopPath(COL)))
+  void track(
+    setDoc(ref, { name: name.trim(), createdAt: Date.now() }),
+  ).catch(() => {
+    /* replayed by the SDK; a refusal surfaces through the sync badge */
   })
   return ref.id
 }
