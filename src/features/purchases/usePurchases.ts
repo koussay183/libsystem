@@ -101,7 +101,86 @@ export function usePurchases() {
  * the batch-size refusal below and a shopPath() throw still surface as a
  * rejection, and those two are the only failures a caller can act on.
  */
-export async function recordPurchase(input: RecordPurchaseInput) {
+/**
+ * How recently an identical invoice counts as "you have already done this".
+ *
+ * Long enough to cover re-entering a delivery by hand after concluding the first
+ * attempt failed; short enough that a shop genuinely receiving two identical
+ * cartons in one afternoon is not stopped. Two identical invoices on the same
+ * day is a real thing; two within ten minutes, keyed line for line, is not.
+ */
+const DUPLICATE_WINDOW_MS = 10 * 60 * 1000
+
+/**
+ * What this session has recorded, for the duplicate check above.
+ *
+ * Deliberately only this session. It covers the case that actually happens — the
+ * owner re-keying a delivery minutes after the first attempt, in the same tab —
+ * and it needs no query, so it works with the line down, which is when the doubt
+ * that causes the re-entry arises. After a reload the guard is gone, but so is
+ * the doubt: the invoice is sitting in the Achats list, served from the same
+ * local cache, where he can see it.
+ */
+const recentPurchases: { fingerprint: string; createdAt: number }[] = []
+
+/**
+ * An invoice reduced to what makes it the same delivery. Supplier, reference,
+ * total, and every line's product and quantity — not the note, which is where a
+ * human puts what distinguishes two otherwise identical deliveries.
+ */
+function purchaseFingerprint(input: RecordPurchaseInput): string {
+  const lines = input.items
+    .map((i) => `${i.productId ?? i.name}x${i.qty}@${i.unitCost}`)
+    .sort()
+    .join('|')
+  return `${input.supplier ?? ''}~${input.reference ?? ''}~${input.total}~${lines}`
+}
+
+/**
+ * The same delivery has just been recorded. Thrown so the caller can ask rather
+ * than guess.
+ */
+export class DuplicatePurchaseError extends Error {
+  constructor(public when: number) {
+    super('recordPurchase: an identical invoice was recorded moments ago')
+    this.name = 'DuplicatePurchaseError'
+  }
+}
+
+export async function recordPurchase(input: RecordPurchaseInput, force = false) {
+  /*
+    THE ONE FAILURE THIS FUNCTION CANNOT TAKE BACK.
+
+    The invoice and the stock it brings in go in one batch, and the stock arrives
+    as increment(). Written twice, the shop has two invoices for one delivery and
+    twice the cartons — an inventory error that looks exactly like theft when the
+    shelves are counted, and there is nothing in the data that says which of the
+    two was the mistake.
+
+    The old route to it — a dialog that hung offline until the owner cancelled and
+    re-entered the delivery — is closed: nothing awaits a server acknowledgement
+    any more, so the dialog closes at once. What remains is the human one. The
+    owner is not sure it saved (he was offline, the badge said something he did
+    not read, somebody called him mid-entry) and he keys the delivery in again.
+
+    A deterministic document id would NOT fix this and would quietly make it
+    worse: the second write would land on the same invoice — so one document,
+    looking correct — while the increments still applied twice. The doubled stock
+    would then have no invoice trail explaining it at all.
+
+    So this asks instead. It compares against the resident snapshot, which is
+    free, needs no network, and already carries anything queued offline, because
+    Firestore applies a write to its local cache before it sends it.
+  */
+  if (!force) {
+    const print = purchaseFingerprint(input)
+    const cutoff = Date.now() - DUPLICATE_WINDOW_MS
+    const twin = recentPurchases.find(
+      (p) => p.createdAt >= cutoff && p.fingerprint === print,
+    )
+    if (twin) throw new DuplicatePurchaseError(twin.createdAt)
+  }
+
   const now = Date.now()
   const batch = writeBatch(db)
 
@@ -157,6 +236,14 @@ export async function recordPurchase(input: RecordPurchaseInput) {
       updatedAt: now,
     })
   }
+
+  // Remembered BEFORE the commit is handed over, because the guard is about what
+  // the owner has entered, not about what the server has accepted — offline
+  // those are minutes apart and the re-entry happens in between.
+  recentPurchases.push({ fingerprint: purchaseFingerprint(input), createdAt: now })
+  // A day at the counter is a handful of deliveries; this is only ever trimmed
+  // so a tab left open for a fortnight cannot grow it without bound.
+  if (recentPurchases.length > 50) recentPurchases.splice(0, recentPurchases.length - 50)
 
   void track(batch.commit()).catch(() => {
     /* replayed by the SDK; a refusal surfaces through the sync badge */

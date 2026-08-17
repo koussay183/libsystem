@@ -32,6 +32,29 @@ let controlledAtLoad = false
 /** Set by applyUpdate so the controllerchange it causes is not read as staleness. */
 let applying = false
 
+/**
+ * This tab is running without a worker in front of it, so it has no offline
+ * protection at all.
+ *
+ * There is one common way to get here and it is the worst possible moment for
+ * it: Chrome and Edge BYPASS the service worker for a hard reload — Ctrl+Shift+R
+ * — for the navigation and every subresource. Which is exactly what a shopkeeper
+ * does when the screen looks wrong. Offline that lands on the browser's "no
+ * connection" page; online it loads, but uncontrolled, and the NEXT time the line
+ * drops this tab has nothing to serve it.
+ *
+ * No worker-side API can opt back in, so the worker cannot fix it. The one lever
+ * that exists is telling the owner, because the cure is a single ordinary reload
+ * and he will never guess that on his own.
+ *
+ * Distinct from the FIRST EVER visit, which is also uncontrolled and is not worth
+ * a word: registration is in flight and will control the next load. `settled` is
+ * what separates them — it is set once registration has resolved, and by then a
+ * returning visitor is either controlled or has been bypassed.
+ */
+let unprotected = false
+let settled = false
+
 function notify() {
   for (const listener of watchers) listener()
 }
@@ -70,6 +93,12 @@ export const updateStore = {
 export const staleStore = {
   subscribe,
   getSnapshot: () => stale,
+}
+
+/** @see unprotected */
+export const unprotectedStore = {
+  subscribe,
+  getSnapshot: () => settled && unprotected,
 }
 
 /**
@@ -163,6 +192,19 @@ export function registerServiceWorker() {
         // be "waiting" while an older one is active, so this is always an update
         // and never a first install.
         if (reg.waiting) follow(reg.waiting, true)
+
+        /*
+          Registration has answered, so the question is decidable now.
+
+          `reg.active` means a worker is installed on this origin — this is not a
+          first visit. Not being controlled while one is installed means this load
+          bypassed it, which in practice means a hard reload. @see unprotected
+        */
+        settled = true
+        if (reg.active !== null && navigator.serviceWorker.controller === null) {
+          unprotected = true
+          notify()
+        }
 
         reg.addEventListener('updatefound', () => {
           // reg.active is the version currently in charge, and its presence is

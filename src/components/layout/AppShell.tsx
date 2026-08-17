@@ -37,7 +37,7 @@ import { ROUTE_PALETTE, paletteFor } from '@/lib/navColors'
 import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
-import { SyncStatus, UpdateBanner, StaleBuildBanner } from '@/components/SyncStatus'
+import { SyncStatus, UpdateBanner, StaleBuildBanner, UnprotectedBanner } from '@/components/SyncStatus'
 import { syncStore, clearDenied } from '@/lib/syncStatus'
 import { retryLiveCollections } from '@/lib/liveCollection'
 import { useProductsFatal } from '@/features/stock/useProducts'
@@ -490,6 +490,7 @@ export function AppShell() {
       >
         <UpdateBanner />
         <StaleBuildBanner />
+        <UnprotectedBanner />
 
         {/*
           Two things the shop must never meet in silence.

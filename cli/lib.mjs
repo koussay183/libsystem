@@ -86,6 +86,7 @@ const BOOLEAN_FLAGS = new Set([
   'include-history',
   'keep-counters',
   'clear',
+  'delete',
   'cnp',
 ])
 
@@ -975,6 +976,76 @@ function describePromotion(plan) {
     log(c.dim('  Settle any of these with `catalog:fix <code> --name "..."`.'))
   }
   log('')
+}
+
+commands['sweep:orphans'] = {
+  blurb: 'Find credit lines whose customer is gone  --shop <shopId> [--delete]',
+  async run() {
+    const { db } = await connect()
+    const { shopId } = await resolveShop(positional[0] ?? flags.shop ?? flags.email)
+
+    /**
+     * removeCustomer deletes the customer and every ledger line the query
+     * returned — and offline that query is answered from the local cache, which
+     * only holds what this device has seen. A line the cache had evicted is not
+     * deleted, and it outlives the customer under a customerId that resolves to
+     * nobody: invisible in the carnet, still counted by anything that adds up
+     * credit_entries, and impossible to find from inside the app.
+     *
+     * Refusing to delete offline would have been worse — it strands the owner —
+     * so the app takes the trade and this is the other half of it. Read-only
+     * unless --delete is passed.
+     */
+    const [customers, entries] = await Promise.all([
+      db.collection('shops').doc(shopId).collection('customers').get(),
+      db.collection('shops').doc(shopId).collection('credit_entries').get(),
+    ])
+
+    const live = new Set(customers.docs.map((d) => d.id))
+    const orphans = entries.docs.filter((d) => {
+      const cid = d.data().customerId
+      return typeof cid === 'string' && cid !== '' && !live.has(cid)
+    })
+
+    log(`  ${customers.size} customers, ${entries.size} credit lines`)
+    if (orphans.length === 0) {
+      ok('No orphans.')
+      return
+    }
+
+    // Grouped by the customer that is gone: one deletion made them, so seeing
+    // them together is what tells the operator whether this was one bad delete
+    // or a pattern worth looking into.
+    const byCustomer = new Map()
+    let total = 0
+    for (const d of orphans) {
+      const cid = d.data().customerId
+      const amount = Number(d.data().amount ?? 0)
+      const agg = byCustomer.get(cid) ?? { n: 0, amount: 0 }
+      agg.n += 1
+      agg.amount += amount
+      byCustomer.set(cid, agg)
+      total += amount
+    }
+    warn(`${orphans.length} orphaned credit lines across ${byCustomer.size} deleted customers`)
+    for (const [cid, agg] of byCustomer) {
+      log(c.dim(`    ${cid}  ${String(agg.n).padStart(4)} lines  ${agg.amount} millimes`))
+    }
+    log(c.dim(`  ${total} millimes in total`))
+
+    if (!flags.delete) {
+      log('')
+      log(c.dim('  Read-only. Pass --delete to remove them.'))
+      return
+    }
+    if (!(await confirm(`Delete ${orphans.length} orphaned credit lines?`))) return
+    const written = await commitChunked(
+      db,
+      orphans.map((d) => (batch) => batch.delete(d.ref)),
+      'deleting',
+    )
+    ok(`${written} orphaned lines removed`)
+  },
 }
 
 commands['catalog:harvest'] = {

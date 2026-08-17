@@ -489,6 +489,10 @@ export const fr = {
     unitCost: 'Prix d’achat unitaire TTC',
     searchProduct: 'Chercher un produit…',
     save: 'Enregistrer l’achat',
+    duplicateTitle: 'Cette facture vient d’être enregistrée',
+    duplicateBody:
+      'Une facture identique — même fournisseur, mêmes articles, même total — a été saisie il y a quelques minutes. Si c’est bien une deuxième livraison, appuyez à nouveau pour l’enregistrer. Sinon, fermez : la première est déjà en sécurité sur cet ordinateur.',
+    duplicateConfirm: 'Oui, enregistrer quand même',
     updatesStock: 'Le stock sera augmenté automatiquement.',
     savedOnDevice:
       'La facture est enregistrée sur cet ordinateur dès que vous validez, puis envoyée toute seule au retour d’internet.',
@@ -788,6 +792,8 @@ export const fr = {
     // ne se recharge pendant une vente, donc on le propose au lieu de le faire.
     staleBuild: 'Cette page utilise une version remplacée — rechargez dès que la caisse est libre.',
     reloadNow: 'Recharger',
+    unprotected:
+      'Cet onglet n’est pas protégé contre les coupures : rechargez normalement (F5) pour que la caisse fonctionne à nouveau sans internet.',
   },
   money: {
     symbol: 'DT',

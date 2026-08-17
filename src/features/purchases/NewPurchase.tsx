@@ -24,7 +24,7 @@ import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
-import { recordPurchase } from './usePurchases'
+import { recordPurchase, DuplicatePurchaseError } from './usePurchases'
 import type { Product } from '@/types/models'
 
 interface CartItem {
@@ -56,6 +56,17 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
   const [busy, setBusy] = useState(false)
 
   /**
+   * Set when recordPurchase recognised this invoice as one entered moments ago.
+   *
+   * The second press of the button goes through, deliberately: two identical
+   * deliveries inside ten minutes is unusual, not impossible, and the owner is
+   * the one who knows which it is. What the guard removes is doing it BY
+   * ACCIDENT — which doubles the stock as well as the paperwork, and leaves
+   * nothing in the data to say which of the two invoices was the mistake.
+   */
+  const [duplicate, setDuplicate] = useState(false)
+
+  /**
    * The amount handed over now. Until the owner touches it, it follows the
    * running total — paying the whole invoice is then a single click.
    */
@@ -77,6 +88,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     setPaidTouched(false)
     setError('')
     setBusy(false)
+    setDuplicate(false)
     createdRef.current = new Set()
   }, [open])
 
@@ -162,7 +174,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
    * owner can act on — an invoice with more distinct products than one batch
    * holds, and no shop selected.
    */
-  const save = async () => {
+  const save = async (force = false) => {
     if (cart.length === 0) {
       setError(t('purchases.emptyItemsError'))
       return
@@ -183,11 +195,19 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
         })),
         total,
         paid: paidMinor,
-      })
+      }, force)
       if (alive.current) onClose()
     } catch (e) {
+      if (!alive.current) return
+      if (e instanceof DuplicatePurchaseError) {
+        // Not an error: a question. The invoice is not written, the form is
+        // untouched, and the next press of the same button records it.
+        setDuplicate(true)
+        setError('')
+        return
+      }
       // A purchase that silently fails to save would leave the stock wrong.
-      if (alive.current) setError(e instanceof Error ? e.message : t('common.error'))
+      setError(e instanceof Error ? e.message : t('common.error'))
     } finally {
       if (alive.current) setBusy(false)
     }
@@ -417,6 +437,16 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                     </Alert.Content>
                   </Alert.Root>
                 )}
+
+                {duplicate && (
+                  <Alert.Root status="warning">
+                    <Alert.Indicator />
+                    <Alert.Content>
+                      <Alert.Title>{t('purchases.duplicateTitle')}</Alert.Title>
+                      <Alert.Description>{t('purchases.duplicateBody')}</Alert.Description>
+                    </Alert.Content>
+                  </Alert.Root>
+                )}
               </Stack>
             </Dialog.Body>
 
@@ -436,9 +466,15 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                   px={8}
                   loading={busy}
                   disabled={busy}
-                  onClick={save}
+                  // Passing the warning back in as `force`: the second press of
+                  // the same button is the owner's answer to the question.
+                  onClick={() => void save(duplicate)}
                 >
-                  {busy ? t('common.saving') : t('purchases.save')}
+                  {busy
+                    ? t('common.saving')
+                    : duplicate
+                      ? t('purchases.duplicateConfirm')
+                      : t('purchases.save')}
                 </Button>
               </Flex>
             </Dialog.Footer>

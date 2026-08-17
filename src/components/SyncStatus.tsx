@@ -5,7 +5,7 @@ import { Badge, Button, Flex, HStack, Text } from '@chakra-ui/react'
 import { AlertTriangle, Cloud, CloudOff, RefreshCw, ShieldAlert, UploadCloud } from 'lucide-react'
 import dayjs from 'dayjs'
 import { syncStore } from '@/lib/syncStatus'
-import { updateStore, applyUpdate, staleStore } from '@/lib/serviceWorker'
+import { updateStore, applyUpdate, staleStore, unprotectedStore } from '@/lib/serviceWorker'
 
 /** How long "everything is saved" stays green after the queue empties. */
 const SAVED_MS = 4000
@@ -233,6 +233,55 @@ export function UpdateBanner() {
       </HStack>
       <Button size="sm" colorPalette="brand" onClick={applyUpdate} flexShrink={0}>
         {t('sync.updateNow')}
+      </Button>
+    </Flex>
+  )
+}
+
+/**
+ * "This tab has no offline protection."
+ *
+ * A hard reload — Ctrl+Shift+R, which is what a shopkeeper does when the screen
+ * looks wrong — bypasses the service worker in Chrome and Edge. The page then
+ * runs uncontrolled, so the next time the line drops there is nothing to serve
+ * it and the browser's error page is all he gets. Nothing inside a worker can
+ * prevent that, and the cure is a single ordinary reload, which nobody would ever
+ * guess. So it is said out loud, once, with the button that does it.
+ */
+export function UnprotectedBanner() {
+  const { t } = useTranslation()
+  const bare = useSyncExternalStore(
+    unprotectedStore.subscribe,
+    unprotectedStore.getSnapshot,
+    unprotectedStore.getSnapshot,
+  )
+  if (!bare) return null
+
+  return (
+    <Flex
+      align="center"
+      gap={3}
+      wrap="wrap"
+      px={{ base: 3, md: 6 }}
+      py={2}
+      bg="orange.subtle"
+      color="orange.fg"
+      borderBottomWidth="1px"
+      borderColor="border"
+    >
+      <HStack gap={2} minW={0} flex="1">
+        <CloudOff size={18} />
+        <Text fontWeight="semibold">{t('sync.unprotected')}</Text>
+      </HStack>
+      <Button
+        size="sm"
+        variant="outline"
+        flexShrink={0}
+        onClick={() => {
+          window.location.reload()
+        }}
+      >
+        {t('sync.reloadNow')}
       </Button>
     </Flex>
   )
