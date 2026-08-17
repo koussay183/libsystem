@@ -4,9 +4,13 @@
   publish = "dist"
 
 # Pinned, so a Netlify-side default bump cannot change what the shop downloads
-# without a commit saying so. The six VITE_FIREBASE_* values are NOT here and
-# must be set in the Netlify UI: .env.local is gitignored, so a build without
-# them still SUCCEEDS and ships an app whose Firebase config is undefined.
+# without a commit saying so.
+#
+# The six VITE_FIREBASE_* values are NOT here, and must be set in the Netlify
+# UI instead: .env.local is gitignored, so a build without them succeeds. It
+# does not crash — src/lib/firebase.ts checks isFirebaseConfigured and shows a
+# "setup needed" screen — and that is exactly what makes it easy to miss. The
+# deploy log is green and the till simply cannot reach any data.
 [build.environment]
   NODE_VERSION = "22"
 
