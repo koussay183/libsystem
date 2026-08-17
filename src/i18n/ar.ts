@@ -297,6 +297,8 @@ export const ar: Dict = {
     name: 'اسم المنتج',
     namePlaceholder: 'مثال: كراس 96 صفحة',
     barcode: 'الرمز الشريطي',
+    codeTwin: 'هذا الرمز موجود على «{{name}}»',
+    costBlankWarn: 'بدون سعر شراء، سيُحسب هذا المنتج ربحًا صافيًا بالكامل.',
     barcodePlaceholder: 'امسح أو اكتب الرمز',
     category: 'الصنف',
     supplier: 'المزوّد',

@@ -60,6 +60,7 @@ import {
   soundEnabled,
   setSoundEnabled,
 } from '@/lib/beep'
+import { codeOf, loose, looksLikeCode } from '@/features/stock/barcode'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -88,18 +89,15 @@ import type { PaymentMode, Product, Customer, QuickService } from '@/types/model
 type PayKind = 'cash' | 'credit' | 'partial'
 
 /**
- * A barcode as the till compares it. Coerced through String() because a code
- * restored from a JSON backup can come back as a number, and a number never
- * matches the scanned text.
+ * codeOf, loose and looksLikeCode come from barcode.ts rather than being
+ * redeclared here.
+ *
+ * They used to be private copies with byte-identical bodies, and that is
+ * exactly how this screen and the stock page came to disagree about what a
+ * code looks like: the stock page asked looksLikeCode(), while the miss tail
+ * below asked /^\d+$/, so a hyphenated ISBN typed at the till became a product
+ * NAMED 978-2-07-036822-8 with no barcode at all.
  */
-const codeOf = (v: unknown) => String(v ?? '').trim()
-
-/**
- * The same code without the separators catalogues like to print inside ISBNs.
- * A shelf label reading 978-2-07-036822-8 has to match the 9782070368228 the
- * scanner reads off the very same book.
- */
-const loose = (code: string) => code.replace(/[\s-]/g, '')
 
 /**
  * How long one code stays "already dealt with". A scanner's trailing Enter
@@ -1025,8 +1023,19 @@ export function CaissePage() {
       setNotice(t('pos.notFound', { term }))
       setCanCreate(true)
       beepError()
-      setNewCode(/^\d+$/.test(term) ? term : '')
-      setNewName(/^\d+$/.test(term) ? '' : term)
+      /**
+       * looksLikeCode(), the same test the stock page uses (StockPage.tsx:522).
+       * /^\d+$/ was stricter in the one direction that hurts: a hyphenated ISBN,
+       * or a code with a space in it, failed it — so the term went into the NAME
+       * field and the barcode was left empty. The owner was then left with a
+       * product called 978-2-07-036822-8 that no future scan could match, that no
+       * title search could find, and that no catalogue entry could ever describe.
+       *
+       * loose() on the way in, so the stored code is the digits the scanner will
+       * actually send next time, not the separators a catalogue happened to print.
+       */
+      setNewCode(looksLikeCode(term) ? loose(term) : '')
+      setNewName(looksLikeCode(term) ? '' : term)
       focusScan()
     },
     [
@@ -2404,7 +2413,21 @@ export function CaissePage() {
                           </Box>
                         )}
                         <Box minW={0} flex="1">
-                          <Text fontSize="lg" fontWeight="bold" truncate>
+                          {/* Wraps, deliberately. truncate here defeated the
+                              whole dialog: two products sharing a code are
+                              usually two variants of one title, so the words
+                              that tell them apart sit at the END of the name.
+                              "Sec 4 - Mathematiques T2 (sc. exp)" and
+                              "Sec 4 - Mathematiques T2 (maths)" are the real
+                              pair in this shop stock, identical for their
+                              first 26 characters, and the ellipsis ate the
+                              only part that mattered. */}
+                          <Text
+                            fontSize="lg"
+                            fontWeight="bold"
+                            whiteSpace="normal"
+                            wordBreak="break-word"
+                          >
                             {choiceName(c)}
                           </Text>
                           <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
@@ -2489,6 +2512,21 @@ export function CaissePage() {
                       onChange={(e) => setNewCode(e.target.value)}
                       inputMode="numeric"
                     />
+                    {/* A warning, never a block: two products legitimately
+                        sharing one code is normal here — a publisher reuses an
+                        EAN across two variants — and the till already has a
+                        chooser for exactly that. What was wrong was saving a
+                        second one in silence, with the information to hand. */}
+                    {(() => {
+                      const key = loose(codeOf(newCode))
+                      if (key === '') return null
+                      const twin = products.find((p) => loose(codeOf(p.barcode)) === key)
+                      return twin ? (
+                        <Text fontSize="sm" color="orange.fg" mt={1}>
+                          {t('stock.codeTwin', { name: twin.name })}
+                        </Text>
+                      ) : null
+                    })()}
                   </Field.Root>
                   <HStack gap={4} align="flex-start">
                     <Field.Root>
@@ -2510,6 +2548,16 @@ export function CaissePage() {
                         inputMode="decimal"
                         placeholder={moneyPlaceholder()}
                       />
+                      {/* A blank cost is allowed — a queue at the counter beats
+                          a correct margin — but it must not be invisible.
+                          costPrice 0 makes the article pure profit for ever in
+                          the rentabilite report, and nothing downstream can
+                          tell "free" from "nobody typed it". */}
+                      {(parseMoney(newCost) ?? 0) === 0 && (
+                        <Text fontSize="sm" color="orange.fg" mt={1}>
+                          {t('stock.costBlankWarn')}
+                        </Text>
+                      )}
                     </Field.Root>
                   </HStack>
                 </Stack>

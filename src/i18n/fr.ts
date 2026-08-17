@@ -298,6 +298,8 @@ export const fr = {
     name: 'Nom du produit',
     namePlaceholder: 'Ex. Cahier 96 pages',
     barcode: 'Code-barres',
+    codeTwin: 'Ce code est déjà sur « {{name}} »',
+    costBlankWarn: 'Sans prix d’achat, cet article comptera comme bénéfice pur.',
     barcodePlaceholder: 'Scannez ou tapez le code',
     category: 'Catégorie',
     supplier: 'Fournisseur',

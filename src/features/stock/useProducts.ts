@@ -4,9 +4,6 @@ import {
   setDoc,
   query,
   orderBy,
-  where,
-  limit,
-  getDocs,
   updateDoc,
   deleteDoc,
   doc,
@@ -18,6 +15,7 @@ import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { createLiveCollection } from '@/lib/liveCollection'
 import { track } from '@/lib/syncStatus'
+import { codeOf, loose } from './barcode'
 import type { Product, ProductInput } from '@/types/models'
 
 const COL = 'products'
@@ -25,8 +23,6 @@ const COL = 'products'
 /** Firestore caps a batch at 500 writes; stay clear of the edge. */
 const BATCH_LIMIT = 400
 
-/** Firestore caps an `in` filter at 30 values. */
-const IN_LIMIT = 30
 
 /**
  * The stock, live and ordered by name. Shared across every screen: the till,
@@ -146,35 +142,64 @@ export interface BarcodeOwner {
   name: string
 }
 
-/** Returns the product already using this barcode, or null. */
+/**
+ * The product already carrying this barcode, compared the way the rest of the
+ * app compares codes.
+ *
+ * IT USED TO ASK THE SERVER FOR AN EXACT STRING MATCH, and that was wrong twice
+ * over.
+ *
+ * Wrong on the comparison: everything else in this codebase decides two codes
+ * are the same article through loose() — the till indexes both spellings,
+ * sharedCodes() counts loosely, the pack form clashes loosely, and catalogKey()
+ * is built on it. Only this check, the one whose whole job is to say "you
+ * already have this", compared raw. So saving 978-2-07-036822-8 against an
+ * existing 9782070368228 reported the code as free, created a second document,
+ * and the owner discovered it later as a purple "code partage" badge in the
+ * stock list and a chooser dialog on every scan of that book.
+ *
+ * Wrong on the transport: it was an awaited getDocs, so with the line down the
+ * product form hung on a duplicate check instead of saving.
+ *
+ * Now it reads the snapshot already resident on the device — the same one the
+ * till sells from. The contract weakens honestly from "authoritative" to "as
+ * fresh as the subscription", which is the right trade: the alternative needs a
+ * normalised field on every product, a migration, and an index, to answer a
+ * question that only ever guards a warning.
+ */
 export async function findProductByBarcode(barcode: string): Promise<BarcodeOwner | null> {
-  const code = barcode.trim()
-  if (code === '') return null
-  const snap = await getDocs(
-    query(collection(db, shopPath(COL)), where('barcode', '==', code), limit(1)),
-  )
-  const found = snap.docs[0]
-  if (!found) return null
-  return { id: found.id, name: (found.data() as Omit<Product, 'id'>).name }
+  const key = loose(codeOf(barcode))
+  if (key === '') return null
+  for (const p of productsStore.getSnapshot().data) {
+    if (loose(codeOf(p.barcode)) === key) return { id: p.id, name: p.name }
+  }
+  return null
 }
 
 /**
- * Same check for a whole batch of barcodes, keyed by barcode.
- * Chunked at 30 because that is Firestore's ceiling for an `in` filter.
+ * The same question for a whole batch, in one pass over the resident snapshot.
+ *
+ * The returned map is keyed by the spelling the CALLER passed in, not by the
+ * spelling stored on the product. VariantsDialog asks `owners.has(c)` with its
+ * own strings, so keying by the stored barcode reintroduced the very mismatch
+ * this function exists to catch: the clash was found and then looked up under
+ * a key the caller had never heard of.
  */
 export async function findProductsByBarcodes(
   barcodes: string[],
 ): Promise<Map<string, BarcodeOwner>> {
-  const codes = [...new Set(barcodes.map((b) => b.trim()).filter((b) => b !== ''))]
   const owners = new Map<string, BarcodeOwner>()
-  for (let i = 0; i < codes.length; i += IN_LIMIT) {
-    const snap = await getDocs(
-      query(collection(db, shopPath(COL)), where('barcode', 'in', codes.slice(i, i + IN_LIMIT))),
-    )
-    for (const d of snap.docs) {
-      const data = d.data() as Omit<Product, 'id'>
-      if (data.barcode) owners.set(data.barcode, { id: d.id, name: data.name })
-    }
+  const wanted = new Map<string, string>()
+  for (const raw of barcodes) {
+    const spelling = codeOf(raw)
+    const key = loose(spelling)
+    if (key !== '' && !wanted.has(key)) wanted.set(key, spelling)
+  }
+  if (wanted.size === 0) return owners
+  for (const p of productsStore.getSnapshot().data) {
+    const spelling = wanted.get(loose(codeOf(p.barcode)))
+    if (spelling === undefined) continue
+    if (!owners.has(spelling)) owners.set(spelling, { id: p.id, name: p.name })
   }
   return owners
 }
