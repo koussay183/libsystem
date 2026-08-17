@@ -37,3 +37,6 @@ yarn-error.log*
 # live client data pulled for safekeeping — never commit
 backups/
 cli/service-account*.json
+
+# frozen config of the pre-SaaS project, for the one-time pull
+.env.legacy

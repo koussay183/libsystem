@@ -16,7 +16,7 @@
  * installs the app's dependencies and never sees this folder.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
@@ -754,17 +754,404 @@ commands['export-root'] = {
   },
 }
 
+// ---------------------------------------------------------------------------
+// Moving a shop between Firebase projects
+// ---------------------------------------------------------------------------
+//
+// `migrate:legacy` copies root -> shops/{id}/... inside ONE project. When the
+// SaaS moves to a project of its own, that is no longer the shape of the job:
+// the catalogue has to cross a project boundary. These two commands are that
+// crossing, and they are deliberately two commands rather than one — a pull
+// that lands on disk is a thing you can inspect, diff and keep, where a direct
+// project-to-project pipe is a thing you can only watch fail.
+
+/**
+ * Firestore's REST API answers with tagged values — {"integerValue":"100"},
+ * not 100. Decoding it is not cosmetic:
+ *
+ *   integerValue arrives as a STRING. Every price in this app is an integer
+ *   number of millimes and every stock level is an integer, so handing the
+ *   tagged value straight to Firestore would write quantity:"100" — a string
+ *   that renders identically in the UI, sorts wrongly, fails every arithmetic
+ *   comparison, and turns `quantity <= lowStockThreshold` into nonsense. It is
+ *   the one fault in this whole operation that would survive a visual check.
+ */
+function decodeRest(value) {
+  if (value === null || typeof value !== 'object') return null
+  if ('nullValue' in value) return null
+  if ('stringValue' in value) return value.stringValue
+  if ('booleanValue' in value) return value.booleanValue
+  if ('integerValue' in value) return Number(value.integerValue)
+  if ('doubleValue' in value) {
+    // Can legitimately arrive as the strings "NaN" / "Infinity".
+    const n = Number(value.doubleValue)
+    return Number.isFinite(n) ? n : 0
+  }
+  if ('timestampValue' in value) return new Date(value.timestampValue).getTime()
+  if ('bytesValue' in value) return value.bytesValue
+  if ('referenceValue' in value) return value.referenceValue
+  if ('geoPointValue' in value) return value.geoPointValue
+  if ('arrayValue' in value) return (value.arrayValue.values ?? []).map(decodeRest)
+  if ('mapValue' in value) {
+    const out = {}
+    for (const [k, v] of Object.entries(value.mapValue.fields ?? {})) out[k] = decodeRest(v)
+    return out
+  }
+  return null
+}
+
+/** Reads a VITE_-style env file into a plain object. */
+function readEnvFile(path) {
+  if (!existsSync(path)) return null
+  const out = {}
+  for (const line of readFileSync(path, 'utf8').split(/\r?\n/)) {
+    const t = line.trim()
+    if (t === '' || t.startsWith('#')) continue
+    const eq = t.indexOf('=')
+    if (eq < 1) continue
+    out[t.slice(0, eq).trim()] = t
+      .slice(eq + 1)
+      .trim()
+      .replace(/^["']|["']$/g, '')
+  }
+  return out
+}
+
+/**
+ * The most recent export in backups/, so --file can usually be left off.
+ *
+ * By MODIFIED TIME, not by name. The files in there do not share a prefix —
+ * legacy-*, live-*, root-*, and one per shop id — so sorting by filename puts
+ * "live-2026-08-17" after "legacy-2026-08-20" and would hand back a stale
+ * export, or one of a different shape, with nothing on screen to say so. The
+ * caller prints whichever file this returns for the same reason.
+ */
+function newestBackup() {
+  const dir = join(ROOT, 'backups')
+  if (!existsSync(dir)) return null
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .map((f) => {
+      const path = join(dir, f)
+      return { path, at: statSync(path).mtimeMs }
+    })
+    .sort((a, b) => a.at - b.at)
+  return files.length ? files[files.length - 1].path : null
+}
+
+commands['pull:legacy'] = {
+  blurb: 'Read the OLD project out to a file over REST, no key needed  [--project --api-key]',
+  async run() {
+    /**
+     * No Admin SDK, and no service-account key for the old project.
+     *
+     * That is not a shortcut, it is the point: the pre-SaaS project still
+     * carries `allow read, write: if true`, so its public web API key — the one
+     * that has been shipping inside the shop's app bundle all along — is
+     * already enough to read every document. Asking for a second private key
+     * to a project we are walking away from would put another credential on
+     * this machine and buy nothing.
+     *
+     * It also means this works when you no longer have console access to that
+     * project, only the config the app was built with.
+     */
+    /**
+     * bail() rather than die(), for this command only.
+     *
+     * die() ends the process with process.exit(). On Windows, exiting while
+     * fetch's keep-alive socket is still pooled trips a libuv assertion, so the
+     * clear error message gets followed by
+     *
+     *   Assertion failed: !(handle->flags & UV_HANDLE_CLOSING), src\\win\\async.c
+     *
+     * Nothing has actually gone wrong when that prints, but an operator reading
+     * it has no way to know that, and a back office that looks like it crashed
+     * is a back office nobody trusts. Setting exitCode and letting the process
+     * end on its own gives the same exit status and a clean screen. It is local
+     * to this command because it is the only one that makes an HTTP request.
+     */
+    const bail = (message, hint) => {
+      log(`${c.red('✗')} ${message}`)
+      if (hint) log(`  ${c.dim(hint)}`)
+      process.exitCode = 1
+    }
+
+    const env = readEnvFile(join(ROOT, '.env.legacy')) ?? readEnvFile(join(ROOT, '.env.local'))
+    const project = flags.project ?? env?.VITE_FIREBASE_PROJECT_ID
+    const apiKey = flags['api-key'] ?? env?.VITE_FIREBASE_API_KEY
+    if (!project || !apiKey) {
+      return bail(
+        'Need the OLD project id and its web API key.',
+        'They are the pre-SaaS values in .env.legacy, or pass --project <id> --api-key <key>.',
+      )
+    }
+
+    log('')
+    log(c.bold(`  Reading project ${project} over REST`))
+    log(c.dim('  Read-only. Nothing in that project is written to or deleted.'))
+    log('')
+
+    const base = `https://firestore.googleapis.com/v1/projects/${project}/databases/(default)/documents`
+    const out = {}
+    let total = 0
+
+    for (const col of SHOP_COLLECTIONS) {
+      const docs = []
+      let token = ''
+      for (;;) {
+        const url =
+          `${base}/${col}?pageSize=300` +
+          (token ? `&pageToken=${encodeURIComponent(token)}` : '') +
+          `&key=${apiKey}`
+        const res = await fetch(url)
+        if (!res.ok) {
+          const body = await res.text().catch(() => '')
+          if (res.status === 401 || res.status === 403) {
+            return bail(
+              `${col}: ${res.status} from ${project}.`,
+              'That project no longer has permissive rules, or the API key is wrong. ' +
+                'Use the key from the bundle the shop is actually running.',
+            )
+          }
+          return bail(`${col}: ${res.status} ${res.statusText}`, body.slice(0, 300))
+        }
+        const page = await res.json()
+        for (const d of page.documents ?? []) {
+          const fields = {}
+          for (const [k, v] of Object.entries(d.fields ?? {})) fields[k] = decodeRest(v)
+          // The document id is the last path segment, and it is what every
+          // cross-reference in this data points at.
+          docs.push({ id: d.name.slice(d.name.lastIndexOf('/') + 1), ...fields })
+        }
+        if (!page.nextPageToken) break
+        token = page.nextPageToken
+      }
+      out[col] = docs
+      total += docs.length
+      log(`  ${col.padEnd(16)} ${String(docs.length).padStart(6)}`)
+    }
+
+    if (total === 0) {
+      return bail(
+        'That project answered, but every collection came back empty.',
+        'Wrong project id? The shop data is not where this is looking.',
+      )
+    }
+
+    const dir = join(ROOT, 'backups')
+    mkdirSync(dir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+    const file = join(dir, `legacy-${project}-${stamp}.json`)
+    writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          app: 'lib-manager',
+          version: 1,
+          source: 'legacy-rest',
+          project,
+          exportedAt: new Date().toISOString(),
+          collections: out,
+        },
+        null,
+        1,
+      ),
+    )
+    log('')
+    ok(`${total} documents -> ${file}`)
+    log(c.dim('  Next: import:file --shop <shopId> --file <this file>'))
+    log(c.dim('  Then:  verify      --shop <shopId> --file <this file>'))
+    log('')
+  },
+}
+
+commands['import:file'] = {
+  blurb: 'Write a pulled file into a shop in THIS project  --shop <shopId> [--file <path>]',
+  async run() {
+    const { db } = await connect()
+    const shopId = flags.shop ?? positional[0]
+    if (!shopId) die('Need --shop <shopId>. Run `shops:list` to find it.')
+    const shopSnap = await db.collection('shops').doc(shopId).get()
+    if (!shopSnap.exists) die(`No shop ${shopId} in this project. Create it first with shops:create.`)
+
+    const file = flags.file ?? newestBackup()
+    if (!file) die('No --file given and nothing in backups/.', 'Run pull:legacy first.')
+    if (!existsSync(file)) die(`No such file: ${file}`)
+
+    let parsed
+    try {
+      parsed = JSON.parse(readFileSync(file, 'utf8'))
+    } catch (err) {
+      die(`${file} is not readable JSON.`, String(err?.message ?? err))
+    }
+    const source = parsed.collections ?? parsed
+    if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+      die(`${file} does not look like a lib-manager export.`)
+    }
+
+    const dry = !!flags['dry-run']
+    const keepHistory = !!flags['include-history']
+    const keepCounters = !!flags['keep-counters']
+
+    log('')
+    log(c.bold(`  ${file}`))
+    log(c.dim(`  -> shops/${shopId}  (${shopSnap.data().name ?? shopId})`))
+    if (parsed.project) {
+      log(c.dim(`  pulled from project ${parsed.project} at ${parsed.exportedAt ?? '?'}`))
+    }
+    log('')
+
+    const unknown = Object.keys(source).filter((k) => !SHOP_COLLECTIONS.includes(k))
+    const ops = []
+    let copied = 0
+    let counterResets = 0
+    let balanceResets = 0
+
+    for (const col of SHOP_COLLECTIONS) {
+      const docs = Array.isArray(source[col]) ? source[col] : []
+      const skip = MIGRATE_SKIP.includes(col) && !keepHistory
+      log(
+        `  ${col.padEnd(16)} ${String(docs.length).padStart(6)}  ` +
+          (skip ? c.dim('skipped') : c.green('copy')),
+      )
+      if (skip) continue
+
+      for (const raw of docs) {
+        if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string' || raw.id === '') {
+          die(
+            `${col}: a document in the file has no usable id.`,
+            'The export is malformed — re-run pull:legacy.',
+          )
+        }
+        /**
+         * `id` comes OUT of the body. The export keeps it inside the document
+         * for readability, but liveCollection builds objects as
+         * `{ id: d.id, ...d.data() }` — the spread lands last, so an `id` field
+         * inside the document silently overrides the real document id. Today
+         * they agree; the moment anyone hand-edits an export they stop
+         * agreeing, and then every productId in a pack and every customerId on
+         * a ledger line resolves against the wrong document.
+         */
+        const { id, ...data } = raw
+
+        if (col === 'products' && !keepCounters && !keepHistory) {
+          // The tickets these totals were added up from are not coming with
+          // them. Left in place they would report revenue no sale can explain.
+          let touched = false
+          for (const field of PRODUCT_COUNTERS) {
+            if (data[field] !== undefined) {
+              delete data[field]
+              touched = true
+            }
+          }
+          if (touched) counterResets += 1
+        }
+
+        if (MIGRATE_RESET_BALANCE.includes(col) && !keepHistory) {
+          // The ledger lines behind this balance are staying behind, so the
+          // balance has to start at zero or the carnet shows a debt with no
+          // history to explain or settle it.
+          if (data.balance) balanceResets += 1
+          data.balance = 0
+        }
+
+        const ref = db.collection('shops').doc(shopId).collection(col).doc(id)
+        ops.push((batch) => batch.set(ref, data, { merge: true }))
+        copied += 1
+      }
+    }
+
+    log('')
+    if (unknown.length) warn(`ignored unknown collection(s) in the file: ${unknown.join(', ')}`)
+    log(`  ${c.bold(String(copied))} documents to write`)
+    if (counterResets) log(`  ${counterResets} products will have their lifetime totals cleared`)
+    if (balanceResets) log(`  ${balanceResets} customers will have their balance reset to 0`)
+    log(c.dim('  The file is not modified. The old project is not touched at all.'))
+    log('')
+
+    if (copied === 0) {
+      die('Nothing to write.', 'Every collection in that file is empty or skipped.')
+    }
+    if (dry) {
+      warn('Dry run. Nothing was written.')
+      return
+    }
+    if (!(await confirm(`Write ${copied} documents into shops/${shopId}?`))) return
+
+    const written = await commitChunked(db, ops, 'writing')
+    ok(`${written} documents written into shops/${shopId}`)
+
+    await db
+      .collection('shops')
+      .doc(shopId)
+      .set(
+        {
+          migratedAt: Date.now(),
+          migratedDocs: written,
+          importedFrom: parsed.project ?? 'file',
+          importedAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        { merge: true },
+      )
+    log('')
+    log(c.dim('  Re-runnable: the same ids are reused, so running it again just refreshes.'))
+    log(c.dim(`  Now prove it: verify --shop ${shopId} --file "${file}"`))
+    log('')
+  },
+}
+
 commands['verify'] = {
-  blurb: 'Prove a migration landed: counts, stock sum and a checksum  --shop <shopId>',
+  blurb: 'Prove a migration landed: counts, stock sum, checksum  --shop <shopId> [--file <path>]',
   async run() {
     const { db } = await connect()
     const shopId = flags.shop ?? positional[0]
     if (!shopId) die('Need --shop <shopId>.')
 
     /**
-     * A checksum over the fields that would actually hurt to lose, not over
-     * the whole document: ids and text can be eyeballed, but a barcode or a
-     * price that changed in transit is invisible and expensive.
+     * What is being compared against.
+     *
+     * `--file` exists because after a move between projects there is no root
+     * collection left to compare against — the truth about what the shop used
+     * to hold lives in the pull, on disk. Without it, "verify" in a fresh
+     * project would be comparing the shop against nothing and reporting that
+     * nothing is missing.
+     */
+    const file = flags.file ? String(flags.file) : null
+    let source = {}
+    let label = 'root'
+
+    if (file) {
+      if (!existsSync(file)) die(`No such file: ${file}`)
+      let parsed
+      try {
+        parsed = JSON.parse(readFileSync(file, 'utf8'))
+      } catch (err) {
+        die(`${file} is not readable JSON.`, String(err?.message ?? err))
+      }
+      const cols = parsed.collections ?? parsed
+      for (const col of SHOP_COLLECTIONS) source[col] = Array.isArray(cols[col]) ? cols[col] : []
+      label = 'file'
+      log('')
+      log(c.dim(`  against ${file}`))
+    } else {
+      for (const col of SHOP_COLLECTIONS) {
+        const snap = await db.collection(col).get()
+        source[col] = snap.docs.map((d) => d.data())
+      }
+      const anything = SHOP_COLLECTIONS.reduce((n, col) => n + source[col].length, 0)
+      if (anything === 0) {
+        die(
+          'Every root collection in this project is empty, so there is nothing to verify against.',
+          'Moving between projects? Pass --file <the pull:legacy export> instead.',
+        )
+      }
+    }
+
+    /**
+     * A checksum over the fields that would actually hurt to lose, not over the
+     * whole document: ids and text can be eyeballed, but a barcode or a price
+     * that changed in transit is invisible and expensive.
      */
     const fingerprint = (docs) =>
       docs
@@ -787,32 +1174,64 @@ commands['verify'] = {
 
     let failures = 0
     log('')
-    log(`  ${'collection'.padEnd(16)} ${'root'.padStart(7)} ${'shop'.padStart(7)}`)
+    log(`  ${'collection'.padEnd(16)} ${label.padStart(7)} ${'shop'.padStart(7)}`)
     for (const col of SHOP_COLLECTIONS) {
-      const rootSnap = await db.collection(col).get()
+      const sourceDocs = source[col]
       const shopSnap = await db.collection('shops').doc(shopId).collection(col).get()
-      const expected = MIGRATE_SKIP.includes(col) ? 0 : rootSnap.size
+      const expected = MIGRATE_SKIP.includes(col) ? 0 : sourceDocs.length
       const good = shopSnap.size === expected
       if (!good) failures += 1
       log(
-        `  ${col.padEnd(16)} ${String(rootSnap.size).padStart(7)} ${String(shopSnap.size).padStart(7)}` +
+        `  ${col.padEnd(16)} ${String(sourceDocs.length).padStart(7)} ${String(shopSnap.size).padStart(7)}` +
           `  ${good ? c.green('ok') : c.red(`expected ${expected}`)}`,
       )
 
       if (col === 'products') {
-        const rootDocs = rootSnap.docs.map((d) => d.data())
         const shopDocs = shopSnap.docs.map((d) => d.data())
         const sum = (docs) => docs.reduce((n, p) => n + (Number(p.quantity) || 0), 0)
-        const rootSum = sum(rootDocs)
+        const sourceSum = sum(sourceDocs)
         const shopSum = sum(shopDocs)
-        const rootHash = hash(fingerprint(rootDocs))
+        const sourceHash = hash(fingerprint(sourceDocs))
         const shopHash = hash(fingerprint(shopDocs))
+
+        /**
+         * The one fault that survives a visual check.
+         *
+         * Firestore's REST API returns integers as STRINGS. A price or a stock
+         * level that arrived as "100" instead of 100 renders identically
+         * everywhere in the app, and then sorts wrongly, fails every
+         * comparison, and makes `quantity <= lowStockThreshold` meaningless.
+         * Nobody would ever spot it by looking, so it is checked by type.
+         */
+        const NUMERIC = ['quantity', 'costPrice', 'salePrice', 'costPriceHT', 'vatRate', 'lowStockThreshold']
+        const mistyped = []
+        for (const d of shopSnap.docs) {
+          const data = d.data()
+          for (const field of NUMERIC) {
+            if (data[field] !== undefined && data[field] !== null && typeof data[field] !== 'number') {
+              mistyped.push(`${d.id}.${field} = ${JSON.stringify(data[field])}`)
+            }
+          }
+        }
+
         log('')
-        log(`  stock on hand    root ${String(rootSum).padStart(7)}   shop ${String(shopSum).padStart(7)}  ${rootSum === shopSum ? c.green('ok') : c.red('MISMATCH')}`)
-        log(`  catalogue hash   root ${rootHash}   shop ${shopHash}  ${rootHash === shopHash ? c.green('ok') : c.red('MISMATCH')}`)
+        log(
+          `  stock on hand    ${label} ${String(sourceSum).padStart(7)}   shop ${String(shopSum).padStart(7)}` +
+            `  ${sourceSum === shopSum ? c.green('ok') : c.red('MISMATCH')}`,
+        )
+        log(
+          `  catalogue hash   ${label} ${sourceHash}   shop ${shopHash}` +
+            `  ${sourceHash === shopHash ? c.green('ok') : c.red('MISMATCH')}`,
+        )
+        log(
+          `  numeric fields   ${mistyped.length === 0 ? c.green('all real numbers') : c.red(`${mistyped.length} stored as text`)}`,
+        )
+        for (const m of mistyped.slice(0, 5)) log(c.red(`    ${m}`))
+        if (mistyped.length > 5) log(c.red(`    …and ${mistyped.length - 5} more`))
         log('')
-        if (rootSum !== shopSum) failures += 1
-        if (rootHash !== shopHash) failures += 1
+        if (sourceSum !== shopSum) failures += 1
+        if (sourceHash !== shopHash) failures += 1
+        if (mistyped.length) failures += 1
       }
     }
 
@@ -820,10 +1239,11 @@ commands['verify'] = {
     if (failures) {
       die(`${failures} check(s) failed — do NOT cut over.`)
     }
-    ok('Every check passed. The catalogue in the shop is byte-identical to root.')
+    ok(`Every check passed. The catalogue in the shop is identical to ${label}.`)
     log('')
   },
 }
+
 
 commands['stats'] = {
   blurb: 'Document counts per shop, and the shared catalogue',
