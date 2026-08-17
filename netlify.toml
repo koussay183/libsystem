@@ -3,6 +3,13 @@
   command = "npm run build"
   publish = "dist"
 
+# Pinned, so a Netlify-side default bump cannot change what the shop downloads
+# without a commit saying so. The six VITE_FIREBASE_* values are NOT here and
+# must be set in the Netlify UI: .env.local is gitignored, so a build without
+# them still SUCCEEDS and ships an app whose Firebase config is undefined.
+[build.environment]
+  NODE_VERSION = "22"
+
 # A single-page app owns its routing. Without this, opening or refreshing any
 # deep link (e.g. /caisse, /credit/abc) would hit Netlify's file server, find
 # no such file, and return 404. Rewrite everything to index.html so React
