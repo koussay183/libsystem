@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   CloudOff,
   BookMarked,
+  Library,
   Package,
   Boxes,
   ReceiptText,
@@ -268,6 +269,7 @@ export function AppShell() {
       label: t('nav.manage'),
       items: [
         { to: '/stock', icon: Package, label: t('nav.stock') },
+        { to: '/catalog', icon: Library, label: t('catalog.title') },
         { to: '/packs', icon: Boxes, label: t('packs.title') },
         { to: '/invoices', icon: ReceiptText, label: t('nav.invoices') },
         { to: '/suppliers', icon: Truck, label: t('nav.suppliers') },

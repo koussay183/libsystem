@@ -1079,6 +1079,30 @@ export function CaissePage() {
       */
       missCode.current = missed
       if (missed !== '') {
+        /*
+          A SCANNED CODE THIS SHOP DOES NOT CARRY OPENS THE FORM AT ONCE.
+
+          The notice and its "Créer ce produit" button are still there, but they
+          were one step too many: an article is in the cashier's hand, the
+          customer is waiting, and the only thing that can happen next is
+          entering it. So the dialog opens itself, with the barcode already in
+          it and the name filled from the catalogue the moment it answers.
+
+          Only for something that LOOKS LIKE A CODE. A miss on words the owner
+          typed means he was searching, not scanning, and a modal thrown at a
+          failed search is an interruption rather than a shortcut.
+
+          Safe from the scanner, and not by luck: while any dialog is open,
+          lookup() refuses codes outright at the `blocked.current` check above
+          rather than letting the wedge type them into whatever field has focus.
+          So the next article scanned at a half-filled form is beeped away, not
+          silently appended to a price.
+        */
+        setNewPrice('')
+        setNewCost('')
+        setNewError('')
+        setNewOpen(true)
+
         void lookupCatalog(missed).then((hit) => {
           if (!hit || !alive.current) return
           if (missCode.current !== missed) return

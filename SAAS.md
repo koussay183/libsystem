@@ -429,3 +429,57 @@ Already done: the Argent page asked for the newest 500/1500/4000/12000 tickets
 depending on the period and re-queried on every switch — up to 18 000 reads to
 click through four tabs. It now asks for a date range, so reporting on today
 reads today.
+
+---
+
+## The catalogue browser, and the school books
+
+The shared catalogue is no longer scan-only. `/catalog` in the app is a browse
+screen, and the rules therefore allow `list` — **capped at 120 documents per
+query** (`request.query.limit`, the only lever rules have over query size).
+Without a limit at or under the cap the query is refused before it reads
+anything, which is what keeps an unbounded walk of the collection off the read
+bill. Verified live: `limit: 500` and a query with no limit both return 403.
+
+There is still no commercial data in there. Names, brands, categories, units,
+barcodes — what an article *is*. Never a shop's cost, margin, supplier or stock.
+
+**Search** is a prefix range over `nameLower`, a folded (lowercased,
+accent-stripped) copy of the name written by the CLI, because Firestore has no
+case-insensitive comparison and no substring search. `foldName()` in
+`cli/lib.mjs` and `foldSearch()` in `useCatalog.ts` must stay identical — a drift
+between them raises no error, it just stops finding things. Run
+`catalog:reindex` after any seed.
+
+**A name search cannot be combined with a filter.** Each pairing of an equality
+filter with an ordering on another field needs its own composite index, and a
+missing index does not degrade — the query fails outright.
+
+```bash
+node lib.mjs catalog:official --shop <shopId> [--dry-run]  # the state-priced books
+node lib.mjs catalog:reindex                               # backfill nameLower
+```
+
+### Manuels scolaires — the one place a price is shared
+
+A manuel scolaire costs the same in every librairie in Tunisia because the state
+sets it. That price is a fact about the book, like its title, so it travels with
+the catalogue entry — and so does the purchase price, because the CNP sells to
+booksellers at a fixed discount.
+
+That discount is **not assumed, it is asserted**: across all 52 six-digit CNP
+articles in the shop this was built from, `costPrice` is exactly 75 % of
+`salePrice`. `catalog:official` recomputes it and **skips any book that does not
+match**, reporting it — which immediately caught one (`Base 3 — القرآن الكريم`,
+priced at 60 %). A wrong purchase price would put a wrong margin into every shop
+that took the book, so guessing was not an option.
+
+51 books are published, `base3` through `sec4`. A shop picks a level, types
+quantities, and its shelf is in the system with both prices already right. The
+add skips any barcode the shop already stocks, so running it on a shop that
+already has them changes nothing.
+
+> **`firestore.indexes.json` was dead until now.** `firebase.json` had no
+> `firestore.indexes` key, so `firebase deploy --only firestore:indexes` printed
+> "deploying indexes…" and deployed nothing, silently. If a query starts failing
+> with `failed-precondition`, check that key exists before anything else.

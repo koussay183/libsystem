@@ -155,6 +155,41 @@ export const fr = {
     recordedHere:
       'Le ticket est enregistré sur cet ordinateur. L’envoi au serveur se fait tout seul — le voyant en haut de l’écran indique où il en est.',
   },
+  catalog: {
+    title: 'Catalogue',
+    subtitle:
+      'Les articles déjà identifiés par les autres librairies. Le nom et le code viennent du catalogue ; vos prix et vos quantités restent les vôtres.',
+    // Le bloc qui justifie cet écran : ces livres sont les mêmes partout et
+    // l'État fixe leur prix, donc il n'y a rien à décider — seulement à compter.
+    schoolTitle: 'Manuels scolaires officiels',
+    schoolHint:
+      'Prix fixé par l’État, identique dans toute la Tunisie. Choisissez le niveau, indiquez les quantités que vous avez en rayon : les prix d’achat et de vente sont déjà remplis.',
+    allLevels: 'Tous les niveaux',
+    officialPrice: 'Prix officiel',
+    addBooks_one: 'Ajouter 1 manuel à mon stock',
+    addBooks_other: 'Ajouter {{count}} manuels à mon stock',
+    booksAdded_one: '1 manuel ajouté à votre stock',
+    booksAdded_other: '{{count}} manuels ajoutés à votre stock',
+    noBooks: 'Aucun manuel pour ce niveau dans le catalogue.',
+    qty: 'Qté',
+    browseTitle: 'Parcourir le catalogue',
+    searchPlaceholder: 'Chercher un article par son nom…',
+    allCategories: 'Toutes les catégories',
+    officialOnly: 'Manuels seulement',
+    searchAlone: 'La recherche par nom s’utilise seule, sans filtre.',
+    inStock: 'Déjà en stock',
+    add: 'Ajouter',
+    more: 'Afficher plus',
+    empty: 'Rien trouvé dans le catalogue',
+    emptyHint:
+      'Essayez un autre mot, ou scannez le code-barres à la caisse : l’article sera reconnu s’il est connu.',
+    // Dict n’a que deux niveaux — chaque feuille doit être une chaîne — donc ces
+    // trois messages sont aplatis plutôt que regroupés sous un objet 'err'.
+    errOffline:
+      'Le catalogue partagé a besoin d’internet. Votre stock et votre caisse fonctionnent normalement.',
+    errIndex: 'Le catalogue se prépare encore. Réessayez dans quelques minutes.',
+    errError: 'Le catalogue n’a pas répondu. Réessayez.',
+  },
   packs: {
     title: 'Packs',
     subtitle: 'Plusieurs articles vendus ensemble à un prix unique',

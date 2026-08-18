@@ -13,6 +13,7 @@
 export const ROUTE_PALETTE: Record<string, string> = {
   '/caisse': 'green',
   '/stock': 'brand',
+  '/catalog': 'yellow',
   '/packs': 'cyan',
   '/invoices': 'blue',
   '/suppliers': 'purple',

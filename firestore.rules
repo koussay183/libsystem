@@ -40,6 +40,19 @@ service cloud.firestore {
     }
 
     /**
+     * Signed in AND provisioned for some shop — any shop.
+     *
+     * The only place this is enough is the shared catalogue, which is the one
+     * collection that does not belong to a tenant. Everywhere else the question
+     * is owns(shopId), and the difference is the whole security model: the web
+     * API key ships in every bundle, so `request.auth != null` proves nothing
+     * more than that somebody called the sign-up endpoint.
+     */
+    function signedShop() {
+      return isTenant();
+    }
+
+    /**
      * A plan that has not run out.
      *
      * token.get('paidUntil', 0) rather than token.paidUntil: reading a claim
@@ -168,9 +181,41 @@ service cloud.firestore {
     // bundle, so anyone can sign up and arrive holding a valid anonymous
     // account. Owning a shop is the only thing that counts.
     match /catalog/{code} {
-      allow get: if request.auth != null && request.auth.token.get('shopId', '') is string
-                 && request.auth.token.get('shopId', '') != '';
-      allow list: if false;
+      allow get: if signedShop();
+
+      /**
+       * `list` IS ALLOWED NOW, BUT ONLY IN PAGES.
+       *
+       * It was refused outright, and the reason was sound: an unbounded list lets
+       * one account walk the whole collection in a single query. What changed is
+       * that browsing the catalogue became a feature — a shop opening for the
+       * first time needs to SEE what is in there, not only get lucky with a
+       * barcode it happens to be holding.
+       *
+       * So the risk is priced rather than avoided. Two things make it acceptable:
+       *
+       *  · THERE IS NO COMMERCIAL DATA HERE. Names, brands, categories, units and
+       *    barcodes — what an article IS. Not one shop's cost, sale price, margin,
+       *    supplier or stock. Those live under shops/{shopId}/… and no rule here
+       *    exposes them. Enumerating this collection reveals roughly what walking
+       *    into a bookshop reveals.
+       *
+       *  · THE READ BILL IS BOUNDED PER QUERY. Firestore charges the platform for
+       *    every document a query returns, so an unbounded list is somebody
+       *    else's money — mine. request.query.limit is the only lever the rules
+       *    have over query size, and it is a real one: without a limit at or under
+       *    this cap the query is refused before it reads anything.
+       *
+       * The one thing this deliberately does not do is stop a determined account
+       * from paging through the whole catalogue a hundred documents at a time. No
+       * rule can. That is what App Check is for, and it is still on the list.
+       *
+       * The official school books carry a regulated price, and that is not an
+       * exception to "no prices here" — a manuel scolaire costs the same in every
+       * librairie in Tunisia by law. It is a fact about the book, like its title.
+       */
+      allow list: if signedShop() && request.query.limit <= 120;
+
       allow write: if false;
     }
   }

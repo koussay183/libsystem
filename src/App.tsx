@@ -18,10 +18,12 @@ import { isFirebaseConfigured } from '@/lib/firebase'
 const loadHome = () => import('@/features/home/HomePage')
 const loadCaisse = () => import('@/features/pos/CaissePage')
 const loadStock = () => import('@/features/stock/StockPage')
+const loadCatalog = () => import('@/features/catalog/CatalogPage')
 
 const HomePage = lazy(() => loadHome().then((m) => ({ default: m.HomePage })))
 const CaissePage = lazy(() => loadCaisse().then((m) => ({ default: m.CaissePage })))
 const StockPage = lazy(() => loadStock().then((m) => ({ default: m.StockPage })))
+const CatalogPage = lazy(() => loadCatalog().then((m) => ({ default: m.CatalogPage })))
 const InvoicesPage = lazy(() =>
   import('@/features/invoices/InvoicesPage').then((m) => ({ default: m.InvoicesPage })),
 )
@@ -140,6 +142,14 @@ export function App() {
               element={
                 <PageBoundary>
                   <CaissePage />
+                </PageBoundary>
+              }
+            />
+            <Route
+              path="/catalog"
+              element={
+                <PageBoundary>
+                  <CatalogPage />
                 </PageBoundary>
               }
             />

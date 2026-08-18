@@ -993,6 +993,185 @@ function describePromotion(plan) {
   log('')
 }
 
+/**
+ * The folded copy of a name that the catalogue browser searches on.
+ *
+ * Firestore has no case-insensitive comparison and no substring search, so a
+ * prefix range over a pre-folded field is the only text search available without
+ * standing up a search service. Accents are stripped as well as case, because a
+ * librairie types "francais" and the book is called "Français".
+ */
+function foldName(s) {
+  return String(s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * The school level a manuel scolaire belongs to, from its own title.
+ *
+ * Every one of these books is named "Base 6 — …" or "Sec 3 — …" by the shop that
+ * entered them, which is not a coincidence: that is how they are ordered from the
+ * CNP and how they are asked for at the counter. Tunisian basic education runs
+ * Base 1 to 9 and secondary Sec 1 to 4.
+ *
+ * Returns null rather than guessing. A book whose level cannot be read is still a
+ * perfectly good catalogue entry; it simply does not appear under a level tab.
+ */
+function schoolLevel(name) {
+  const m = /^\s*(base|sec)\s*([1-9])\b/i.exec(String(name ?? ''))
+  return m ? `${m[1].toLowerCase()}${m[2]}` : null
+}
+
+commands['catalog:official'] = {
+  blurb: 'Publish the state-priced school books from a shop  --shop <shopId> [--dry-run]',
+  async run() {
+    const { db } = await connect()
+    const { shopId } = await resolveShop(positional[0] ?? flags.shop ?? flags.email)
+    const { FieldValue } = await loadAdmin()
+
+    /**
+     * MANUELS SCOLAIRES ARE THE ONE PLACE A PRICE MAY BE SHARED.
+     *
+     * Everywhere else in this catalogue a price is refused, and for a real reason:
+     * a shop's selling price is its own commercial decision, and a borrowed one
+     * with no cost behind it mints a phantom margin into the receiving shop's
+     * report. None of that applies here. A manuel scolaire costs the same in every
+     * librairie in Tunisia because the state sets it — the price is a fact about
+     * the book, like its title, and every shop in the country is already selling
+     * it for that.
+     *
+     * The purchase price is shareable for the same reason and it is not a guess.
+     * Across all 52 of these books in the shop this was built from, costPrice is
+     * exactly 75 % of salePrice — the standard CNP discount to booksellers. That
+     * ratio is ASSERTED rather than assumed: a book that does not match it is
+     * skipped and reported, because a wrong purchase price would put a wrong
+     * margin into every shop that took it.
+     *
+     * Six-digit CNP article numbers only. They are not GTINs, so they live in the
+     * `cnp-` id namespace and no shop can contribute one — this command, run by
+     * the operator against a shop whose data he trusts, is the only way in.
+     */
+    const CNP_MARGIN_RATIO = 0.75
+    const snap = await db.collection('shops').doc(shopId).collection('products').get()
+
+    const candidates = []
+    const skipped = []
+    const levels = new Map()
+    for (const d of snap.docs) {
+      const p = d.data()
+      const raw = String(p.barcode ?? '').trim().replace(/[\s-]/g, '')
+      if (!/^[0-9]{6}$/.test(raw)) continue
+
+      const name = String(p.name ?? '').trim()
+      const sale = Number(p.salePrice ?? 0)
+      const cost = Number(p.costPrice ?? 0)
+      if (name === '' || name.length >= 80 || !Number.isFinite(sale) || sale <= 0) {
+        skipped.push(`${raw}: no usable name or price`)
+        continue
+      }
+      // Integer millimes, so the ratio is checked with a tolerance of one
+      // millime for the rounding the shop's own arithmetic will have done.
+      const expected = Math.round(sale * CNP_MARGIN_RATIO)
+      if (Math.abs(cost - expected) > 1) {
+        skipped.push(`${raw}: cost ${cost} is not 75% of ${sale} (expected ${expected}) — "${name}"`)
+        continue
+      }
+
+      const level = schoolLevel(name)
+      levels.set(level ?? '?', (levels.get(level ?? '?') ?? 0) + 1)
+      candidates.push({
+        id: `cnp-${raw}`,
+        name,
+        category:
+          typeof p.category === 'string' && p.category.trim() !== ''
+            ? p.category.trim()
+            : 'Manuels scolaires',
+        unit: p.unit ?? null,
+        officialPrice: sale,
+        officialCost: expected,
+        level,
+      })
+    }
+
+    // Read before writing, so provenance is created once and never re-stamped.
+    // This is the same discipline as planPromotion, and for the same reason: bug
+    // 5.7 was a merge that carried createdAt and confirms in its payload.
+    const ops = []
+    const READ_CHUNK = 300
+    for (let i = 0; i < candidates.length; i += READ_CHUNK) {
+      const slice = candidates.slice(i, i + READ_CHUNK)
+      const refs = slice.map((x) => db.collection('catalog').doc(x.id))
+      const snaps = await db.getAll(...refs)
+      for (let j = 0; j < slice.length; j += 1) {
+        const x = slice[j]
+        const fresh = !snaps[j].exists
+        ops.push((batch) =>
+          batch.set(
+            refs[j],
+            {
+              name: x.name,
+              nameLower: foldName(x.name),
+              category: x.category,
+              unit: x.unit,
+              official: true,
+              officialPrice: x.officialPrice,
+              officialCost: x.officialCost,
+              level: x.level,
+              ...(fresh ? { by: shopId, confirms: 0, createdAt: Date.now() } : {}),
+            },
+            { merge: true },
+          ),
+        )
+      }
+    }
+
+    log(`  ${ops.length} official school books from ${snap.size} products`)
+    for (const [lvl, n] of [...levels].sort()) log(c.dim(`    ${String(lvl).padEnd(6)} ${n}`))
+    if (skipped.length > 0) {
+      warn(`${skipped.length} skipped:`)
+      for (const s of skipped.slice(0, 10)) log(c.dim(`    ${s}`))
+      if (skipped.length > 10) log(c.dim(`    … and ${skipped.length - 10} more`))
+    }
+    if (flags['dry-run']) {
+      warn('Dry run. Nothing was written.')
+      return
+    }
+    if (ops.length === 0) return
+    if (!(await confirm(`Publish ${ops.length} state-priced books to the shared catalogue?`))) return
+    const written = await commitChunked(db, ops, 'writing')
+    ok(`${written} official books published — every shop can now stock them by quantity alone`)
+  },
+}
+
+commands['catalog:reindex'] = {
+  blurb: 'Backfill nameLower on catalogue entries so the browser can search them',
+  async run() {
+    const { db } = await connect()
+    const snap = await db.collection('catalog').get()
+    // Only entries whose folded name is missing or has drifted, so this is cheap
+    // to run after every seed and does not rewrite the whole collection.
+    const ops = []
+    for (const d of snap.docs) {
+      const want = foldName(d.data().name)
+      if (want !== '' && d.data().nameLower !== want) {
+        ops.push((batch) => batch.set(d.ref, { nameLower: want }, { merge: true }))
+      }
+    }
+    log(`  ${snap.size} entries, ${ops.length} need a folded name`)
+    if (flags['dry-run'] || ops.length === 0) {
+      if (ops.length === 0) ok('Nothing to do.')
+      else warn('Dry run. Nothing was written.')
+      return
+    }
+    const written = await commitChunked(db, ops, 'writing')
+    ok(`${written} entries reindexed`)
+  },
+}
+
 commands['sweep:orphans'] = {
   blurb: 'Find credit lines whose customer is gone  --shop <shopId> [--delete]',
   async run() {
