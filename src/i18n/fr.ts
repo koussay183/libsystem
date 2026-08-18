@@ -726,10 +726,32 @@ export const fr = {
   },
   settings: {
     title: 'Réglages',
-    subtitle: 'L’identité de la boutique et vos listes',
+    subtitle: 'Tout ce qui se règle une fois, rangé par sujet',
     shopTab: 'Boutique',
+    shopTabHint: 'Nom, adresse et bas de ticket',
+    pricingTab: 'Prix et marges',
+    pricingTabHint: 'Marges, TVA, écriture des prix',
     categoriesTab: 'Catégories',
+    categoriesTabHint: 'Pour ranger vos produits',
+    servicesTabHint: 'Photocopie, impression, reliure…',
     backupTab: 'Sauvegarde',
+    backupTabHint: 'Exporter et restaurer vos données',
+    unsaved: 'Modifications non enregistrées',
+    // Le menu latéral : ce que le libraire voit à gauche toute la journée.
+    // Éteindre un module ne supprime rien — c’est un réglage d’affichage, et le
+    // texte doit le dire, sinon personne n’ose y toucher.
+    menuTab: 'Menu',
+    menuTabHint: 'Choisir ce qui s’affiche à gauche',
+    menuTitle: 'Ce qui s’affiche dans le menu',
+    menuHint:
+      'Éteignez les modules que vous n’utilisez pas : ils disparaissent du menu de gauche. Rien n’est supprimé et rien n’est perdu — rallumez-les ici quand vous voulez.',
+    menuLocked: 'Toujours visible — c’est par ici qu’on revient à cet écran.',
+    menuBottom: 'En bas du menu',
+    menuShowAll: 'Tout afficher',
+    menuHiddenCount: '{{count}} module(s) masqué(s)',
+    menuAllShown: 'Tous les modules sont affichés',
+    menuPreview: 'Aperçu du menu',
+    categoryMarginsHint: 'Laissez vide pour appliquer la marge par défaut.',
     shopName: 'Nom de la boutique',
     shopNameHint: 'Imprimé en haut de chaque ticket',
     pricing: 'Prix et marges',

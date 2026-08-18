@@ -288,4 +288,17 @@ export interface ShopSettings {
    * along in the backup with everything else.
    */
   services?: QuickService[]
+  /**
+   * Routes the owner has switched off in the sidebar, e.g. `['/packs']`.
+   *
+   * A HIDDEN LIST, NOT A VISIBLE ONE, on purpose: a shop that has never touched
+   * these settings has no field here and sees everything, and a module added in
+   * a later version turns up by itself instead of staying invisible until
+   * somebody thinks to go and enable it.
+   *
+   * Menu only — the routes stay mounted and reachable (see lib/navItems.ts).
+   * Kept on the shop document so the same menu greets the owner on the back
+   * office machine as on the till.
+   */
+  hiddenNav?: string[]
 }

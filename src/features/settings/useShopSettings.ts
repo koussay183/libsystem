@@ -72,8 +72,26 @@ export function useShopSettings() {
  * reports only that the shop has taken the change, which it has.
  */
 export function saveShopSettings(settings: ShopSettings): void {
+  patchShopSettings(settings)
+}
+
+/**
+ * Writes only the fields named, leaving the rest of the document alone.
+ *
+ * For the settings that ARE the switch — the dinars/millimes mode, the sidebar
+ * toggles — where a Save button would be a lie: the sidebar redraws the moment
+ * the switch moves, so pretending the change is pending would leave the screen
+ * and the setting disagreeing.
+ *
+ * The point of the narrow patch is what it does NOT carry. Those switches sit
+ * on the same screen as the shop's name and address, so writing the whole form
+ * would push a half-typed address to the server — and to the other machine —
+ * because somebody flipped an unrelated switch. merge:true means every field
+ * absent from `patch` keeps whatever it already had.
+ */
+export function patchShopSettings(patch: Partial<ShopSettings>): void {
   void track(
-    setDoc(REF(), { ...settings, updatedAt: Date.now() }, { merge: true }),
+    setDoc(REF(), { ...patch, updatedAt: Date.now() }, { merge: true }),
   ).catch(() => {})
 }
 

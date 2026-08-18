@@ -8,17 +8,6 @@ import {
   AlertTriangle,
   CloudOff,
   BookMarked,
-  Library,
-  Package,
-  Boxes,
-  ReceiptText,
-  HandCoins,
-  Wallet,
-  Truck,
-  ShoppingCart,
-  BarChart3,
-  DatabaseBackup,
-  Settings,
   Menu as MenuIcon,
   X,
 } from 'lucide-react'
@@ -35,6 +24,12 @@ import {
 } from '@chakra-ui/react'
 import { useAuth } from '@/auth/AuthContext'
 import { ROUTE_PALETTE, paletteFor } from '@/lib/navColors'
+import {
+  ALL_NAV_ITEMS,
+  visibleNavFooter,
+  visibleNavGroups,
+} from '@/lib/navItems'
+import type { NavItemDef } from '@/lib/navItems'
 import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
@@ -47,19 +42,8 @@ import { useCategoriesFatal } from '@/features/categories/useCategories'
 import { useSuppliersFatal } from '@/features/suppliers/useSuppliers'
 import { usePacksFatal } from '@/features/packs/usePacks'
 
-interface NavItem {
-  to: string
-  icon: LucideIcon
-  label: string
-}
-
 /** The colour this route answers to, everywhere in the app. */
 const paletteOf = (to: string) => ROUTE_PALETTE[to] ?? 'brand'
-
-interface NavGroup {
-  label: string
-  items: NavItem[]
-}
 
 const SIDEBAR_W = '18.5rem'
 
@@ -260,35 +244,18 @@ export function AppShell() {
   // Capitalised so JSX reads it as a component and not as an HTML tag.
   const FrozenIcon = frozenCopy?.icon ?? AlertTriangle
 
-  const groups: NavGroup[] = [
-    {
-      label: t('nav.sell'),
-      items: [{ to: '/caisse', icon: ShoppingCart, label: t('nav.pos') }],
-    },
-    {
-      label: t('nav.manage'),
-      items: [
-        { to: '/stock', icon: Package, label: t('nav.stock') },
-        { to: '/catalog', icon: Library, label: t('catalog.title') },
-        { to: '/packs', icon: Boxes, label: t('packs.title') },
-        { to: '/invoices', icon: ReceiptText, label: t('nav.invoices') },
-        { to: '/suppliers', icon: Truck, label: t('nav.suppliers') },
-        { to: '/credit', icon: HandCoins, label: t('nav.credit') },
-      ],
-    },
-    {
-      label: t('nav.analyse'),
-      items: [
-        { to: '/dashboard', icon: Wallet, label: t('nav.dashboard') },
-        { to: '/reports', icon: BarChart3, label: t('nav.reports') },
-      ],
-    },
-  ]
-
-  const footerItems: NavItem[] = [
-    { to: '/settings', icon: Settings, label: t('nav.settings') },
-    { to: '/backup', icon: DatabaseBackup, label: t('nav.backup') },
-  ]
+  /**
+   * The menu the owner asked for, which is the full menu minus what he switched
+   * off in Réglages → Menu.
+   *
+   * The shop document is the only place this is remembered, so the same shop
+   * gets the same menu on the till and on the back-office machine. Filtering
+   * here and nowhere else is deliberate: NOTHING BELOW THIS POINT KNOWS ABOUT
+   * HIDING. The routes stay mounted, so a bookmark, a link out of the carnet
+   * and the header title all go on working for a module that is off the menu.
+   */
+  const groups = visibleNavGroups(shop.hiddenNav)
+  const footerItems = visibleNavFooter(shop.hiddenNav)
 
   // Close the drawer whenever navigation happens, so tapping a link on a phone
   // does not leave the overlay covering the page it just opened.
@@ -303,10 +270,16 @@ export function AppShell() {
 
   const fullHeight = VIEWPORT_ROUTES.has(location.pathname)
 
-  const current = [...groups.flatMap((g) => g.items), ...footerItems].find(
+  /*
+    Deliberately the FULL menu and not the filtered one: a module switched off
+    is still reachable — from a bookmark, or from a link inside another screen —
+    and a header that fell back to "Accueil" on those pages would leave the
+    owner looking at the carnet under the wrong name.
+  */
+  const current = ALL_NAV_ITEMS.find(
     (i) => location.pathname === i.to || location.pathname.startsWith(`${i.to}/`),
   )
-  const currentLabel = current?.label ?? t('nav.home')
+  const currentLabel = current ? t(current.labelKey) : t('nav.home')
   const CurrentIcon = current?.icon ?? BookMarked
   const currentPalette = paletteFor(location.pathname)
 
@@ -321,7 +294,7 @@ export function AppShell() {
    * the labels navigates by colour and position, and neither of those exists
    * until the colour is on the screen.
    */
-  const NavButton = ({ to, icon: Icon, label }: NavItem) => {
+  const NavButton = ({ to, icon: Icon, labelKey }: NavItemDef) => {
     // The same rule NavLink uses to set aria-current, so the square and the
     // row it sits on can never disagree about which page is open.
     const active =
@@ -371,7 +344,7 @@ export function AppShell() {
             <Icon size={22} />
           </Box>
           <Text as="span" truncate>
-            {label}
+            {t(labelKey)}
           </Text>
         </NavLink>
       </Button>
@@ -381,7 +354,7 @@ export function AppShell() {
   const navContent = (
     <Stack gap={5} flex="1" overflowY="auto" px={3} py={4}>
       {groups.map((g) => (
-        <Stack key={g.label} gap={2}>
+        <Stack key={g.labelKey} gap={2}>
           <Text
             fontSize="xs"
             fontWeight="bold"
@@ -391,7 +364,7 @@ export function AppShell() {
             px={3}
             mb={1}
           >
-            {g.label}
+            {t(g.labelKey)}
           </Text>
           {g.items.map((item) => (
             <NavButton key={item.to} {...item} />
