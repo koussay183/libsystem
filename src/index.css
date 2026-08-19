@@ -1,8 +1,29 @@
 /* ---------------------------------------------------------------------------
    All component styling comes from Chakra UI (see src/theme.ts).
-   This file only holds the receipt print rules, which Chakra can't express:
-   everything is hidden except #print-area, sized for an 80mm thermal roll by
-   default, or A4 when the .a4 class is set.
+   This file only holds the print rules, which Chakra cannot express: everything
+   is hidden except #print-area, sized for an 80mm thermal roll by default, or
+   A4 when the .a4 class is set.
+
+   WHY #print-area IS A PORTAL INTO <body> AND NOT A DIV WHERE IT IS USED.
+
+   It used to render inside #root, wherever the component sat, and the sheet hid
+   the rest of the app with `visibility: hidden` while pulling the receipt out
+   with `position: absolute; top: 0`. Both halves of that are why a long invoice
+   printed wrong.
+
+   `visibility: hidden` HIDES A BOX WITHOUT REMOVING IT. Every screen behind the
+   receipt — the sales table, the sidebar, the page it was opened from — still
+   occupied its full height in the printed flow, invisibly. That is the blank
+   middle page: a whole sheet of hidden application.
+
+   `position: absolute` TAKES AN ELEMENT OUT OF FLOW, and an out-of-flow box does
+   not paginate. The browser has nothing to break between, so it prints what
+   reaches the bottom of the first sheet and abandons the rest. That is the third
+   page cut off.
+
+   So: the receipt is portalled to <body>, every other child of <body> is
+   `display: none` (removed, not merely invisible), and the receipt itself stays
+   in normal static flow where the printer can break it wherever it likes.
 --------------------------------------------------------------------------- */
 
 @page thermal {
@@ -11,7 +32,9 @@
 }
 @page a4 {
   size: A4;
-  margin: 14mm;
+  /* Top margin is small because the invoice repeats its own header on every
+     sheet; the bottom leaves room for the page number. */
+  margin: 12mm 14mm 14mm;
 }
 
 #print-area {
@@ -19,44 +42,115 @@
 }
 
 @media print {
-  body * {
-    visibility: hidden !important;
+  /* Removed from the flow entirely — see the note above on visibility. */
+  body > *:not(#print-area) {
+    display: none !important;
   }
-  #print-area,
-  #print-area * {
-    visibility: visible !important;
+
+  html,
+  body {
+    /* The app sets these for the screen; on paper they clip the last page. */
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
   }
+
   #print-area {
     display: block !important;
-    position: absolute;
-    top: 0;
-    inset-inline-start: 0;
+    /* Static, not absolute. An out-of-flow box cannot be paginated. */
+    position: static !important;
+    width: auto;
     background: #fff;
     color: #000;
     font-family: ui-monospace, "Courier New", monospace;
   }
+
   #print-area.thermal {
     page: thermal;
     width: 74mm;
     font-size: 12px;
   }
+
   #print-area.a4 {
     page: a4;
     width: 100%;
-    font-size: 13px;
+    /* A shade larger than the till roll: this one is read across a counter by
+       somebody holding it at arm's length, not torn off and pocketed. */
+    font-size: 12.5px;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    line-height: 1.45;
   }
-  /* Statements (the credit carnet, a wholesale invoice) print as tables. */
+
+  /* ---- what must not be split ------------------------------------------ */
+
+  /* The shop's identity and the invoice number belong together, and belong on
+     every sheet — a page 2 that starts mid-table with no header is a page
+     nobody can file. */
+  .print-header {
+    break-inside: avoid;
+  }
+
+  /* Totals, signature, footer: splitting a total across two sheets is how a
+     customer ends up reading half a number. */
+  .print-keep {
+    break-inside: avoid;
+    break-before: auto;
+  }
+
+  /* A line item never straddles a page fold. */
+  .print-row {
+    break-inside: avoid;
+  }
+
+  /* Never leave one line stranded alone at a page boundary. */
+  #print-area p,
+  #print-area div {
+    orphans: 3;
+    widows: 3;
+  }
+
+  /* ---- tables ----------------------------------------------------------- */
+
   #print-area table {
     width: 100%;
     border-collapse: collapse;
   }
+
+  /*
+    THE HEADER ROW REPEATS ON EVERY SHEET. This is what `table-header-group`
+    buys, and it is the whole reason a long invoice is a <table> rather than the
+    flex rows the thermal receipt uses: on sheet three the customer still sees
+    which column is the quantity and which is the price.
+  */
+  #print-area thead {
+    display: table-header-group;
+  }
+  #print-area tfoot {
+    display: table-footer-group;
+  }
+  #print-area tbody tr {
+    break-inside: avoid;
+  }
+
   #print-area th,
   #print-area td {
     padding: 3px 4px;
     text-align: start;
     border-bottom: 1px solid #999;
   }
-  #print-area tr {
-    break-inside: avoid;
+
+  #print-area.a4 th {
+    border-bottom: 2px solid #000;
+    font-weight: 700;
+  }
+
+  /* Zebra striping survives print only with this; without it every second row
+     comes out white and a wide table becomes hard to track across. */
+  #print-area.a4 tbody tr:nth-child(even) td {
+    background: #f4f4f4 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 }

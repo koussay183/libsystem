@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { formatMoney } from '@/lib/money'
 import { formatDate, formatDateTime } from '@/lib/format'
@@ -48,9 +49,11 @@ export function CarnetPrint({
   const num = { ...cell, textAlign: 'end' as const, whiteSpace: 'nowrap' as const }
   const numHead = { ...head, textAlign: 'end' as const }
 
-  return (
+  // Portalled to <body> so the print sheet can remove the app around it rather
+  // than merely hiding it — see the note at the top of src/index.css.
+  return createPortal(
     <div id="print-area" className="a4">
-      <div style={{ textAlign: 'center', marginBottom: 12 }}>
+      <div className="print-header" style={{ textAlign: 'center', marginBottom: 12 }}>
         <div style={{ fontSize: '1.5em', fontWeight: 700 }}>{shopName}</div>
         <div style={{ fontSize: '1.2em', marginTop: 2 }}>{t('credit.statement')}</div>
         <div style={{ marginTop: 2 }}>{formatDateTime(Date.now())}</div>
@@ -148,6 +151,7 @@ export function CarnetPrint({
           </span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

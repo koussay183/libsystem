@@ -1,4 +1,5 @@
 import type { CSSProperties } from 'react'
+import { createPortal } from 'react-dom'
 import { formatMoney } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
 import type { PosLine } from './usePosCart'
@@ -50,9 +51,86 @@ export function Ticket({
   const change = Math.max(0, data.received - data.total)
   const money = (m: number) => formatMoney(m, { symbol })
 
-  return (
+  const a4 = paper === 'a4'
+
+  /*
+    TWO LAYOUTS, BECAUSE THEY ARE TWO DIFFERENT OBJECTS.
+
+    The thermal roll is 74mm of monospace torn off and handed over; a stacked
+    name-then-quantity block is the right shape for it and always was.
+
+    A4 is an invoice. It is read across a counter, filed, and argued over — and
+    when it runs to forty lines it runs to three sheets. A stack of flex rows
+    gives the printer nothing to repeat at the top of sheet two, so the customer
+    gets a page of numbers with no idea which column is which. A real table does:
+    thead is `display: table-header-group` in the print sheet, so the header rides
+    every page. See src/index.css.
+  */
+  const lines = a4 ? (
+    <table>
+      <thead>
+        <tr>
+          <th style={{ width: '6%' }}>#</th>
+          <th>Désignation</th>
+          <th style={{ width: '10%', textAlign: 'end' }}>Qté</th>
+          <th style={{ width: '18%', textAlign: 'end' }}>P.U.</th>
+          <th style={{ width: '20%', textAlign: 'end' }}>Montant</th>
+        </tr>
+      </thead>
+      <tbody>
+        {data.lines.map((l, i) => (
+          <tr key={l.id}>
+            <td>{i + 1}</td>
+            <td>
+              {l.name}
+              {l.qty < 0 && <strong> (RETOUR)</strong>}
+            </td>
+            <td style={{ textAlign: 'end' }}>{l.qty}</td>
+            <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>{money(l.unitPrice)}</td>
+            <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>
+              {money(l.qty * l.unitPrice)}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  ) : (
+    <div
+      style={{
+        borderTop: '1px dashed #000',
+        borderBottom: '1px dashed #000',
+        padding: '4px 0',
+      }}
+    >
+      {data.lines.map((l) => (
+        <div key={l.id} className="print-row" style={{ marginBottom: 4 }}>
+          <div>
+            {l.name}
+            {l.qty < 0 && <strong> (RETOUR)</strong>}
+          </div>
+          <div style={row}>
+            <span>
+              {l.qty} x {money(l.unitPrice)}
+            </span>
+            <span>{money(l.qty * l.unitPrice)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+
+  /*
+    Portalled to <body> rather than rendered where it sits.
+
+    The print sheet removes every OTHER child of <body>. That only works if this
+    is a child of <body> — nested inside the app it would be removed along with
+    its parents, and the old workaround (hide the app with visibility, drag this
+    out with position:absolute) is what broke multi-page printing. See the long
+    note at the top of src/index.css.
+  */
+  return createPortal(
     <div id="print-area" className={paper}>
-      <div style={{ textAlign: 'center', marginBottom: 8 }}>
+      <div className="print-header" style={{ textAlign: 'center', marginBottom: 8 }}>
         <div style={{ fontSize: '1.3em', fontWeight: 700 }}>{shop.name}</div>
         {shop.address && <div>{shop.address}</div>}
         {shop.phone && <div>Tél : {shop.phone}</div>}
@@ -62,30 +140,9 @@ export function Ticket({
         {data.clientName && <div>Client : {data.clientName}</div>}
       </div>
 
-      <div
-        style={{
-          borderTop: '1px dashed #000',
-          borderBottom: '1px dashed #000',
-          padding: '4px 0',
-        }}
-      >
-        {data.lines.map((l) => (
-          <div key={l.id} style={{ marginBottom: 4 }}>
-            <div>
-              {l.name}
-              {l.qty < 0 && <strong> (RETOUR)</strong>}
-            </div>
-            <div style={row}>
-              <span>
-                {l.qty} x {money(l.unitPrice)}
-              </span>
-              <span>{money(l.qty * l.unitPrice)}</span>
-            </div>
-          </div>
-        ))}
-      </div>
+      {lines}
 
-      <div style={{ marginTop: 8 }}>
+      <div className="print-keep" style={{ marginTop: 8 }}>
         {data.discount > 0 && (
           <>
             <div style={row}>
@@ -122,9 +179,10 @@ export function Ticket({
         )}
       </div>
 
-      <div style={{ textAlign: 'center', marginTop: 10 }}>
+      <div className="print-keep" style={{ textAlign: 'center', marginTop: 10 }}>
         {shop.footer || 'Merci et à bientôt !'}
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
