@@ -96,7 +96,7 @@ export const ar: Dict = {
     saveFailed: 'فشل الحفظ — لم يُسجَّل شيء. التذكرة سليمة، أعد المحاولة.',
     manyMatches: 'عدة منتجات تطابق «{{term}}»',
     chooseProduct: 'أي منتج؟',
-    sameCode: 'مادتان تحملان هذا الرمز — أيّهما؟',
+    sameCode: 'عدة مواد تحمل هذا الرمز — أيّها؟',
     pickNumber: 'اضغط، أو اكتب 1، 2، 3…',
     notFound: 'لا يوجد منتج لـ «{{term}}»',
     createFromScan: 'إنشاء هذا المنتج',

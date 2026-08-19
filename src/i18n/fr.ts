@@ -94,7 +94,7 @@ export const fr = {
     saveFailed: 'Échec de l’enregistrement — rien n’a été enregistré. Le ticket est intact, réessayez.',
     manyMatches: 'Plusieurs produits correspondent à « {{term}} »',
     chooseProduct: 'Quel produit ?',
-    sameCode: 'Deux articles portent ce code — lequel ?',
+    sameCode: 'Plusieurs articles portent ce code — lequel ?',
     pickNumber: 'Cliquez, ou tapez 1, 2, 3…',
     notFound: 'Aucun produit pour « {{term}} »',
     createFromScan: 'Créer ce produit',

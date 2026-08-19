@@ -2,6 +2,7 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from './firebase'
 import { shopPath } from './tenant'
 import { catalogKey, contributableKey, loose } from '@/features/stock/barcode'
+import { contributableName, MAX_NAME } from './catalogName'
 import { track } from './syncStatus'
 import { withDeadline } from './deadline'
 
@@ -65,13 +66,6 @@ export interface CatalogEntry {
    */
   category?: string
 }
-
-/**
- * A name longer than this is not a book title, it is somebody's note to himself
- * ("Cahier 96p — commande Mme Ben Salah, à rappeler jeudi"). Kept in step with
- * the same cap in cli/lib.mjs.
- */
-const MAX_NAME = 80
 
 /**
  * Look up one code. Null for "no answer", whatever the reason.
@@ -154,8 +148,19 @@ export function contributeToCatalog(
   const key = contributableKey(code)
   if (key === null) return
 
-  const clean = name.trim()
-  if (clean === '' || clean.length > MAX_NAME) return
+  /*
+    TWO GATES, NOT ONE, AND THIS IS THE SECOND.
+
+    `contributableKey` above decided the code is a real manufacturer's barcode.
+    This decides the name is a real name — until it existed, any string of one
+    to eighty characters was offered to the catalogue as the definitive name of
+    a code every bookshop in the country scans, so "test", "aaa", "sans nom" and
+    a phone number typed into the wrong field all went in. Rejecting withholds
+    nothing from this shop: the product is created with exactly that name on its
+    own shelf. See lib/catalogName.ts for why that asymmetry lets it be strict.
+  */
+  const clean = contributableName(name)
+  if (clean === null) return
   // A name that is just the barcode again teaches the catalogue nothing, and it
   // is a real thing that gets typed — bug 5.2 was the till doing it by itself.
   if (loose(clean) === key) return

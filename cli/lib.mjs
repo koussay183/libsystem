@@ -151,6 +151,67 @@ function catalogId(v) {
   return contributableId(k)
 }
 
+/**
+ * Is this a name worth putting in front of every other bookshop?
+ *
+ * The mirror of src/lib/catalogName.ts, and it must stay in step with it. Kept
+ * as a copy rather than shared because the app is TypeScript built by Vite and
+ * this is plain ESM run by node — the same reason `contributableId` below
+ * duplicates `barcode.ts`.
+ *
+ * Re-checked here rather than trusted for the same reason the code is: the
+ * contribution arrived from a browser, and this is the step that puts it in
+ * front of every other shop. It also catches everything offered BEFORE the app
+ * gained this gate, which is sitting in the contributions of every shop already
+ * running.
+ */
+const CATALOG_PLACEHOLDER = new Set([
+  'test', 'tests', 'testing', 'essai', 'demo', 'sample', 'exemple', 'temp', 'tmp',
+  'aaa', 'aaaa', 'abc', 'abcd', 'abcde', 'asdf', 'qwerty', 'azerty', 'aze', 'qsd',
+  'xxx', 'xxxx', 'xyz', 'zzz', 'blabla', 'bla',
+  'produit', 'produits', 'article', 'articles', 'item', 'items', 'product',
+  'nouveau', 'nouveau produit', 'nouvel article', 'new', 'new product',
+  'sans nom', 'sansnom', 'noname', 'no name', 'nom', 'name', 'inconnu', 'unknown',
+  'divers', 'autre', 'autres', 'truc', 'machin', 'chose', 'rien',
+  'na', 'n/a', 'nd', '???', '..', '...', '-', '--',
+  'تجربة', 'منتج', 'سلعة', 'بدون اسم', 'بدون', 'جديد', 'شيء',
+].map(catalogFold))
+
+/** The fold from src/lib/textIndex.ts, same rules. */
+function catalogFold(input) {
+  return String(input ?? '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[ً-ْٰـ]/g, '')
+    .replace(/[أإآٱ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .replace(/ة/g, 'ه')
+    .trim()
+}
+
+const CATALOG_LETTER = /[a-zÀ-ɏ؀-ۿݐ-ݿ]/i
+const CATALOG_LATIN = /[a-zÀ-ɏ]/i
+const CATALOG_VOWEL = /[aeiouyÀ-ÆÈ-ÏÒ-ÖÙ-Üà-æè-ïò-öù-ü]/i
+
+function contributableName(raw) {
+  const name = String(raw ?? '').trim().replace(/\s+/g, ' ')
+  if (name === '' || name.length > 80) return null
+  if ([...name].filter((ch) => CATALOG_LETTER.test(ch)).length < 3) return null
+  if (CATALOG_PLACEHOLDER.has(catalogFold(name))) return null
+  if (/[0-9]{7,}/.test(name)) return null
+  const solid = name.replace(/\s/g, '')
+  const wordish = [...solid].filter((ch) => CATALOG_LETTER.test(ch) || /[0-9]/.test(ch)).length
+  if (wordish * 2 < solid.length) return null
+  if (/([a-zÀ-ɏ])\1{3,}/i.test(name)) return null
+  for (const token of name.split(/[^\p{L}]+/u)) {
+    if (token.length < 6) continue
+    if (![...token].every((ch) => CATALOG_LATIN.test(ch))) continue
+    if (!CATALOG_VOWEL.test(token)) return null
+  }
+  return name
+}
+
 /** The subset a SHOP may publish: real manufacturers' barcodes only. */
 function contributableId(v) {
   const k = String(v ?? '')
@@ -1276,14 +1337,20 @@ commands['catalog:harvest'] = {
         .get()
       if (snap.empty) continue
       const candidates = []
+      let rejected = 0
       for (const d of snap.docs) {
-        const name = String(d.data().name ?? '').trim()
-        // The document id IS the code, written by the client through
-        // contributableKey(), but it is re-checked here rather than trusted: it
-        // arrived from a browser, and this is the step that puts it in front of
-        // every other shop.
+        // Both halves re-checked rather than trusted. The document id IS the
+        // code, written by the client through contributableKey(), and the name
+        // came through contributableName() — but both arrived from a browser,
+        // and this is the step that puts them in front of every other shop.
+        // It is also the only gate that sees contributions offered BEFORE the
+        // app had a name rule at all.
+        const name = contributableName(d.data().name)
         const code = catalogId(d.id)
-        if (!code || name === '' || name.length >= 80) continue
+        if (!code || name === null) {
+          rejected += 1
+          continue
+        }
         candidates.push({
           code,
           name,
@@ -1293,7 +1360,13 @@ commands['catalog:harvest'] = {
       }
       offered += candidates.length
       perShop.push({ shopId, candidates, refs: snap.docs.map((d) => d.ref) })
-      log(`  ${shopId.padEnd(24)} ${String(candidates.length).padStart(5)} offered`)
+      // Said out loud rather than dropped in silence: a shop offering nothing
+      // but rejects is a shop whose staff is typing names into the wrong field,
+      // and that is worth somebody knowing.
+      log(
+        `  ${shopId.padEnd(24)} ${String(candidates.length).padStart(5)} offered` +
+          (rejected > 0 ? c.dim(`  (${rejected} rejected: code or name)`) : ''),
+      )
     }
 
     if (offered === 0) {
