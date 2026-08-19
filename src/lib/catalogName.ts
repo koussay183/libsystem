@@ -124,3 +124,40 @@ export function contributableName(raw: unknown): string | null {
 
   return name
 }
+
+/**
+ * THE KEY TWO SHOPS MUST AGREE ON BEFORE A NAME IS WORTH BELIEVING.
+ *
+ * Two bookshops typing the same article will not type the same string:
+ * "CAHIER 24 COMPENSE" and "Cahier 24 compensé" are the same answer, and a
+ * comparison that cannot see that would never find agreement anywhere. So
+ * this folds away everything that is presentation and keeps everything that
+ * is identity.
+ *
+ * WHAT IT DELIBERATELY DOES NOT DO IS FUZZY MATCHING. "cahier 24 componser"
+ * is one letter from "cahier 24 compense" and it is NOT the same answer — it
+ * is a typo. An edit-distance match would fold the typo into the correct name
+ * and then publish it on two shops’ evidence, which is precisely the failure
+ * this whole mechanism exists to prevent. Exact after folding, or it waits.
+ *
+ * The trailing bracketed group is dropped when it carries no letters: a shop
+ * writes "(0.430)" or "[24]" after a name as a note to itself about the price
+ * or the pack size. That is this shop’s bookkeeping, not the article’s name.
+ */
+export function nameKey(raw: unknown): string | null {
+  const cleaned = String(raw ?? '')
+    // Arabic-Indic digits are the same numbers; a label printed either way
+    // must not read as two different articles.
+    .replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+    .replace(/[۰-۹]/g, (d) => String(d.charCodeAt(0) - 0x06f0))
+    .replace(/[([{][^A-Za-z\u00C0-\u024F\u0600-\u06FF]*[)\]}]\s*$/u, '')
+
+  const key = fold(cleaned)
+    .replace(/[^a-z0-9؀-ۿ]+/gi, ' ')
+    .trim()
+
+  // Same floor as contributableName: below three letters there is not enough
+  // there for two shops to be meaningfully agreeing about anything.
+  const letters = [...key].filter((ch) => LETTER.test(ch)).length
+  return key === '' || letters < 3 ? null : key
+}

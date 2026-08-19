@@ -50,7 +50,7 @@ import {
   HandCoins,
   QrCode,
 } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import { formatMoney, parseMoney, parseQuantity, fromMinor, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import {
   beepOk,
@@ -526,6 +526,18 @@ export function CaissePage() {
   const [newPrice, setNewPrice] = useState('')
   const [newCost, setNewCost] = useState('')
   const [newError, setNewError] = useState('')
+  const [newPriceError, setNewPriceError] = useState('')
+  const [newQty, setNewQty] = useState('1')
+  /**
+   * The name the CATALOGUE proposes, held apart from what the owner typed.
+   *
+   * These used to be the same string: the lookup wrote its answer straight into
+   * newName. So another shop's name became this shop's answer with nobody
+   * reading it — and worse, saveNewProduct then handed that same string back to
+   * the catalogue as this shop's independent opinion, which the harvest counts
+   * as agreement. One shop's typo could corroborate itself.
+   */
+  const [newOffer, setNewOffer] = useState('')
   /** The shared catalogue answered for this code. @see openNewProduct */
   const [recognised, setRecognised] = useState<CatalogEntry | null>(null)
 
@@ -1101,13 +1113,17 @@ export function CaissePage() {
         setNewPrice('')
         setNewCost('')
         setNewError('')
+        setNewPriceError('')
+        setNewQty('1')
+        setNewOffer('')
         setNewOpen(true)
 
         void lookupCatalog(missed).then((hit) => {
           if (!hit || !alive.current) return
           if (missCode.current !== missed) return
           setRecognised(hit)
-          setNewName((current) => (current.trim() === '' ? hit.name : current))
+          // Offered, not written. See the newOffer declaration.
+          setNewOffer(hit.name)
           // Green, not orange. Nothing has gone wrong: the article is known, it
           // simply is not in this shop's stock yet, and adding it is two prices
           // and a quantity away.
@@ -1482,6 +1498,8 @@ export function CaissePage() {
     setNewPrice('')
     setNewCost('')
     setNewError('')
+    setNewPriceError('')
+    setNewQty('1')
     setNewOpen(true)
 
     /*
@@ -1506,34 +1524,68 @@ export function CaissePage() {
     if (!recognised) {
       void lookupCatalog(newCode).then((hit) => {
         if (!hit || !alive.current) return
-        setNewName((current) => (current.trim() === '' ? hit.name : current))
+        setNewOffer(hit.name)
         setRecognised(hit)
       })
     }
   }
 
   const saveNewProduct = async () => {
+    setNewError('')
+    setNewPriceError('')
     if (newName.trim() === '') {
       setNewError(t('stock.nameRequired'))
       return
     }
-    const salePrice = parseMoney(newPrice) ?? 0
+    /*
+      A SALE PRICE IS NOT OPTIONAL HERE, AND IT USED TO BE.
+
+      This was `parseMoney(newPrice) ?? 0` behind a check on the name alone, so
+      an untouched price box created an article that rings up 0,000 DT — for
+      ever, on every till in the shop, with nothing on screen having asked for a
+      number. That is the line in the owner's photograph.
+
+      The rest of the app already knew this. ProductForm refuses saleMinor <= 0
+      on its short path ("a product the till cannot price is useless") and
+      confirmService refuses a service with no price. This dialog was the one
+      creation path in the app without the guard, and it is the one used with a
+      customer waiting — which is exactly when nobody notices.
+    */
+    const salePrice = parseMoney(newPrice)
+    if (salePrice === null || salePrice <= 0) {
+      setNewPriceError(t('common.required'))
+      return
+    }
+    /*
+      And it is born with the quantity the owner is holding, not zero.
+
+      usePosCart freezes the stock figure into the ticket line when the article
+      is added and never re-reads it, so `quantity: 0` stamped "Rupture — il ne
+      reste rien en stock" on an article the cashier was physically holding, and
+      the badge stayed for the whole ticket. The sale then decremented it to -1.
+      One is the honest default: he is selling one of them right now.
+    */
+    const quantity = parseQuantity(newQty) ?? 1
     setBusy(true)
-    setNewError('')
     try {
       const id = await createProduct({
         barcode: newCode.trim() || null,
         name: newName.trim(),
         costPrice: parseMoney(newCost) ?? 0,
         salePrice,
-        quantity: 0,
+        quantity,
         lowStockThreshold: 0,
       })
       // Offered to the shared catalogue, so the next shop that scans this book
       // is handed the name instead of typing it. Into this shop's own subtree,
       // queued like every other write, and silent either way — see
       // src/lib/catalog.ts. Nothing here waits on it and nothing reports it.
-      contributeToCatalog(newCode, newName)
+      //
+      // `seed` is what stops the catalogue hearing its own voice back. If the
+      // name on screen is the one the catalogue just proposed, this shop has
+      // agreed to something, not witnessed it — and counting that as a second
+      // opinion is how one shop's typo corroborates itself across the platform.
+      contributeToCatalog(newCode, newName, { seed: newOffer })
       if (!alive.current) return
       addToCart({
         id,
@@ -1541,7 +1593,7 @@ export function CaissePage() {
         name: newName.trim(),
         costPrice: parseMoney(newCost) ?? 0,
         salePrice,
-        quantity: 0,
+        quantity,
         lowStockThreshold: 0,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -2617,14 +2669,37 @@ export function CaissePage() {
                       stocked, named by a bookshop it has never met. Prices stay
                       his — see src/lib/catalog.ts. */}
                   {recognised && (
-                    <Alert.Root status="success" variant="subtle">
+                    <Alert.Root status="info" variant="subtle">
                       <Alert.Indicator />
-                      <Alert.Content>
+                      <Alert.Content gap={2}>
                         <Alert.Title>{t('stock.recognised')}</Alert.Title>
                         <Alert.Description>
-                          {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
-                            t('stock.recognisedHint')}
+                          {/* The proposed name is what is being decided, so it
+                              is the biggest thing here. It used to be invisible:
+                              the banner showed only the brand and category while
+                              the name silently filled the field below, which is
+                              indistinguishable from the form remembering
+                              something this shop had typed before. */}
+                          <Text fontWeight="bold" fontSize="lg">
+                            {recognised.name}
+                          </Text>
+                          <Text fontSize="sm" color="fg.muted">
+                            {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
+                              t('stock.recognisedHint')}
+                          </Text>
                         </Alert.Description>
+                        <HStack gap={2} wrap="wrap">
+                          <Button
+                            size="sm"
+                            colorPalette="brand"
+                            onClick={() => setNewName(recognised.name)}
+                          >
+                            {t('stock.recognisedUse')}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setRecognised(null)}>
+                            {t('stock.recognisedIgnore')}
+                          </Button>
+                        </HStack>
                       </Alert.Content>
                     </Alert.Root>
                   )}
@@ -2664,7 +2739,9 @@ export function CaissePage() {
                     })()}
                   </Field.Root>
                   <HStack gap={4} align="flex-start">
-                    <Field.Root>
+                    {/* Required, and it says so. A blank here used to save an
+                        article that rings up nothing — see saveNewProduct. */}
+                    <Field.Root required invalid={!!newPriceError}>
                       <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
                       <Input
                         size="lg"
@@ -2672,6 +2749,19 @@ export function CaissePage() {
                         onChange={(e) => setNewPrice(e.target.value)}
                         inputMode="decimal"
                         placeholder={moneyPlaceholder()}
+                      />
+                      <Field.ErrorText>{newPriceError}</Field.ErrorText>
+                    </Field.Root>
+                    {/* Defaulted to 1, not 0: he is holding one and selling it
+                        now. Zero froze "Rupture" onto the ticket line and then
+                        drove the stock to -1 on the sale. */}
+                    <Field.Root>
+                      <Field.Label>{t('stock.quantity')}</Field.Label>
+                      <Input
+                        size="lg"
+                        value={newQty}
+                        onChange={(e) => setNewQty(e.target.value)}
+                        inputMode="numeric"
                       />
                     </Field.Root>
                     <Field.Root>

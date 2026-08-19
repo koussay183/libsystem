@@ -19,7 +19,7 @@ import {
   Switch,
   Text,
 } from '@chakra-ui/react'
-import { Copy, Package, ScanLine, X, Zap } from 'lucide-react'
+import { Check, Copy, Package, ScanLine, X, Zap } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
 import { toInput, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
@@ -49,6 +49,16 @@ interface ProductFormProps {
   initialBarcode?: string
   /** Pre-fills the NAME when the owner searched for words, not a code. */
   initialName?: string
+  /**
+   * A name that came out of the SHARED CATALOGUE rather than out of this shop.
+   *
+   * Separate from initialName on purpose. initialName carries the owner's own
+   * typed words from the stock search, which is a genuine opinion worth
+   * contributing back. This carries somebody else's, and a shop that saves it
+   * unchanged has agreed to a name, not witnessed one — see ContributeOptions
+   * in lib/catalog.ts for why counting that as agreement is how a typo spreads.
+   */
+  seededName?: string
   /** Pre-fills a brand-new product from an existing one — barcode stays empty. */
   template?: Product | null
   /** Opens on the short path: only the name and the sale price are asked for. */
@@ -64,6 +74,7 @@ export function ProductForm({
   product,
   initialBarcode,
   initialName,
+  seededName,
   template,
   quick = false,
 }: ProductFormProps) {
@@ -103,6 +114,16 @@ export function ProductForm({
   const [nameError, setNameError] = useState('')
   const [priceError, setPriceError] = useState('')
   const [barcodeError, setBarcodeError] = useState('')
+  /**
+   * The name the CATALOGUE proposed, kept even after the panel is dismissed.
+   *
+   * Separate from `recognised`, which is the panel's visibility and goes to null
+   * the moment the owner answers it. This has to outlive that: the check it
+   * feeds happens at save time, and the question it answers is "is the name
+   * being contributed merely the one we were handed?" — see ContributeOptions
+   * in lib/catalog.ts.
+   */
+  const [offered, setOffered] = useState('')
 
   /**
    * The catalogue answered for this barcode. Shown, not just applied: the value
@@ -182,20 +203,32 @@ export function ProductForm({
       from under him would be worse than not helping.
     */
     setRecognised(null)
+    setOffered(seededName ?? '')
     if (!product && !template && (initialBarcode ?? '') !== '' && (initialName ?? '') === '') {
       void lookupCatalog(initialBarcode).then((hit) => {
         if (!hit) return
-        setName((current) => (current.trim() === '' ? hit.name : current))
-        if (hit.unit) setUnit((current) => (current.trim() === '' ? hit.unit! : current))
-        // A suggestion into an empty field only. The category is this shop's own
-        // vocabulary, and ensureCategory creates it on save if he keeps it.
-        if (hit.category) setCategory((current) => (current.trim() === '' ? hit.category! : current))
-        // Said out loud, because the whole point is that he did not have to type
-        // it. Silent prefill looks like the form remembering something.
+        /*
+          OFFERED, NOT APPLIED — and it used to be applied.
+
+          These three lines wrote another shop’s name, unit and category
+          straight into the form. That is the whole of the bug the owner
+          reported: a bookshop somewhere typed “cahier 24 componser”, it
+          reached the shared catalogue on nothing but its own say-so, and from
+          then on every other shop scanning that code got the misspelling typed
+          in for them. People accept what is already in the box — so the typo
+          travelled, and the shop that received it had no way of knowing it had
+          not typed it itself.
+
+          Nothing from another shop now reaches this product unless the owner
+          reads it and presses the button in the panel below. The catalogue
+          keeps its whole value — he still does not have to KNOW the name, only
+          to agree to it — and loses the one property that made it dangerous.
+        */
         setRecognised(hit)
+        setOffered(hit.name)
       })
     }
-  }, [open, product, template, initialBarcode, initialName, quick, shop])
+  }, [open, product, template, initialBarcode, initialName, seededName, quick, shop])
 
   const symbol = t(moneySymbolKey())
 
@@ -364,9 +397,20 @@ export function ProductForm({
       setNameError(t('stock.nameRequired'))
       return
     }
-    // On the short path the sale price is the only other thing we insist on —
-    // a product the till cannot price is useless.
-    if (short && saleMinor <= 0) {
+    /*
+      A PRICE IS INSISTED ON FOR EVERY NEW ARTICLE, not only on the short path.
+
+      `short` is a switch the owner can flip, not a code path, so this read as
+      "a product the till cannot price is useless — unless you happened to turn
+      the toggle off". Both other ways into this form arrive with it off: the
+      catalogue's Ajouter button and the stock screen's "code not found". Both
+      therefore wrote articles at 0,000 DT that rang up nothing on every till in
+      the shop.
+
+      Creates only. An article ALREADY saved at zero must stay editable, or the
+      form would refuse to open the very products that need repairing.
+    */
+    if (!product && saleMinor <= 0) {
       setPriceError(t('common.required'))
       return
     }
@@ -410,12 +454,15 @@ export function ProductForm({
       // often the owner correcting a name for his own shelf — "Cahier 96p (bleu)"
       // — and a local correction is not a better answer for everybody else.
       if (!product)
-        contributeToCatalog(
-          input.barcode,
-          input.name,
-          input.unit ?? undefined,
-          input.category ?? undefined,
-        )
+        contributeToCatalog(input.barcode, input.name, {
+          // What the catalogue proposed, whether it arrived through the
+          // recognised panel or straight off the catalogue browser. A name that
+          // only repeats it is an echo and is not contributed — see
+          // ContributeOptions in lib/catalog.ts.
+          seed: offered || seededName,
+          unit: input.unit ?? undefined,
+          category: input.category ?? undefined,
+        })
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) {
@@ -486,14 +533,41 @@ export function ProductForm({
                     he still fills in himself.
                   */}
                   {recognised && (
-                    <Alert.Root status="success" variant="subtle">
+                    <Alert.Root status="info" variant="subtle">
                       <Alert.Indicator />
-                      <Alert.Content>
+                      <Alert.Content gap={2}>
                         <Alert.Title>{t('stock.recognised')}</Alert.Title>
                         <Alert.Description>
-                          {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
-                            t('stock.recognisedHint')}
+                          {/* The proposed name is the thing being decided, so
+                              it is the biggest thing in the panel. */}
+                          <Text fontWeight="bold" fontSize="lg">
+                            {recognised.name}
+                          </Text>
+                          <Text fontSize="sm" color="fg.muted">
+                            {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
+                              t('stock.recognisedHint')}
+                          </Text>
                         </Alert.Description>
+                        <HStack gap={2} wrap="wrap">
+                          <Button
+                            size="sm"
+                            colorPalette="brand"
+                            onClick={() => {
+                              setName(recognised.name)
+                              if (recognised.unit) setUnit(recognised.unit)
+                              if (recognised.category) setCategory(recognised.category)
+                              // Dismissed on use: the panel asked a question
+                              // and it has been answered.
+                              setRecognised(null)
+                            }}
+                          >
+                            <Check size={16} />
+                            {t('stock.recognisedUse')}
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setRecognised(null)}>
+                            {t('stock.recognisedIgnore')}
+                          </Button>
+                        </HStack>
                       </Alert.Content>
                     </Alert.Root>
                   )}

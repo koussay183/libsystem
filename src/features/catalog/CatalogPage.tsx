@@ -130,7 +130,31 @@ export function CatalogPage() {
   )
   const books = useCatalog(officialFilter)
 
-  const pending = books.items.filter((b) => !has(b) && (parseQuantity(qty[b.id] ?? '') ?? 0) > 0)
+  /**
+   * A school book this screen may create WITHOUT ASKING FOR A PRICE.
+   *
+   * The bulk add exists because a manuel scolaire is state-priced: the figure is
+   * a fact about the book, not a commercial decision, so asking the owner for it
+   * would be asking him to retype a number the law already fixed. That argument
+   * holds for exactly as long as the figure is actually there.
+   *
+   * IT WAS NOT ALWAYS THERE, AND NOTHING CHECKED. `officialOnly` below is only
+   * true while no level is picked — choose "6e annee" and the query filters on
+   * `level` alone, so any entry carrying a level reached this list whether or not
+   * it was a priced official book. addBooks() then wrote `officialPrice ?? 0`
+   * straight onto the product. That is the 0,000 DT line on the till: an article
+   * created, sellable, ringing up nothing, with no price field ever shown to the
+   * person who created it.
+   *
+   * So an unpriced entry is not offered a quantity box at all. It is still
+   * listed, and still addable — through the ordinary product form, which is
+   * where a price gets asked for.
+   */
+  const priced = (b: CatalogItem) => (b.officialPrice ?? 0) > 0
+
+  const pending = books.items.filter(
+    (b) => !has(b) && priced(b) && (parseQuantity(qty[b.id] ?? '') ?? 0) > 0,
+  )
 
   /**
    * Adds every school book that has a quantity against it.
@@ -165,6 +189,11 @@ export function CatalogPage() {
         if (quantity <= 0) continue
         const sale = b.officialPrice ?? 0
         const cost = b.officialCost ?? 0
+        // Checked again here and not only in `pending`, because this is the line
+        // that actually writes the product. A price of zero is not a cheap book,
+        // it is a missing fact, and an article that rings up nothing is worse
+        // than an article that does not exist.
+        if (sale <= 0) continue
         createProduct({
           barcode: b.code,
           name: b.name,
@@ -305,6 +334,14 @@ export function CatalogPage() {
                         <Check size={14} />
                         {t('catalog.inStock')}
                       </Badge>
+                    ) : !priced(b) ? (
+                      /* No official price on the entry, so the bulk add — which
+                         never shows a price field — must not touch it. The full
+                         form asks. */
+                      <Button size="sm" variant="outline" onClick={() => setAdding(b)}>
+                        <Plus size={16} />
+                        {t('catalog.add')}
+                      </Button>
                     ) : (
                       <Input
                         size="lg"
@@ -493,6 +530,7 @@ export function CatalogPage() {
         open={adding !== null}
         onClose={() => setAdding(null)}
         initialBarcode={adding?.code}
+        seededName={adding?.name}
         initialName={adding?.name}
       />
     </Box>

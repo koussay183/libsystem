@@ -2,7 +2,7 @@ import { doc, getDoc, setDoc, serverTimestamp } from 'firebase/firestore'
 import { db } from './firebase'
 import { shopPath } from './tenant'
 import { catalogKey, contributableKey, loose } from '@/features/stock/barcode'
-import { contributableName, MAX_NAME } from './catalogName'
+import { contributableName, nameKey, MAX_NAME } from './catalogName'
 import { track } from './syncStatus'
 import { withDeadline } from './deadline'
 
@@ -139,12 +139,33 @@ const LOOKUP_MS = 700
  * may one day be promoted into a shared collection is how a shop's identity ends
  * up somewhere a shop can read it.
  */
+export interface ContributeOptions {
+  unit?: string
+  category?: string
+  /**
+   * The name the CATALOGUE proposed for this code, if it proposed one.
+   *
+   * THE ECHO. A shop that accepts the catalogue's suggestion and saves it has
+   * agreed to something; it has not independently witnessed it. Counting that
+   * as a second opinion is how ONE shop's typo corroborates itself across the
+   * whole platform — shop A types "cahier 24 componser", it is published, shop
+   * B is handed it prefilled, B saves, and the harvest now sees two shops
+   * "agreeing". The name looks better attested the more it spreads, which is
+   * exactly backwards.
+   *
+   * So a contribution that merely repeats what was offered is not made at all.
+   * A shop that RETYPES the name differently is still heard: that is a real
+   * second opinion and the one worth having.
+   */
+  seed?: string
+}
+
 export function contributeToCatalog(
   code: unknown,
   name: string,
-  unit?: string,
-  category?: string,
+  options: ContributeOptions = {},
 ): void {
+  const { unit, category, seed } = options
   const key = contributableKey(code)
   if (key === null) return
 
@@ -161,6 +182,12 @@ export function contributeToCatalog(
   */
   const clean = contributableName(name)
   if (clean === null) return
+
+  // The echo, refused. Compared through nameKey rather than raw text so a
+  // capitalisation or an accent typed over the suggestion does not read as an
+  // independent opinion when it is the same answer.
+  if (seed !== undefined && seed !== '' && nameKey(clean) !== null && nameKey(clean) === nameKey(seed))
+    return
   // A name that is just the barcode again teaches the catalogue nothing, and it
   // is a real thing that gets typed — bug 5.2 was the till doing it by itself.
   if (loose(clean) === key) return
