@@ -22,7 +22,8 @@ import {
   Switch,
   Text,
 } from '@chakra-ui/react'
-import { Download, Pencil, Plus, Printer, QrCode, Trash2, X } from 'lucide-react'
+import { Download, Keyboard, Pencil, Plus, Printer, QrCode, Trash2, X } from 'lucide-react'
+import { COMMAND_CODES, isCommandCode } from '@/features/pos/scanCommands'
 import { formatMoney, fromMinor, parseMoney, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { fold, foldCode } from '@/lib/textIndex'
 import { qrDataUrl, downloadQrLabel } from '@/lib/qr'
@@ -56,6 +57,87 @@ function cleanCode(value: string): string {
 
 let seq = 0
 const newId = () => `s${Date.now().toString(36)}${(seq++).toString(36)}`
+
+
+/**
+ * THE COUNTER LABELS: buttons the shopkeeper scans instead of clicking.
+ *
+ * He is an old man with a queue in front of him and the reader already in his
+ * hand. Putting it down, finding a button with the mouse and picking it up
+ * again is the slowest thing he does all day. These print onto the same sticky
+ * labels the service QRs use, and go next to the reader.
+ *
+ * Lives on the Services screen rather than in a section of its own because it
+ * is the same gesture with the same machinery — define a code, print it, stick
+ * it down — and a seventh settings section for three fixed labels would be one
+ * more place for him to have to remember.
+ */
+function ScanShortcuts() {
+  const { t } = useTranslation()
+
+  const items = [
+    { code: COMMAND_CODES[0], label: t('shortcut.pay'), hint: t('shortcut.payHint') },
+    { code: COMMAND_CODES[1], label: t('shortcut.ok'), hint: t('shortcut.okHint') },
+    { code: COMMAND_CODES[2], label: t('shortcut.print'), hint: t('shortcut.printHint') },
+  ]
+
+  return (
+    <Card.Root mb={5} borderColor="brand.emphasized" borderWidth="1px">
+      <Card.Body>
+        <Flex align="start" gap={3} mb={4}>
+          <Box bg="brand.subtle" color="brand.fg" p={2} borderRadius="lg" flexShrink={0}>
+            <Keyboard size={22} />
+          </Box>
+          <Box minW={0}>
+            <Text fontWeight="bold">{t('shortcut.title')}</Text>
+            <Text fontSize="sm" color="fg.muted">
+              {t('shortcut.subtitle')}
+            </Text>
+          </Box>
+        </Flex>
+
+        <SimpleGrid columns={{ base: 1, md: 3 }} gap={3}>
+          {items.map((it) => (
+            <Box
+              key={it.code}
+              borderWidth="1px"
+              borderColor="border"
+              borderRadius="l3"
+              p={3}
+              textAlign="center"
+            >
+              <Image
+                src={qrDataUrl(it.code, 150)}
+                alt={it.label}
+                w="7rem"
+                h="7rem"
+                mx="auto"
+                bg="white"
+                p={1}
+                borderRadius="md"
+              />
+              <Text fontWeight="bold" mt={2}>
+                {it.label}
+              </Text>
+              <Text fontSize="xs" color="fg.muted" minH="2.5rem">
+                {it.hint}
+              </Text>
+              <Button
+                size="sm"
+                variant="outline"
+                mt={1}
+                onClick={() => downloadQrLabel(it.code, it.label, it.hint, `${it.code}.png`)}
+              >
+                <Download size={16} />
+                {t('services.downloadQr')}
+              </Button>
+            </Box>
+          ))}
+        </SimpleGrid>
+      </Card.Body>
+    </Card.Root>
+  )
+}
 
 export function ServicesTab() {
   const { t } = useTranslation()
@@ -186,6 +268,8 @@ export function ServicesTab() {
       <Text color="fg.muted" mb={5} maxW="46rem">
         {t('services.subtitle')}
       </Text>
+
+      <ScanShortcuts />
 
       {error && (
         <Alert.Root status="error" mb={4}>
@@ -409,6 +493,17 @@ function ServiceForm({
     }
     if (clash === 'service') {
       setError(t('services.codeTakenService'))
+      return
+    }
+    /*
+      A reserved counter label. The till reads these BEFORE it looks anything up
+      (see scanCommands.ts), and a service wearing the same code would be shadowed
+      by whichever the till checked first — sometimes selling a photocopy, at
+      other times opening the payment, with nothing on screen to explain either.
+      Refused at the one moment the owner can still pick a different code.
+    */
+    if (isCommandCode(code)) {
+      setError(t('services.codeReserved'))
       return
     }
     // Empty means "no usual price". Unreadable means the owner mistyped, and

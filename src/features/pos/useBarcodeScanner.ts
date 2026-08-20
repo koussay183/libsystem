@@ -162,6 +162,28 @@ export interface BarcodeScannerOptions {
    * enough. Returning false is the answer for all but the last one.
    */
   isComplete?: (code: string, physical: string | null) => boolean
+  /**
+   * "This burst is two codes stuck together — the first one ends HERE."
+   *
+   * TWO ARTICLES PASSED OVER THE READER IN QUICK SUCCESSION ARRIVE AS ONE
+   * BURST. A burst ends by going quiet for {@link END_OF_SCAN_MS}; a shopkeeper
+   * emptying a basket sweeps the next barcode across before that silence ever
+   * happens, so the characters of code B land inside code A's buffer and the
+   * till reports one long code that matches nothing. The cashier sees "code
+   * inconnu" for two articles he definitely scanned, and the natural response —
+   * scan them again, faster — makes it worse.
+   *
+   * {@link isComplete} already covers the common case: it fires the moment the
+   * buffer IS a known code with nothing longer starting with it, usually on the
+   * last character. This is the fallback for when it cannot — an unknown code
+   * first, or two codes where the first is a prefix of some third one.
+   *
+   * Return the length of the longest prefix that is a complete known code, or 0
+   * for "I do not recognise anything in here". Asked ONCE per burst, at flush,
+   * and only when the whole buffer failed to resolve — so it may be as thorough
+   * as it likes.
+   */
+  splitAt?: (code: string, physical: string | null) => number
 }
 
 export interface BarcodeScanner {
@@ -183,6 +205,7 @@ export function useBarcodeScanner({
   minLength = DEFAULT_MIN_LENGTH,
   onBurstStart,
   isComplete,
+  splitAt,
 }: BarcodeScannerOptions): BarcodeScanner {
   const onScanRef = useRef(onScan)
   onScanRef.current = onScan
@@ -194,6 +217,9 @@ export function useBarcodeScanner({
 
   const isCompleteRef = useRef(isComplete)
   isCompleteRef.current = isComplete
+
+  const splitAtRef = useRef(splitAt)
+  splitAtRef.current = splitAt
 
   /** What the layout typed, and what the physical keys say. */
   const typed = useRef('')
@@ -291,6 +317,43 @@ export function useBarcodeScanner({
       reset()
       if (code.length < minLength) return
       flushedAt.current = performance.now()
+
+      /*
+        TWO ARTICLES SWEPT ACROSS THE READER FASTER THAN THE BURST TIMER.
+
+        Nothing separates them: a scanner that sends no suffix ends a code by
+        going quiet, and the cashier did not pause. So the buffer holds A+B and
+        matches nothing. Rather than report one unknown code for two real
+        articles, ask the caller where the first one ends and ring them up in
+        order — looping, because three can run together as easily as two.
+
+        The loop is bounded by construction: splitAt() must return a length
+        strictly inside the buffer, so the remainder is shorter every time. The
+        counter is belt and braces against a caller that returns nonsense — a
+        wedged till at the counter is not a bug worth risking to save a variable.
+      */
+      const split = splitAtRef.current
+      if (split) {
+        let rest = code
+        let restAlt = alt
+        for (let guard = 0; guard < 12; guard += 1) {
+          if (rest.length < minLength) break
+          const cut = split(rest, restAlt !== rest ? restAlt : null)
+          if (!Number.isInteger(cut) || cut < minLength || cut >= rest.length) break
+          const head = rest.slice(0, cut)
+          const headAlt = restAlt.slice(0, cut)
+          onScanRef.current(head, headAlt !== head ? headAlt : null)
+          rest = rest.slice(cut)
+          restAlt = restAlt.slice(cut)
+        }
+        // Whatever is left is the last code of the run — or the whole buffer
+        // when nothing was recognised, which is the old behaviour exactly.
+        if (rest.length >= minLength) {
+          onScanRef.current(rest, restAlt !== rest ? restAlt : null)
+        }
+        return
+      }
+
       onScanRef.current(code, alt !== code ? alt : null)
     }
 

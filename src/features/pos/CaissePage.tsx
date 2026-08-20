@@ -70,6 +70,7 @@ import { recordSale } from '@/features/sales/useSales'
 import { usePosCart } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
 import { ScanSuggestions } from './ScanSuggestions'
+import { commandOf } from './scanCommands'
 import {
   searchChoices,
   fold,
@@ -898,6 +899,19 @@ export function CaissePage() {
    * The one place a code becomes a line on the ticket, whatever brought it in:
    * the scanner, the Enter key, or a barcode completed while typing.
    */
+  /**
+   * runCommand, reachable from inside the memoised lookup.
+   *
+   * NOT a dependency, on purpose. `lookup` is a useCallback whose identity
+   * re-arms the scanner effect, and runCommand is a fresh function on every
+   * render — listing it would rebuild the wedge listener on every keystroke.
+   * Reading it through a ref keeps lookup stable AND keeps the command looking
+   * at the current payOpen/lastTicket rather than at whatever they were on the
+   * render that first built the callback: a stale closure here would mean the
+   * scanned "confirm" label believed the payment dialog was permanently shut.
+   */
+  const runCommandRef = useRef<(c: 'pay' | 'confirm' | 'reprint') => void>(() => {})
+
   const lookup = useCallback(
     (raw: string, physical: string | null = null) => {
       const term = codeOf(raw)
@@ -916,6 +930,27 @@ export function CaissePage() {
       // to already went in.
       if (term === consumed.current.term && performance.now() - consumed.current.at < CONSUMED_MS) {
         setScan('')
+        return
+      }
+
+      /*
+        A BUTTON, SCANNED.
+
+        Read before the dialog gate below, and that ordering is the entire
+        feature: the most useful label on the counter is the one that confirms
+        the payment, and the payment dialog is exactly what the gate refuses
+        codes for. See scanCommands.ts for why the list is three items long.
+
+        A service the owner has given the same code to wins — his own label
+        beats a built-in one, and taking that away silently would stop a
+        photocopy being sold with no explanation on screen.
+      */
+      const command =
+        findServiceByCode(term, physical).length > 0 ? null : commandOf(term, physical)
+      if (command) {
+        setScan('')
+        consumed.current = { term, at: performance.now() }
+        runCommandRef.current(command)
         return
       }
 
@@ -1210,6 +1245,41 @@ export function CaissePage() {
   )
 
   /**
+   * WHERE THE FIRST OF TWO RUN-TOGETHER CODES ENDS.
+   *
+   * Two articles swept across the reader without a pause arrive as one burst,
+   * because a scanner that sends no suffix ends a code by going quiet and the
+   * cashier never went quiet. The buffer then holds both codes and matches
+   * nothing, so two real articles were reported as one unknown code — and the
+   * instinctive fix, scanning them again faster, makes it happen every time.
+   *
+   * Longest prefix wins, and it is searched from the long end down: a shop can
+   * hold both an EAN-8 and an EAN-13 starting with the same digits, and cutting
+   * at the short one would shred the long one into two unknowns. Only asked
+   * when the whole buffer failed to resolve, so this costs nothing on the
+   * ordinary one-article scan.
+   */
+  const splitScan = useCallback(
+    (code: string, physical: string | null) => {
+      if (blocked.current || productsLoading || packsLoading || shopLoading) return 0
+      const known = (term: string) =>
+        !!findByCode(term) ||
+        findPackByCode(term).length > 0 ||
+        findServiceByCode(term).length > 0
+      // 14 is ITF-14, the longest barcode a supplier prints; a QR service code
+      // is capped at 16 by cleanCode, so 16 covers everything this till sells.
+      const start = Math.min(code.length - 1, 16)
+      for (let n = start; n >= 4; n -= 1) {
+        const head = code.slice(0, n)
+        const headPhys = physical?.slice(0, n)
+        if (known(head) || (headPhys && headPhys !== head && known(headPhys))) return n
+      }
+      return 0
+    },
+    [findByCode, findPackByCode, findServiceByCode, productsLoading, packsLoading, shopLoading],
+  )
+
+  /**
    * The hand scanner types the code and simply stops - it sends no Enter. The
    * wedge recognises the burst by its speed and rings the article up on its
    * own, from anywhere on the page.
@@ -1221,6 +1291,7 @@ export function CaissePage() {
     onBurstStart: closeSuggestions,
     // Known code, nothing longer starts with it: do not wait for the silence.
     isComplete: isCompleteCode,
+    splitAt: splitScan,
   })
 
   /**
@@ -1763,6 +1834,55 @@ export function CaissePage() {
     if (!lastTicket) return
     setTicket(lastTicket)
   }
+
+  /**
+   * A label on the counter, scanned instead of a button clicked.
+   *
+   * Deliberately narrow, and every branch refuses rather than improvises. A
+   * scanner sweeping a stray label must never be able to record a sale that was
+   * not being settled: 'confirm' does nothing unless the payment dialog is
+   * already open and the owner put it there.
+   *
+   * Each refusal beeps rather than staying silent. He is holding the reader and
+   * looking at the customer, not at the screen — a command that quietly did
+   * nothing would be scanned again and again.
+   */
+  const runCommand = (command: 'pay' | 'confirm' | 'reprint') => {
+    if (command === 'reprint') {
+      if (!lastTicket) {
+        beepError()
+        return
+      }
+      beepOk()
+      reprintLast()
+      return
+    }
+
+    if (command === 'pay') {
+      // Already open: scanning the "payer" label twice means the second one is
+      // the confirmation he is reaching for.
+      if (payOpen) {
+        void confirmPay()
+        return
+      }
+      if (!canSettle || busy) {
+        beepError()
+        return
+      }
+      beepOk()
+      openPay('cash')
+      return
+    }
+
+    // 'confirm' — only ever answers a question already on screen.
+    if (!payOpen || busy) {
+      beepError()
+      return
+    }
+    void confirmPay()
+  }
+
+  runCommandRef.current = runCommand
 
   // --- keyboard shortcuts (a till is driven without a mouse) -------------
   useEffect(() => {
@@ -3013,7 +3133,33 @@ export function CaissePage() {
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
-            <Dialog.Content maxH="92dvh">
+            <Dialog.Content
+              maxH="92dvh"
+              /*
+                ENTER FINISHES THE SALE FROM ANYWHERE IN THIS DIALOG.
+
+                It already worked while the caret sat in the amount box, which
+                is not where it usually sits: the cashier taps a quick-cash
+                button (20 DT, 50 DT) and the focus goes to that BUTTON, so
+                Enter pressed the button again instead of finishing. He is an
+                old man at a counter with a queue — the key that means "yes"
+                has to mean "yes" wherever he happens to be.
+
+                A scanner’s trailing Enter cannot reach this: the wedge
+                swallows it in the capture phase while a burst is pending (see
+                useBarcodeScanner). And a repeat press cannot double-record —
+                `busy` is already set by the first.
+              */
+              onKeyDown={(e) => {
+                if (e.key !== 'Enter' || e.defaultPrevented || busy) return
+                const el = e.target as HTMLElement | null
+                // A textarea is the one place Enter legitimately means
+                // "new line" rather than "yes".
+                if (el?.tagName === 'TEXTAREA') return
+                e.preventDefault()
+                void confirmPay()
+              }}
+            >
               <Dialog.Header>
                 <Dialog.Title>
                   {payKind === 'cash'

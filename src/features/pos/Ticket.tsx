@@ -54,6 +54,22 @@ export function Ticket({
   const a4 = paper === 'a4'
 
   /*
+    ONE SHEET, WHICH IS WHAT THE CUSTOMER IS HANDED.
+
+    A4 at the ordinary size fits about 22 lines with the letterhead, the totals
+    panel and the signatures. Past that the sheet spills onto a second page for
+    the sake of two or three articles — and a two-page invoice for a school
+    satchel's worth of exercise books is not a document anybody wants to hold.
+    So a long ticket tightens instead of overflowing: same layout, smaller type,
+    still comfortably legible at arm's length.
+
+    It is a floor, not a trick: past ~40 articles it stops shrinking and lets the
+    sheet break properly, with the table header repeating (src/index.css). An
+    invoice nobody can read is worse than an invoice on two pages.
+  */
+  const density = !a4 ? '' : data.lines.length > 40 ? ' dense' : data.lines.length > 22 ? ' tight' : ''
+
+  /*
     TWO LAYOUTS, BECAUSE THEY ARE TWO DIFFERENT OBJECTS.
 
     The thermal roll is 74mm of monospace torn off and handed over; a stacked
@@ -128,21 +144,89 @@ export function Ticket({
     out with position:absolute) is what broke multi-page printing. See the long
     note at the top of src/index.css.
   */
-  return createPortal(
-    <div id="print-area" className={paper}>
-      <div className="print-header" style={{ textAlign: 'center', marginBottom: 8 }}>
-        <div style={{ fontSize: '1.3em', fontWeight: 700 }}>{shop.name}</div>
-        {shop.address && <div>{shop.address}</div>}
-        {shop.phone && <div>Tél : {shop.phone}</div>}
-        {shop.taxId && <div>MF : {shop.taxId}</div>}
-        <div style={{ marginTop: 4 }}>Ticket {data.ticketNo}</div>
-        <div>{formatDateTime(data.date)}</div>
-        {data.clientName && <div>Client : {data.clientName}</div>}
+  /*
+    THE A4 HEAD IS A LETTERHEAD, NOT A CENTRED TILL RECEIPT.
+
+    A4 is the sheet the customer walks out with and files. Centring the shop's
+    name over a monospace column made it look like a till roll photocopied onto
+    a big page — the shop on the left where a letterhead belongs, the invoice's
+    own identity boxed on the right where anybody filing it will look for the
+    number and the date.
+  */
+  const a4Head = (
+    <div className="print-header" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 24 }}>
+        <div>
+          <div style={{ fontSize: '1.7em', fontWeight: 700, lineHeight: 1.15 }}>{shop.name}</div>
+          {shop.address && <div>{shop.address}</div>}
+          {shop.phone && <div>Tél : {shop.phone}</div>}
+          {shop.taxId && <div>MF : {shop.taxId}</div>}
+        </div>
+        <div
+          style={{
+            border: '1px solid #000',
+            padding: '6px 10px',
+            minWidth: '46mm',
+            textAlign: 'end',
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: '1.15em' }}>FACTURE</div>
+          <div style={{ marginTop: 2 }}>N° {data.ticketNo}</div>
+          <div>{formatDateTime(data.date)}</div>
+        </div>
       </div>
+      <div
+        style={{
+          marginTop: 10,
+          paddingTop: 6,
+          borderTop: '2px solid #000',
+          display: 'flex',
+          justifyContent: 'space-between',
+        }}
+      >
+        <div>
+          <strong>Client : </strong>
+          {data.clientName || 'Comptoir'}
+        </div>
+        <div>
+          {data.lines.length} article{data.lines.length > 1 ? 's' : ''}
+        </div>
+      </div>
+    </div>
+  )
+
+  return createPortal(
+    <div id="print-area" className={paper + density}>
+      {a4 ? (
+        a4Head
+      ) : (
+        <div className="print-header" style={{ textAlign: 'center', marginBottom: 8 }}>
+          <div style={{ fontSize: '1.3em', fontWeight: 700 }}>{shop.name}</div>
+          {shop.address && <div>{shop.address}</div>}
+          {shop.phone && <div>Tél : {shop.phone}</div>}
+          {shop.taxId && <div>MF : {shop.taxId}</div>}
+          <div style={{ marginTop: 4 }}>Ticket {data.ticketNo}</div>
+          <div>{formatDateTime(data.date)}</div>
+          {data.clientName && <div>Client : {data.clientName}</div>}
+        </div>
+      )}
 
       {lines}
 
-      <div className="print-keep" style={{ marginTop: 8 }}>
+      <div
+        className="print-keep"
+        style={
+          a4
+            ? {
+                marginTop: 12,
+                marginInlineStart: 'auto',
+                width: '78mm',
+                border: '1px solid #000',
+                padding: '8px 10px',
+              }
+            : { marginTop: 8 }
+        }
+      >
         {data.discount > 0 && (
           <>
             <div style={row}>
@@ -179,7 +263,32 @@ export function Ticket({
         )}
       </div>
 
-      <div className="print-keep" style={{ textAlign: 'center', marginTop: 10 }}>
+      {a4 && (
+        /* Somewhere to sign, because this sheet is handed over and sometimes
+           comes back as the proof that it was. */
+        <div
+          className="print-keep"
+          style={{ display: 'flex', justifyContent: 'space-between', marginTop: 18, gap: 24 }}
+        >
+          <div style={{ fontSize: '0.9em' }}>
+            <div>Signature du client</div>
+            <div style={{ borderBottom: '1px solid #000', width: '52mm', marginTop: 16 }} />
+          </div>
+          <div style={{ fontSize: '0.9em', textAlign: 'end' }}>
+            <div>Cachet et signature</div>
+            <div style={{ borderBottom: '1px solid #000', width: '52mm', marginTop: 16 }} />
+          </div>
+        </div>
+      )}
+
+      <div
+        className="print-keep"
+        style={{
+          textAlign: 'center',
+          marginTop: a4 ? 14 : 10,
+          ...(a4 ? { borderTop: '1px solid #999', paddingTop: 6, fontSize: '0.9em' } : {}),
+        }}
+      >
         {shop.footer || 'Merci et à bientôt !'}
       </div>
     </div>,

@@ -154,3 +154,28 @@
     print-color-adjust: exact;
   }
 }
+
+@media print {
+  /*
+    A long invoice tightens rather than spilling a second sheet for three lines.
+    See the note on `density` in src/features/pos/Ticket.tsx — past ~40 articles
+    it stops shrinking, because an invoice nobody can read is worse than one on
+    two pages.
+  */
+  #print-area.a4.tight {
+    font-size: 11px;
+    line-height: 1.3;
+  }
+  #print-area.a4.tight th,
+  #print-area.a4.tight td {
+    padding: 1.5px 4px;
+  }
+  #print-area.a4.dense {
+    font-size: 10px;
+    line-height: 1.22;
+  }
+  #print-area.a4.dense th,
+  #print-area.a4.dense td {
+    padding: 1px 3px;
+  }
+}

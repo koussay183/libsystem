@@ -51,6 +51,9 @@ export const fr = {
     partialData: 'Trop de tickets sur cette période : les chiffres ci-dessous sont incomplets.',
   },
   pos: {
+    return: 'Retour',
+    ticketTotal: 'Total du ticket',
+    paidAtCounter: 'Payé au comptoir',
     title: 'Caisse',
     scanPlaceholder: 'Scannez un code-barres ou tapez un nom…',
     unknownCode: 'Code inconnu : {{code}}',
@@ -232,6 +235,7 @@ export const fr = {
     shortStock: 'Stock juste sur : {{names}}',
   },
   services: {
+    codeReserved: 'Ce code est réservé à un bouton à scanner. Choisissez-en un autre.',
     title: 'Services',
     badge: 'SERVICE',
     subtitle:
@@ -263,6 +267,17 @@ export const fr = {
     addToTicket: 'Ajouter au ticket',
     notReady: 'Réglages en cours de chargement — réessayez dans un instant',
     inactiveScan: '« {{name}} » est désactivé — réactivez-le dans les réglages',
+  },
+  shortcut: {
+    title: 'Boutons à scanner',
+    subtitle:
+      'Imprimez ces étiquettes et collez-les près du lecteur. Un coup de scanner remplace le clic — la douchette reste dans la main.',
+    pay: 'Encaisser',
+    payHint: 'Ouvre le paiement, comme la touche F2',
+    ok: 'Valider',
+    okHint: 'Confirme le paiement affiché',
+    print: 'Réimprimer',
+    printHint: 'Réaffiche le dernier ticket',
   },
     nav: {
       home: 'Accueil',
@@ -449,6 +464,10 @@ export const fr = {
     alreadyExists: 'Un client porte déjà ce nom — vérifiez avant de créer.',
   },
   credit: {
+    seeItems: 'voir le détail',
+    itemsTitle: '{{count}} article(s) sur ce ticket',
+    itemsUnavailable: 'Le détail de ce ticket n’est pas disponible sur cet ordinateur.',
+    putOnAccount: 'Mis sur le carnet',
     title: 'Crédits clients',
     subtitle: 'Le carnet de crédit de la librairie',
     ledger: 'Historique',

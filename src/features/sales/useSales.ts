@@ -7,6 +7,8 @@ import {
   limit,
   where,
   doc,
+  getDoc,
+  getDocFromCache,
   writeBatch,
   increment,
 } from 'firebase/firestore'
@@ -14,6 +16,7 @@ import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
+import { withDeadline } from '@/lib/deadline'
 import type { Sale, SaleItem, PaymentMode } from '@/types/models'
 
 const SALES = 'sales'
@@ -349,3 +352,69 @@ export function recordSale(input: RecordSaleInput): RecordedSale {
 
   return { id: saleRef.id, ticketNo, date: now }
 }
+
+/**
+ * ONE sale, fetched on demand — what a line in the carnet was actually FOR.
+ *
+ * The carnet used to say "Ticket 260721-143512" and stop there. That is a
+ * reference, not an answer: a client standing at the counter asking what he
+ * owes 17,500 DT for cannot be shown a number and a serial. The sale is
+ * already stored with every line on it, so the answer exists — nothing was
+ * reading it.
+ *
+ * getDoc, NOT a subscription. A carnet is read one line at a time, on a screen
+ * that is open for a minute; a listener per line would keep a stream open per
+ * row for a document that never changes after it is written.
+ *
+ * `{ source: cache }` FIRST, and this is the part that matters in this shop.
+ * The line is down for hours at a time and a server read simply hangs — but
+ * every sale this till rang up is already in IndexedDB, so the cache answers
+ * instantly and offline. The server is asked only when the cache has never
+ * seen it (a ticket rung up on the other machine), and then under a deadline
+ * so a dead uplink cannot leave a spinner on screen.
+ */
+export function useSale(saleId: string | null | undefined) {
+  const [sale, setSale] = useState<Sale | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [missing, setMissing] = useState(false)
+
+  useEffect(() => {
+    if (!saleId) {
+      setSale(null)
+      setMissing(false)
+      return
+    }
+    let alive = true
+    setLoading(true)
+    setMissing(false)
+    setSale(null)
+
+    const ref = doc(db, shopPath(SALES), saleId)
+    const read = async () => {
+      try {
+        let snap = await getDocFromCache(ref).catch(() => null)
+        if (!snap?.exists()) {
+          snap = (await withDeadline(getDoc(ref), SALE_READ_MS)) ?? null
+        }
+        if (!alive) return
+        if (snap?.exists()) setSale({ id: snap.id, ...(snap.data() as Omit<Sale, 'id'>) })
+        else setMissing(true)
+      } catch {
+        // Offline and never cached, refused, or simply gone. All the same
+        // answer to the screen: we cannot show the detail, say so quietly.
+        if (alive) setMissing(true)
+      } finally {
+        if (alive) setLoading(false)
+      }
+    }
+    void read()
+    return () => {
+      alive = false
+    }
+  }, [saleId])
+
+  return { sale, loading, missing }
+}
+
+/** Short: the cache has already answered by now, or there is no line. */
+const SALE_READ_MS = 4000

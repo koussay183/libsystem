@@ -55,6 +55,9 @@ export const ar: Dict = {
     partialData: 'عدد التذاكر كبير في هذه الفترة: الأرقام أدناه غير كاملة.',
   },
   pos: {
+    return: 'إرجاع',
+    ticketTotal: 'مجموع التذكرة',
+    paidAtCounter: 'دُفع عند الصندوق',
     title: 'الصندوق',
     scanPlaceholder: 'امسح الرمز الشريطي أو اكتب الاسم…',
     unknownCode: 'رمز غير معروف: {{code}}',
@@ -221,6 +224,7 @@ export const ar: Dict = {
     shortStock: 'المخزون غير كافٍ في: {{names}}',
   },
   services: {
+    codeReserved: 'هذا الرمز محجوز لزر يُمسح ضوئيًا. اختر رمزًا آخر.',
     title: 'الخدمات',
     badge: 'خدمة',
     subtitle:
@@ -252,6 +256,17 @@ export const ar: Dict = {
     addToTicket: 'أضف إلى التذكرة',
     notReady: 'الإعدادات قيد التحميل — أعد المحاولة بعد لحظة',
     inactiveScan: '«{{name}}» غير مفعّلة — فعّلها في الإعدادات',
+  },
+  shortcut: {
+    title: 'أزرار تُمسح ضوئيًا',
+    subtitle:
+      'اطبع هذه الملصقات والصقها قرب القارئ. مسحة واحدة تعوّض النقر — يبقى القارئ في اليد.',
+    pay: 'الخلاص',
+    payHint: 'يفتح الدفع، مثل زر F2',
+    ok: 'تأكيد',
+    okHint: 'يؤكّد الدفع المعروض',
+    print: 'إعادة الطباعة',
+    printHint: 'يعيد عرض آخر تذكرة',
   },
     nav: {
       home: 'الرئيسية',
@@ -427,6 +442,10 @@ export const ar: Dict = {
     alreadyExists: 'يوجد حريف بنفس الاسم — تحقق قبل الإنشاء.',
   },
   credit: {
+    seeItems: 'عرض التفاصيل',
+    itemsTitle: '{{count}} مادة في هذه التذكرة',
+    itemsUnavailable: 'تفاصيل هذه التذكرة غير متوفرة على هذا الحاسوب.',
+    putOnAccount: 'سُجّل في الكراس',
     title: 'كريدي الحرفاء',
     subtitle: 'كراس الكريدي الخاص بالمكتبة',
     ledger: 'السجل',

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 import { useParams, useNavigate, Navigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -11,6 +11,9 @@ import {
   Pencil,
   CalendarClock,
   AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  ShoppingBag,
 } from 'lucide-react'
 import {
   Alert,
@@ -25,10 +28,13 @@ import {
   Separator,
   SimpleGrid,
   Spinner,
+  Stack,
   Table,
   Text,
 } from '@chakra-ui/react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
+import { useSale } from '@/features/sales/useSales'
+import type { CreditEntry } from '@/types/models'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -53,8 +59,136 @@ import {
  * One page of the carnet de crédit: who he is, what he owes right now, and
  * every line of his history with the running balance down the side.
  */
+
+/**
+ * WHAT THAT LINE OF THE CARNET WAS FOR.
+ *
+ * The carnet answered "how much" and refused to answer "for what". A client
+ * who disputes 17,500 DT is not disputing the arithmetic — he wants to know
+ * which articles it was, and the owner had to leave the carnet, walk to the
+ * Factures screen and search a ticket number to tell him. Every one of those
+ * lines already carries its saleId; nothing was following it.
+ *
+ * Opened one at a time, and only when clicked: the fetch is deliberate work,
+ * and a client page can hold a hundred lines.
+ */
+function SaleDetailRow({ entry, symbol }: { entry: CreditEntry; symbol: string }) {
+  const { t } = useTranslation()
+  const { sale, loading, missing } = useSale(entry.saleId)
+  const money = (m: number) => formatMoney(m, { symbol })
+
+  return (
+    <Table.Row bg="bg.subtle">
+      <Table.Cell colSpan={5} p={0}>
+        <Box px={{ base: 3, md: 6 }} py={4}>
+          {loading ? (
+            <HStack gap={3} color="fg.muted">
+              <Spinner size="sm" />
+              <Text>{t('common.loading')}</Text>
+            </HStack>
+          ) : missing || !sale ? (
+            /* Offline and never cached on THIS machine, most often: the
+               ticket was rung up on the other till. Not an error worth a red
+               banner — the amount above is still correct and still owed. */
+            <Text color="fg.muted">{t('credit.itemsUnavailable')}</Text>
+          ) : (
+            <Stack gap={3}>
+              <HStack gap={2} color="fg.muted">
+                <ShoppingBag size={18} />
+                <Text fontWeight="semibold">
+                  {t('credit.itemsTitle', { count: sale.items.length })}
+                </Text>
+              </HStack>
+
+              <Stack gap={1}>
+                {sale.items.map((it, i) => (
+                  <Flex
+                    key={`${it.productId ?? 'x'}-${i}`}
+                    align="center"
+                    gap={3}
+                    py={1}
+                    borderBottomWidth="1px"
+                    borderColor="border"
+                  >
+                    <Text minW={0} flex="1">
+                      {it.name}
+                      {it.qty < 0 && (
+                        <Badge colorPalette="orange" ms={2} size="sm">
+                          {t('pos.return')}
+                        </Badge>
+                      )}
+                    </Text>
+                    <Text color="fg.muted" whiteSpace="nowrap">
+                      {it.qty} × {money(it.unitPrice)}
+                    </Text>
+                    <Text fontWeight="bold" whiteSpace="nowrap" minW="6rem" textAlign="end">
+                      {money(it.qty * it.unitPrice)}
+                    </Text>
+                  </Flex>
+                ))}
+              </Stack>
+
+              {/*
+                THE PARTIAL SETTLEMENT, SPELLED OUT.
+
+                This is the case the owner asked for by name. On a "partiel"
+                the client paid something at the counter and the rest became
+                this carnet line — so the ticket total and the amount owed are
+                two different numbers, and showing only the articles would
+                leave him explaining why they do not add up to the line above.
+              */}
+              <Flex gap={4} wrap="wrap" pt={1}>
+                <Box>
+                  <Text fontSize="sm" color="fg.muted">
+                    {t('pos.ticketTotal')}
+                  </Text>
+                  <Text fontWeight="bold">{money(sale.total)}</Text>
+                </Box>
+                {sale.paid > 0 && (
+                  <Box>
+                    <Text fontSize="sm" color="fg.muted">
+                      {t('pos.paidAtCounter')}
+                    </Text>
+                    <Text fontWeight="bold" color="green.600">
+                      {money(sale.paid)}
+                    </Text>
+                  </Box>
+                )}
+                <Box>
+                  <Text fontSize="sm" color="fg.muted">
+                    {t('credit.putOnAccount')}
+                  </Text>
+                  <Text fontWeight="bold" color="red.600">
+                    {money(sale.total - sale.paid)}
+                  </Text>
+                </Box>
+                {(sale.discount ?? 0) > 0 && (
+                  <Box>
+                    <Text fontSize="sm" color="fg.muted">
+                      {t('pos.discount')}
+                    </Text>
+                    <Text fontWeight="bold">-{money(sale.discount ?? 0)}</Text>
+                  </Box>
+                )}
+              </Flex>
+            </Stack>
+          )}
+        </Box>
+      </Table.Cell>
+    </Table.Row>
+  )
+}
+
 export function CustomerDetailPage() {
   const { t } = useTranslation()
+  /**
+   * The one carnet line whose articles are open.
+   *
+   * One at a time, deliberately: a client page can hold a hundred lines and
+   * every open row is a document read. It is also how the row reads on paper —
+   * you follow one line with your finger, you do not unfold the whole carnet.
+   */
+  const [openId, setOpenId] = useState<string | null>(null)
   const { id } = useParams()
   const navigate = useNavigate()
   const alive = useAlive()
@@ -318,21 +452,42 @@ export function CustomerDetailPage() {
                 <Table.Body>
                   {rows.map(({ entry, balance }) => {
                     const isDebit = entry.type === 'debit'
+                    const openable = !!entry.saleId
+                    const isOpen = openId === entry.id
                     return (
-                      <Table.Row key={entry.id}>
+                      <Fragment key={entry.id}>
+                      <Table.Row
+                        onClick={openable ? () => setOpenId(isOpen ? null : entry.id) : undefined}
+                        cursor={openable ? 'pointer' : undefined}
+                        _hover={openable ? { bg: 'bg.muted' } : undefined}
+                      >
                         <Table.Cell whiteSpace="nowrap">
                           {formatDate(entry.date)}
                         </Table.Cell>
                         <Table.Cell>
-                          <Text fontWeight="medium">
-                            {entry.label ||
-                              (isDebit ? t('credit.debit') : t('credit.payment'))}
-                          </Text>
-                          {entry.ticketNo && (
-                            <Text fontSize="sm" color="fg.muted">
-                              {t('credit.fromTicket', { ref: entry.ticketNo })}
-                            </Text>
-                          )}
+                          <HStack gap={2} align="start">
+                            {/* Only the lines that HAVE a ticket behind them
+                                open. A payment the owner wrote by hand has
+                                nothing further to show, and a chevron on it
+                                would be a promise the row cannot keep. */}
+                            {openable && (
+                              <Box color="fg.muted" mt={1} flexShrink={0}>
+                                {isOpen ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
+                              </Box>
+                            )}
+                            <Box minW={0}>
+                              <Text fontWeight="medium">
+                                {entry.label ||
+                                  (isDebit ? t('credit.debit') : t('credit.payment'))}
+                              </Text>
+                              {entry.ticketNo && (
+                                <Text fontSize="sm" color="fg.muted">
+                                  {t('credit.fromTicket', { ref: entry.ticketNo })}
+                                  {openable && !isOpen && ` · ${t('credit.seeItems')}`}
+                                </Text>
+                              )}
+                            </Box>
+                          </HStack>
                         </Table.Cell>
                         <Table.Cell
                           textAlign="end"
@@ -359,6 +514,8 @@ export function CustomerDetailPage() {
                           {money(balance)}
                         </Table.Cell>
                       </Table.Row>
+                      {isOpen && <SaleDetailRow entry={entry} symbol={symbol} />}
+                      </Fragment>
                     )
                   })}
                 </Table.Body>
