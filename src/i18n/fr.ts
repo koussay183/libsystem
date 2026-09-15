@@ -464,6 +464,11 @@ export const fr = {
     alreadyExists: 'Un client porte déjà ce nom — vérifiez avant de créer.',
   },
   credit: {
+    editTicket: 'Ouvrir le ticket',
+    editEntry: 'Modifier la ligne',
+    deleteEntry: 'Supprimer la ligne',
+    deleteEntryConfirm: 'Supprimer « {{label}} » ({{amount}}) ? Le solde du client sera recalculé.',
+    entryDate: 'Date',
     openingDebt: 'Il doit déjà (facultatif)',
     openingDebtHint: 'Le solde qu’il avait sur l’ancien carnet, s’il en avait un.',
     openingDebtLabel: 'Ancien solde',

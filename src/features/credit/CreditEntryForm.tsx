@@ -14,7 +14,8 @@ import {
   Stack,
   Text,
 } from '@chakra-ui/react'
-import { Coins, HandCoins, CheckCheck, TriangleAlert } from 'lucide-react'
+import { Coins, HandCoins, CheckCheck, TriangleAlert, Pencil } from 'lucide-react'
+import dayjs from 'dayjs'
 import { useAlive } from '@/lib/useAlive'
 import {
   formatMoney,
@@ -24,7 +25,28 @@ import {
   moneySymbolKey,
   moneyPlaceholder,
 } from '@/lib/money'
-import { addCreditEntry } from '@/features/customers/useCustomers'
+import { addCreditEntry, updateCreditEntry } from '@/features/customers/useCustomers'
+import type { CreditEntry } from '@/types/models'
+
+/**
+ * The stamp a chosen day becomes.
+ *
+ * Today keeps the exact current time (create) or the line's original time
+ * (edit), so several lines written the same day still sort in the order they
+ * happened. Another day lands on that day at the original time-of-day, or at
+ * noon for a new line — never midnight, which on a carnet sorted by date puts
+ * the line BEFORE everything else that day, including the ticket it refers to.
+ */
+function stampFor(dateStr: string, original: number | null): number {
+  const d = dayjs(dateStr)
+  if (!d.isValid()) return original ?? Date.now()
+  const base = original ?? Date.now()
+  if (d.isSame(dayjs(base), 'day')) return base
+  const t = dayjs(base)
+  return original === null
+    ? d.hour(12).minute(0).second(0).millisecond(0).valueOf()
+    : d.hour(t.hour()).minute(t.minute()).second(t.second()).millisecond(0).valueOf()
+}
 
 /** Round sums the owner actually handles: 5, 10, 20 and 50 dinars. */
 const QUICK_AMOUNTS = [5_000, 10_000, 20_000, 50_000]
@@ -35,6 +57,7 @@ export function CreditEntryForm({
   customerId,
   type,
   balance = 0,
+  entry = null,
 }: {
   open: boolean
   onClose: () => void
@@ -42,6 +65,13 @@ export function CreditEntryForm({
   type: 'payment' | 'debit'
   /** What the client owes right now, millimes. Drives "solder tout le compte". */
   balance?: number
+  /**
+   * The line being CORRECTED, when this is an edit rather than a new line.
+   * Its type wins over the prop; amount, label and date are seeded from it.
+   * Never a ticket line — those are corrected through the ticket
+   * (LinkedEntryError in useCustomers.ts says why).
+   */
+  entry?: CreditEntry | null
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -55,21 +85,25 @@ export function CreditEntryForm({
   /** Synchronous in-flight guard — see the comment in submit(). */
   const submitting = useRef(false)
 
-  const isPayment = type === 'payment'
+  const editing = entry !== null
+  const isPayment = (entry?.type ?? type) === 'payment'
+  const [dateStr, setDateStr] = useState('')
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
   const owed = Math.max(0, balance)
 
   useEffect(() => {
     if (!open) return
-    setAmount('')
-    setLabel('')
+    setAmount(entry ? toInput(entry.amount) : '')
+    setLabel(entry?.label ?? '')
+    setDateStr(dayjs(entry?.date ?? Date.now()).format('YYYY-MM-DD'))
     setError('')
     setSaveError('')
     setOverpayAsked(false)
     setSettling(false)
     setBusy(false)
-  }, [open])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, entry?.id])
 
   const minor = parseMoney(amount)
   // Paying more than the account holds is legitimate (he leaves an advance),
@@ -104,7 +138,21 @@ export function CreditEntryForm({
     setBusy(true)
     setSaveError('')
     try {
-      await addCreditEntry(customerId, type, minor, label.trim() || undefined)
+      if (entry) {
+        await updateCreditEntry(entry, {
+          amount: minor,
+          label: label.trim() || undefined,
+          date: stampFor(dateStr, entry.date),
+        })
+      } else {
+        await addCreditEntry(
+          customerId,
+          type,
+          minor,
+          label.trim() || undefined,
+          stampFor(dateStr, null),
+        )
+      }
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) {
@@ -130,10 +178,20 @@ export function CreditEntryForm({
                   p={2}
                   borderRadius="lg"
                 >
-                  {isPayment ? <Coins size={22} /> : <HandCoins size={22} />}
+                  {editing ? (
+                    <Pencil size={22} />
+                  ) : isPayment ? (
+                    <Coins size={22} />
+                  ) : (
+                    <HandCoins size={22} />
+                  )}
                 </Box>
                 <Dialog.Title>
-                  {isPayment ? t('credit.recordPayment') : t('credit.recordDebit')}
+                  {editing
+                    ? t('credit.editEntry')
+                    : isPayment
+                      ? t('credit.recordPayment')
+                      : t('credit.recordDebit')}
                 </Dialog.Title>
               </HStack>
             </Dialog.Header>
@@ -153,7 +211,7 @@ export function CreditEntryForm({
                     </Text>
                   </HStack>
 
-                  {isPayment && owed > 0 && (
+                  {isPayment && owed > 0 && !editing && (
                     <Button
                       type="button"
                       size="lg"
@@ -229,6 +287,20 @@ export function CreditEntryForm({
                       </Button>
                     </Flex>
                   </Box>
+
+                  {/* The day it happened. A line copied in from a paper carnet
+                      is last month's, and a carnet that dates every line today
+                      loses the order the debts were run up in. */}
+                  <Field.Root>
+                    <Field.Label>{t('credit.entryDate')}</Field.Label>
+                    <Input
+                      size="lg"
+                      type="date"
+                      value={dateStr}
+                      max={dayjs().format('YYYY-MM-DD')}
+                      onChange={(e) => setDateStr(e.target.value)}
+                    />
+                  </Field.Root>
 
                   <Field.Root>
                     <Field.Label>{t('credit.label')}</Field.Label>

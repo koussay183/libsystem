@@ -442,6 +442,11 @@ export const ar: Dict = {
     alreadyExists: 'يوجد حريف بنفس الاسم — تحقق قبل الإنشاء.',
   },
   credit: {
+    editTicket: 'فتح التذكرة',
+    editEntry: 'تعديل السطر',
+    deleteEntry: 'حذف السطر',
+    deleteEntryConfirm: 'حذف « {{label}} » ({{amount}})؟ سيُعاد حساب رصيد الحريف.',
+    entryDate: 'التاريخ',
     openingDebt: 'مدين مسبقًا (اختياري)',
     openingDebtHint: 'الرصيد الذي كان عليه في الدفتر القديم، إن وُجد.',
     openingDebtLabel: 'رصيد سابق',

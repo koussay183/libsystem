@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState } from 'react'
+import { Fragment, useMemo, useRef, useState } from 'react'
 import { useParams, useNavigate, Navigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -14,6 +14,7 @@ import {
   ChevronDown,
   ChevronRight,
   ShoppingBag,
+  Link2,
 } from 'lucide-react'
 import {
   Alert,
@@ -27,6 +28,7 @@ import {
   HStack,
   Separator,
   SimpleGrid,
+  IconButton,
   Spinner,
   Stack,
   Table,
@@ -42,6 +44,7 @@ import {
   useCustomer,
   useCustomerLedger,
   removeCustomer,
+  removeCreditEntry,
   OutstandingBalanceError,
   LedgerUnreadableError,
 } from '@/features/customers/useCustomers'
@@ -79,7 +82,7 @@ function SaleDetailRow({ entry, symbol }: { entry: CreditEntry; symbol: string }
 
   return (
     <Table.Row bg="bg.subtle">
-      <Table.Cell colSpan={5} p={0}>
+      <Table.Cell colSpan={6} p={0}>
         <Box px={{ base: 3, md: 6 }} py={4}>
           {loading ? (
             <HStack gap={3} color="fg.muted">
@@ -199,6 +202,34 @@ export function CustomerDetailPage() {
   const [payOpen, setPayOpen] = useState(false)
   const [debitOpen, setDebitOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
+  /** A hand-written line being corrected. Ticket lines never land here. */
+  const [editingEntry, setEditingEntry] = useState<CreditEntry | null>(null)
+  const [entryError, setEntryError] = useState('')
+  const deletingEntry = useRef<string | null>(null)
+
+  /**
+   * Removes a hand-written line after the owner has read what it is.
+   *
+   * A ref rather than state as the latch: the trash icon sits on a row that
+   * re-renders on every snapshot, and two clicks in one render would queue the
+   * delete twice — the second one increments the balance a second time, and
+   * the client is suddenly owed money.
+   */
+  const onDeleteEntry = async (entry: CreditEntry) => {
+    if (deletingEntry.current) return
+    setEntryError('')
+    const label = entry.label || (entry.type === 'debit' ? t('credit.debit') : t('credit.payment'))
+    if (!window.confirm(t('credit.deleteEntryConfirm', { amount: money(entry.amount), label })))
+      return
+    deletingEntry.current = entry.id
+    try {
+      await removeCreditEntry(entry)
+    } catch (err) {
+      if (alive.current) setEntryError(err instanceof Error ? err.message : t('common.error'))
+    } finally {
+      deletingEntry.current = null
+    }
+  }
   const [deleteError, setDeleteError] = useState('')
   const [deleting, setDeleting] = useState(false)
 
@@ -447,6 +478,7 @@ export function CustomerDetailPage() {
                     <Table.ColumnHeader textAlign="end">
                       {t('credit.runningBalance')}
                     </Table.ColumnHeader>
+                    <Table.ColumnHeader w="1%" />
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
@@ -513,6 +545,61 @@ export function CustomerDetailPage() {
                         >
                           {money(balance)}
                         </Table.Cell>
+                        <Table.Cell whiteSpace="nowrap" px={2}>
+                          {/*
+                            Two kinds of line, two kinds of correction.
+
+                            A line the owner wrote by hand is his to change or
+                            remove here. A line a ticket wrote is a mirror of
+                            that ticket, and is corrected THROUGH the ticket —
+                            otherwise the carnet says one number and the paper
+                            in the client's pocket says another, with nothing
+                            to say which was the correction. The link icon
+                            opens the ticket, where the editor lives.
+                          */}
+                          {openable ? (
+                            <IconButton
+                              aria-label={t('credit.editTicket')}
+                              title={t('credit.editTicket')}
+                              variant="ghost"
+                              size="sm"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                setOpenId(entry.id)
+                              }}
+                            >
+                              <Link2 size={18} />
+                            </IconButton>
+                          ) : (
+                            <HStack gap={0}>
+                              <IconButton
+                                aria-label={t('credit.editEntry')}
+                                title={t('credit.editEntry')}
+                                variant="ghost"
+                                size="sm"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  setEditingEntry(entry)
+                                }}
+                              >
+                                <Pencil size={18} />
+                              </IconButton>
+                              <IconButton
+                                aria-label={t('credit.deleteEntry')}
+                                title={t('credit.deleteEntry')}
+                                variant="ghost"
+                                size="sm"
+                                colorPalette="red"
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  void onDeleteEntry(entry)
+                                }}
+                              >
+                                <Trash2 size={18} />
+                              </IconButton>
+                            </HStack>
+                          )}
+                        </Table.Cell>
                       </Table.Row>
                       {isOpen && <SaleDetailRow entry={entry} symbol={symbol} />}
                       </Fragment>
@@ -523,6 +610,15 @@ export function CustomerDetailPage() {
             </Box>
           </Card.Body>
         </Card.Root>
+      )}
+
+      {entryError && (
+        <Alert.Root status="error" mt={3}>
+          <Alert.Indicator />
+          <Alert.Content>
+            <Alert.Title>{entryError}</Alert.Title>
+          </Alert.Content>
+        </Alert.Root>
       )}
 
       {/* ---------------- Danger zone ---------------- */}
@@ -570,6 +666,16 @@ export function CustomerDetailPage() {
       )}
       {editOpen && (
         <CustomerForm open onClose={() => setEditOpen(false)} customer={customer} />
+      )}
+      {editingEntry && (
+        <CreditEntryForm
+          open
+          onClose={() => setEditingEntry(null)}
+          customerId={customer.id}
+          type={editingEntry.type}
+          balance={customer.balance}
+          entry={editingEntry}
+        />
       )}
 
       {/* Hidden on screen; the only thing the print stylesheet reveals. */}
