@@ -306,7 +306,13 @@ export function useBarcodeScanner({
   }, [giveBack])
 
   useEffect(() => {
-    const emit = () => {
+    /**
+     * `whole` = the caller has already said this buffer IS one complete code
+     * (the isComplete fast path). Then there is nothing to split and the loop
+     * below is skipped — it used to run on every flush, walking prefixes of a
+     * code that had just been recognised, on the keydown path.
+     */
+    const emit = (whole: boolean) => {
       const code = typed.current
       const alt = physical.current
       // reset() puts the borrowed field back (see giveBack) — including on the
@@ -333,7 +339,8 @@ export function useBarcodeScanner({
         wedged till at the counter is not a bug worth risking to save a variable.
       */
       const split = splitAtRef.current
-      if (split) {
+      const complete = whole || (isCompleteRef.current?.(code, alt !== code ? alt : null) ?? false)
+      if (split && !complete) {
         let rest = code
         let restAlt = alt
         for (let guard = 0; guard < 12; guard += 1) {
@@ -367,9 +374,9 @@ export function useBarcodeScanner({
      * back into a sane state, and say so loudly on the console since there is no
      * telemetry here.
      */
-    const flush = () => {
+    const flush = (whole = false) => {
       try {
-        emit()
+        emit(whole)
       } catch (err) {
         // reset() has already run inside emit() unless the throw came before it,
         // and it is idempotent (giveBack has nulled the ref), so this is the
@@ -479,7 +486,7 @@ export function useBarcodeScanner({
           // every scan sitting there to corrupt the next one.
           e.preventDefault()
           clearTimer()
-          flush()
+          flush(true)
           return
         }
       }
@@ -487,7 +494,7 @@ export function useBarcodeScanner({
       // Restart the "code complete" countdown on every character. This is what
       // removes the Enter key: the burst ends by simply going quiet.
       clearTimer()
-      timer.current = setTimeout(flush, END_OF_SCAN_MS)
+      timer.current = setTimeout(() => flush(false), END_OF_SCAN_MS)
     }
 
     /**

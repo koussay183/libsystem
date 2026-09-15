@@ -1104,11 +1104,13 @@ export function CaissePage() {
           .filter((pack) => fold(pack.name).includes(needle) && !packProblem(pack))
           .map((pack): ScanChoice => ({ kind: 'pack', pack })),
         ...products
-          .filter(
-            (p) =>
-              fold(p.name).includes(needle) ||
-              fold(`${p.family ?? ''} ${p.variant ?? ''}`).includes(needle),
-          )
+          .filter((p) => {
+            // The cached fold, not fold() twice per product: this is the miss
+            // path, which runs before the failure sound — and re-folding every
+            // name in the shop is what stood between the scan and the sound.
+            const f = foldedOf(p)
+            return f.name.includes(needle) || f.family.includes(needle)
+          })
           .map((product): ScanChoice => ({ kind: 'product', product })),
       ]
 
@@ -1232,34 +1234,52 @@ export function CaissePage() {
   )
 
   /**
+   * Every PROPER prefix of every code the shop sells, built once per snapshot.
+   *
+   * hasLongerCode below used to walk every product, pack and service on each
+   * recognised scan — and the common answer, "no, nothing longer starts with
+   * this", is the one that walks the whole list before it can be given. That
+   * walk sat inside the keydown handler on the last character of every scan,
+   * which is precisely the moment between the beep and the line appearing.
+   * Five thousand articles made it a hitch the cashier could feel.
+   *
+   * A set of prefixes answers the same question in one lookup. It costs a few
+   * milliseconds per snapshot on a large stock — the same class as byBarcode,
+   * which is rebuilt on the same snapshots — and nothing at all per scan.
+   */
+  const codePrefixes = useMemo(() => {
+    const set = new Set<string>()
+    const add = (code: string) => {
+      for (let n = 1; n < code.length; n += 1) set.add(code.slice(0, n))
+    }
+    for (const p of products) {
+      const code = foldedOf(p).code
+      if (code !== '') add(code)
+    }
+    for (const pack of packs) {
+      const code = foldCode(pack.barcode)
+      if (code !== '') add(code)
+    }
+    for (const service of allServices) {
+      const code = foldCode(service.code)
+      if (code !== '') add(code)
+    }
+    return set
+  }, [products, packs, allServices])
+
+  /**
    * Is any code in the shop strictly longer than this one and starting with it?
    *
    * If so the burst is not over — a pack coded 2001 must not fire while the
    * reader is still halfway through 20015. Folded on both sides so a service
-   * code spelt in any case is compared the same way.
+   * code spelt in any case is compared the same way. O(1): see codePrefixes.
    */
   const hasLongerCode = useCallback(
     (term: string) => {
       const key = foldCode(term)
-      if (key === '') return false
-      for (const p of products) {
-        // foldedOf, not foldCode: this runs inside the keydown handler and
-        // re-folding a few thousand barcodes there is a visible hitch on the
-        // one path this change exists to make faster.
-        const code = foldedOf(p).code
-        if (code !== '' && code !== key && code.startsWith(key)) return true
-      }
-      for (const pack of packs) {
-        const code = foldCode(pack.barcode)
-        if (code !== '' && code !== key && code.startsWith(key)) return true
-      }
-      for (const service of allServices) {
-        const code = foldCode(service.code)
-        if (code !== '' && code !== key && code.startsWith(key)) return true
-      }
-      return false
+      return key !== '' && codePrefixes.has(key)
     },
-    [products, packs, allServices],
+    [codePrefixes],
   )
 
   /**
