@@ -283,6 +283,27 @@ export async function findProductByBarcode(barcode: string): Promise<BarcodeOwne
 }
 
 /**
+ * Does this product still exist, as far as this device knows?
+ *
+ * Asked before a batch touches a product's counters. `batch.update()` on a
+ * document that has been deleted makes the server REJECT THE WHOLE BATCH: the
+ * SDK rolls every write in it back locally and track() raises the red "refused"
+ * banner — so correcting one old ticket that mentions an article deleted last
+ * month would silently undo the correction and frighten the owner. The write
+ * for a dead product is skipped instead; the ticket is still corrected.
+ *
+ * `null` means the products listener has never delivered on this tab, so
+ * nothing can be said either way. Callers treat null as "proceed" — the write
+ * is right if the product exists and the listener will be warm on any screen
+ * that can reach an editor.
+ */
+export function isLiveProduct(id: string): boolean | null {
+  const state = productsStore.getSnapshot()
+  if (state.loading) return null
+  return state.data.some((p) => p.id === id)
+}
+
+/**
  * The same question for a whole batch, in one pass over the resident snapshot.
  *
  * The returned map is keyed by the spelling the CALLER passed in, not by the

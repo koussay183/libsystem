@@ -24,7 +24,7 @@ import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useCustomers } from '@/features/customers/useCustomers'
-import { recordSale } from './useSales'
+import { recordSale, paymentModeOf } from './useSales'
 import type { TicketData } from '@/features/pos/Ticket'
 import type { PaymentMode, Product } from '@/types/models'
 
@@ -106,7 +106,7 @@ export function NewSaleInvoice({
   const paidValue = paidTouched ? paidStr : total > 0 ? String(fromMinor(total)) : ''
   const paid = Math.min(parseMoney(paidValue) ?? 0, total)
   const remaining = Math.max(0, total - paid)
-  const mode: PaymentMode = remaining <= 0 ? 'paid' : paid > 0 ? 'partial' : 'credit'
+  const mode: PaymentMode = paymentModeOf(total, paid)
 
   const customer = customers.find((c) => c.id === customerId)
 

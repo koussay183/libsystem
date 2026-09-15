@@ -8,7 +8,9 @@ import {
   where,
   doc,
   getDoc,
+  getDocs,
   getDocFromCache,
+  getDocsFromCache,
   writeBatch,
   increment,
 } from 'firebase/firestore'
@@ -16,8 +18,10 @@ import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
-import { withDeadline } from '@/lib/deadline'
-import type { Sale, SaleItem, PaymentMode } from '@/types/models'
+import { withDeadline, READ_DEADLINE_MS } from '@/lib/deadline'
+import { isLiveProduct } from '@/features/stock/useProducts'
+import { isLiveCustomer } from '@/features/customers/useCustomers'
+import type { Sale, SaleItem, PaymentMode, CreditEntry } from '@/types/models'
 
 const SALES = 'sales'
 const PRODUCTS = 'products'
@@ -354,6 +358,316 @@ export function recordSale(input: RecordSaleInput): RecordedSale {
 }
 
 /**
+ * How a ticket was settled, from the two numbers that decide it.
+ *
+ * One rule, used by the invoice form, the editor and the till, because three
+ * copies of "remaining <= 0 is paid" is three places for the badge on the
+ * sales list to disagree with the carnet.
+ */
+export function paymentModeOf(total: number, paid: number): PaymentMode {
+  if (total - paid <= 0) return 'paid'
+  return paid > 0 ? 'partial' : 'credit'
+}
+
+/* ==========================================================================
+   CORRECTING A TICKET AFTER THE FACT.
+
+   A recorded sale is not one document. recordSale() above writes four kinds in
+   one batch — the ticket, the counters on every product it touched, the
+   client's carnet line, the client's balance — and every screen in the app
+   trusts those four to agree. So a correction is not "update the ticket": it
+   is the exact inverse of what the old ticket did, plus what the new one does,
+   applied to all four in ONE batch, or the profitability report and the
+   carnet part company for good. removePurchase in purchases/usePurchases.ts
+   learned this the hard way and is the model followed here.
+   ========================================================================== */
+
+/** The corrected ticket, as the editor hands it over. Money in millimes. */
+export interface SaleEdit {
+  items: SaleItem[]
+  subtotal: number
+  discount: number
+  total: number
+  paid: number
+  customerId: string | null
+  customerName: string | null
+  date: number
+}
+
+/**
+ * The carnet line for this ticket could not be confirmed, so the correction
+ * was refused rather than guessed.
+ *
+ * Guessing has exactly one failure mode and it is the worst one: deciding
+ * there is no line when there is, and writing a second — the client then owes
+ * the same ticket twice, and nothing in the data says which line is the echo.
+ */
+export class SaleLedgerUnreadableError extends Error {
+  constructor() {
+    super('the carnet line for this ticket could not be read')
+    this.name = 'SaleLedgerUnreadableError'
+  }
+}
+
+/** The ticket leaves money unpaid and the chosen client no longer exists. */
+export class CustomerMissingError extends Error {
+  constructor() {
+    super('unpaid balance names a customer that no longer exists')
+    this.name = 'CustomerMissingError'
+  }
+}
+
+/**
+ * The carnet line a ticket wrote, if any — and whether that answer can be
+ * trusted.
+ *
+ * SERVER FIRST, UNDER A DEADLINE, AND THE CACHE ONLY AS A FALLBACK. This is the
+ * opposite order from useSale() below, on purpose. A cached DOCUMENT read that
+ * misses throws, so it is easy to tell "not cached" from "does not exist". A
+ * cached QUERY that misses returns an EMPTY RESULT — indistinguishable from
+ * "this ticket has no carnet line". For a ticket rung up on the other machine
+ * that this one has never loaded, reading the cache first would answer "no
+ * line", and updateSale would then create one: the same debt, twice.
+ *
+ * So the server is asked while there is a line, and `confirmed` says whether
+ * the answer came from it. An unconfirmed empty answer on a ticket that was on
+ * credit is refused upstream, not acted on.
+ *
+ * Returns null when nothing could be read at all.
+ */
+export async function findSaleEntry(
+  saleId: string,
+): Promise<{ entry: CreditEntry | null; confirmed: boolean } | null> {
+  const q = query(collection(db, shopPath(ENTRIES)), where('saleId', '==', saleId))
+  const fromServer = await withDeadline(getDocs(q), READ_DEADLINE_MS).catch(() => null)
+  const snap = fromServer ?? (await getDocsFromCache(q).catch(() => null))
+  if (!snap) return null
+  const first = snap.docs[0]
+  const entry = first ? ({ id: first.id, ...(first.data() as Omit<CreditEntry, 'id'>) } as CreditEntry) : null
+  return { entry, confirmed: !snap.metadata.fromCache }
+}
+
+/** Per-product totals of a set of lines, the way recordSale aggregates them. */
+function aggregateLines(items: SaleItem[]) {
+  const per = new Map<string, { qty: number; revenue: number; cost: number }>()
+  for (const it of items) {
+    if (!it.productId) continue
+    const agg = per.get(it.productId) ?? { qty: 0, revenue: 0, cost: 0 }
+    agg.qty += it.qty
+    agg.revenue += it.qty * it.unitPrice
+    agg.cost += it.qty * it.unitCost
+    per.set(it.productId, agg)
+  }
+  return per
+}
+
+/** One batch may hold this many writes. Same ceiling as the purchases. */
+const BATCH_LIMIT = 400
+
+/**
+ * Applies a correction to a recorded ticket, everywhere the ticket reached.
+ *
+ * The three refusals at the top are thrown BEFORE a single write is enqueued,
+ * so a refused correction leaves nothing half-done — the same discipline as
+ * removeCustomer. Everything after them is one batch:
+ *
+ *   1. Every product on the old ticket or the new one gets increment(new − old)
+ *      on its counters. Not "undo then redo" as two writes: Firestore refuses
+ *      two writes to one document in a batch, and the difference is one write.
+ *      lastSoldAt is left alone — a correction is not a sale, and the previous
+ *      value is not knowable.
+ *   2. The ticket is updated IN PLACE. ticketNo and createdAt survive: the
+ *      number is printed on the client's copy and copied into his carnet line,
+ *      and a corrected ticket that changed its number would be untraceable.
+ *   3. The carnet is reconciled against the line as it IS — `old.amount`, what
+ *      the client's page shows — never against `before.total − before.paid`,
+ *      which is what it should have been. If somebody hand-settled the line in
+ *      between, the balance still moves by exactly the difference the client
+ *      sees.
+ *
+ * `knownEntry` lets the client's page, which already holds the live line, skip
+ * the read. `undefined` means "not known, go and look"; `null` means "known to
+ * be absent".
+ */
+export async function updateSale(
+  before: Sale,
+  edit: SaleEdit,
+  opts: { knownEntry?: CreditEntry | null } = {},
+): Promise<void> {
+  const unpaid = edit.total - edit.paid
+  if (edit.items.length === 0) {
+    throw new Error('updateSale: a ticket keeps at least one line; void it instead')
+  }
+  if (unpaid > 0 && !edit.customerId) {
+    throw new Error('updateSale: unpaid balance requires a customer')
+  }
+  if (unpaid > 0 && edit.customerId && isLiveCustomer(edit.customerId) === false) {
+    throw new CustomerMissingError()
+  }
+
+  const found =
+    opts.knownEntry !== undefined
+      ? { entry: opts.knownEntry, confirmed: true }
+      : await findSaleEntry(before.id)
+  if (found === null) throw new SaleLedgerUnreadableError()
+  // A line SHOULD exist and the only answer is an unconfirmed "none": refuse.
+  // See findSaleEntry for why acting on it would double the debt.
+  if (found.entry === null && !found.confirmed && before.onCredit) {
+    throw new SaleLedgerUnreadableError()
+  }
+  const old = found.entry
+
+  const oldAgg = aggregateLines(before.items)
+  const newAgg = aggregateLines(edit.items)
+  const productIds = new Set([...oldAgg.keys(), ...newAgg.keys()])
+  if (productIds.size + 6 > BATCH_LIMIT) {
+    throw new Error('updateSale: too many products for one batch')
+  }
+
+  const now = Date.now()
+  const batch = writeBatch(db)
+
+  for (const productId of productIds) {
+    const o = oldAgg.get(productId) ?? { qty: 0, revenue: 0, cost: 0 }
+    const n = newAgg.get(productId) ?? { qty: 0, revenue: 0, cost: 0 }
+    const dq = n.qty - o.qty
+    const dRev = n.revenue - o.revenue
+    const dCost = n.cost - o.cost
+    if (dq === 0 && dRev === 0 && dCost === 0) continue
+    // A product deleted since the ticket cannot take an update (the whole batch
+    // would be refused). The ticket is corrected without it.
+    if (isLiveProduct(productId) === false) continue
+    batch.update(doc(db, shopPath(PRODUCTS), productId), {
+      quantity: increment(-dq),
+      soldQty: increment(dq),
+      soldRevenue: increment(dRev),
+      soldCost: increment(dCost),
+      updatedAt: now,
+    })
+  }
+
+  batch.update(doc(db, shopPath(SALES), before.id), {
+    items: edit.items,
+    subtotal: edit.subtotal,
+    discount: edit.discount,
+    total: edit.total,
+    paid: edit.paid,
+    // `received` is the cash handed over, which only the till knows. Kept when
+    // the paid figure did not move; otherwise the new paid figure is the best
+    // available truth.
+    received: edit.paid === before.paid ? (before.received ?? before.paid) : edit.paid,
+    mode: paymentModeOf(edit.total, edit.paid),
+    onCredit: unpaid > 0,
+    customerId: edit.customerId,
+    customerName: edit.customerName,
+    hasReturn: edit.items.some((it) => it.qty < 0),
+    date: edit.date,
+    updatedAt: now,
+  })
+
+  const customerRef = (id: string) => doc(db, shopPath(CUSTOMERS), id)
+  const bump = (id: string, delta: number) => {
+    if (delta === 0 || isLiveCustomer(id) === false) return
+    batch.update(customerRef(id), { balance: increment(delta), updatedAt: now })
+  }
+
+  if (old && unpaid > 0 && edit.customerId) {
+    const entryRef = doc(db, shopPath(ENTRIES), old.id)
+    if (old.customerId === edit.customerId) {
+      batch.update(entryRef, { amount: unpaid, date: edit.date, updatedAt: now })
+      bump(edit.customerId, unpaid - old.amount)
+    } else {
+      // The line moves to the other client; its id stays, so anything holding
+      // it (the expanded row on the carnet) keeps working.
+      batch.update(entryRef, {
+        customerId: edit.customerId,
+        amount: unpaid,
+        date: edit.date,
+        updatedAt: now,
+      })
+      bump(old.customerId, -old.amount)
+      bump(edit.customerId, unpaid)
+    }
+  } else if (old && unpaid <= 0) {
+    batch.delete(doc(db, shopPath(ENTRIES), old.id))
+    bump(old.customerId, -old.amount)
+  } else if (!old && unpaid > 0 && edit.customerId) {
+    batch.set(doc(collection(db, shopPath(ENTRIES))), {
+      customerId: edit.customerId,
+      type: 'debit',
+      amount: unpaid,
+      label: `Ticket ${before.ticketNo}`,
+      saleId: before.id,
+      ticketNo: before.ticketNo,
+      date: edit.date,
+      createdAt: now,
+    })
+    bump(edit.customerId, unpaid)
+  }
+
+  void track(batch.commit()).catch(() => {
+    /* replayed by the SDK, in order; a refusal surfaces through the sync badge */
+  })
+}
+
+/**
+ * Removes a ticket and puts back everything it moved.
+ *
+ * The exact inverse of recordSale, in one batch, with the ticket's own delete
+ * LAST — the same ordering removeCustomer uses, so a replay that is refused
+ * fails before the visible row has gone. A hard delete rather than a flag,
+ * because six screens replay the sales collection to draw the day's figures
+ * and a flag would be six places to forget to filter it out.
+ *
+ * The confirmation is the caller's: window.confirm belongs on the screen that
+ * knows what to say, not in the store.
+ */
+export async function voidSale(
+  sale: Sale,
+  opts: { knownEntry?: CreditEntry | null } = {},
+): Promise<void> {
+  const found =
+    opts.knownEntry !== undefined
+      ? { entry: opts.knownEntry, confirmed: true }
+      : await findSaleEntry(sale.id)
+  if (found === null) throw new SaleLedgerUnreadableError()
+  if (found.entry === null && !found.confirmed && sale.onCredit) {
+    throw new SaleLedgerUnreadableError()
+  }
+  const old = found.entry
+
+  const agg = aggregateLines(sale.items)
+  if (agg.size + 4 > BATCH_LIMIT) throw new Error('voidSale: too many products for one batch')
+
+  const now = Date.now()
+  const batch = writeBatch(db)
+  for (const [productId, a] of agg) {
+    if (isLiveProduct(productId) === false) continue
+    batch.update(doc(db, shopPath(PRODUCTS), productId), {
+      quantity: increment(a.qty),
+      soldQty: increment(-a.qty),
+      soldRevenue: increment(-a.revenue),
+      soldCost: increment(-a.cost),
+      updatedAt: now,
+    })
+  }
+  if (old) {
+    batch.delete(doc(db, shopPath(ENTRIES), old.id))
+    if (isLiveCustomer(old.customerId) !== false) {
+      batch.update(doc(db, shopPath(CUSTOMERS), old.customerId), {
+        balance: increment(-old.amount),
+        updatedAt: now,
+      })
+    }
+  }
+  batch.delete(doc(db, shopPath(SALES), sale.id))
+
+  void track(batch.commit()).catch(() => {
+    /* replayed by the SDK, in order; a refusal surfaces through the sync badge */
+  })
+}
+
+/**
  * ONE sale, fetched on demand — what a line in the carnet was actually FOR.
  *
  * The carnet used to say "Ticket 260721-143512" and stop there. That is a
@@ -373,7 +687,15 @@ export function recordSale(input: RecordSaleInput): RecordedSale {
  * seen it (a ticket rung up on the other machine), and then under a deadline
  * so a dead uplink cannot leave a spinner on screen.
  */
-export function useSale(saleId: string | null | undefined) {
+export function useSale(
+  saleId: string | null | undefined,
+  /**
+   * Bump it to read again. A getDoc is one-shot, so after this screen itself
+   * corrects the ticket the detail would go on showing the old lines — the
+   * cache answers the re-read instantly with what was just written.
+   */
+  refreshKey = 0,
+) {
   const [sale, setSale] = useState<Sale | null>(null)
   const [loading, setLoading] = useState(false)
   const [missing, setMissing] = useState(false)
@@ -411,7 +733,7 @@ export function useSale(saleId: string | null | undefined) {
     return () => {
       alive = false
     }
-  }, [saleId])
+  }, [saleId, refreshKey])
 
   return { sale, loading, missing }
 }

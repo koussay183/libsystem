@@ -397,6 +397,12 @@ export async function addCreditEntry(
   type: 'debit' | 'payment',
   amountMinor: number,
   label?: string,
+  /**
+   * When the debt or the payment actually happened, if not now. The owner
+   * writing up a client from a paper carnet is entering last month's lines,
+   * and a carnet that dates them all today loses the order they happened in.
+   */
+  date?: number,
 ): Promise<void> {
   // Amounts are stored positive and the direction lives in `type`. A zero or
   // negative amount would silently corrupt the running balance.
@@ -415,7 +421,7 @@ export async function addCreditEntry(
     type,
     amount: amountMinor,
     label: label || undefined,
-    date: now,
+    date: date ?? now,
     createdAt: now,
   })
   const delta = type === 'debit' ? amountMinor : -amountMinor
@@ -423,6 +429,109 @@ export async function addCreditEntry(
     balance: increment(delta),
     updatedAt: now,
   })
+  void track(batch.commit()).catch(() => {
+    /* replayed by the SDK, in order; a refusal surfaces through the sync badge */
+  })
+}
+
+/**
+ * Does this customer still exist, as far as this device knows?
+ *
+ * The twin of isLiveProduct in stock/useProducts.ts, for the same reason: a
+ * batch.update() on a deleted customer makes the server reject the whole
+ * batch. A client who settled and was deleted can still be named on an old
+ * ticket, and correcting that ticket must not be refused because of him.
+ *
+ * `null` = the customers listener has never delivered here; callers proceed.
+ */
+export function isLiveCustomer(id: string): boolean | null {
+  const state = customersStore.getSnapshot()
+  if (state.loading) return null
+  return state.data.some((c) => c.id === id)
+}
+
+/**
+ * Thrown when a ledger line written by a till ticket is edited or deleted on
+ * its own.
+ *
+ * Such a line is a mirror of `sale.total - sale.paid`. Changing the mirror
+ * without the ticket leaves the carnet saying one number and the ticket the
+ * client was handed saying another, and there is no way afterwards to tell
+ * which was the correction and which the mistake. The ticket is the record;
+ * it is edited through updateSale, and the line follows.
+ */
+export class LinkedEntryError extends Error {
+  constructor() {
+    super('this ledger line belongs to a ticket; edit the ticket')
+    this.name = 'LinkedEntryError'
+  }
+}
+
+/**
+ * Corrects a hand-written ledger line — the amount, the label, the date.
+ *
+ * ONE batch with the balance, for the reason spelled out on addCreditEntry:
+ * the line and the total must never be able to disagree. The balance moves by
+ * the DIFFERENCE, through increment(), never by an absolute write — a credit
+ * ticket the till queued while this dialog was open has already moved the
+ * cached balance, and an absolute figure computed here would erase it.
+ *
+ * Type is not editable. Turning a payment into a debit is not a correction of
+ * a number, it is a different event; delete and re-add says so in the data.
+ */
+export async function updateCreditEntry(
+  entry: CreditEntry,
+  patch: { amount: number; label?: string; date: number },
+): Promise<void> {
+  if (entry.saleId) throw new LinkedEntryError()
+  if (!Number.isInteger(patch.amount) || patch.amount <= 0) {
+    throw new Error('updateCreditEntry: amount must be a positive integer of millimes')
+  }
+  const now = Date.now()
+  const batch = writeBatch(db)
+  batch.update(doc(db, shopPath(ENTRIES), entry.id), {
+    amount: patch.amount,
+    // A label cleared in the form is removed, not written as an empty string —
+    // the carnet falls back to "Il a pris" / "Il a payé" for a line with none.
+    label: patch.label && patch.label.trim() !== '' ? patch.label.trim() : deleteField(),
+    date: patch.date,
+    updatedAt: now,
+  })
+  const sign = entry.type === 'debit' ? 1 : -1
+  const delta = sign * (patch.amount - entry.amount)
+  // A customer deleted since the line was written cannot be updated (see
+  // isLiveCustomer). His line is corrected anyway; there is no balance to keep.
+  if (delta !== 0 && isLiveCustomer(entry.customerId) !== false) {
+    batch.update(doc(db, shopPath(CUSTOMERS), entry.customerId), {
+      balance: increment(delta),
+      updatedAt: now,
+    })
+  }
+  void track(batch.commit()).catch(() => {
+    /* replayed by the SDK, in order; a refusal surfaces through the sync badge */
+  })
+}
+
+/**
+ * Removes a hand-written ledger line and takes it back out of the balance.
+ *
+ * The inverse of addCreditEntry, and it must stay the exact inverse: the same
+ * signed amount, the same single batch. A line removed without its balance
+ * would leave the client owing money that no line accounts for — the state
+ * the CLI's orphan sweep exists to find, and that this app must never create.
+ */
+export async function removeCreditEntry(entry: CreditEntry): Promise<void> {
+  if (entry.saleId) throw new LinkedEntryError()
+  const now = Date.now()
+  const batch = writeBatch(db)
+  batch.delete(doc(db, shopPath(ENTRIES), entry.id))
+  const signed = entry.type === 'debit' ? entry.amount : -entry.amount
+  if (isLiveCustomer(entry.customerId) !== false) {
+    batch.update(doc(db, shopPath(CUSTOMERS), entry.customerId), {
+      balance: increment(-signed),
+      updatedAt: now,
+    })
+  }
   void track(batch.commit()).catch(() => {
     /* replayed by the SDK, in order; a refusal surfaces through the sync badge */
   })

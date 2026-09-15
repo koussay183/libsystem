@@ -132,6 +132,8 @@ export interface CreditEntry {
   ticketNo?: string
   date: number
   createdAt: number
+  /** Set by updateCreditEntry; absent on a line that was never touched. */
+  updatedAt?: number
 }
 
 export interface PurchaseItem {
@@ -198,6 +200,12 @@ export interface Sale {
   hasReturn?: boolean
   items: SaleItem[]
   createdAt: number
+  /**
+   * Set by updateSale; absent on a ticket that was never corrected. Shown on
+   * the ticket preview so a corrected facture is never mistaken for the one
+   * the client was handed at the counter.
+   */
+  updatedAt?: number
 }
 
 /** One article inside a pack, and how many of it the pack contains. */
