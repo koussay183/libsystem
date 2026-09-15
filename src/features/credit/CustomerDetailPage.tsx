@@ -728,7 +728,11 @@ export function CustomerDetailPage() {
       {editingSale && (
         <SaleEditor
           sale={editingSale.sale}
-          knownEntry={editingSale.entry}
+          // The LIVE line, not the one captured when the button was pressed:
+          // updateSale moves the balance by the difference from `old.amount`,
+          // and a payment written on the other machine in between would
+          // otherwise be counted from a stale figure.
+          knownEntry={entries.find((e) => e.id === editingSale.entry.id) ?? editingSale.entry}
           onClose={() => setEditingSale(null)}
           // The entry listener redraws the row; the detail re-reads through
           // useSale's refresh key (entry.updatedAt moves on every correction).
