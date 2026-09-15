@@ -21,11 +21,12 @@ import {
   Alert,
   EmptyState,
 } from '@chakra-ui/react'
-import { ShoppingCart, Receipt, Search, Printer, FileText, Plus } from 'lucide-react'
+import { ShoppingCart, Receipt, Search, Printer, FileText, Plus, Pencil, HandCoins } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
 import { useSales } from './useSales'
 import { NewSaleInvoice } from './NewSaleInvoice'
+import { SaleEditor } from './SaleEditor'
 import { useCustomers } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { Ticket } from '@/features/pos/Ticket'
@@ -60,7 +61,22 @@ export function SalesTab() {
   const [search, setSearch] = useState('')
   const [period, setPeriod] = useState<Period>('all')
   const [invoiceOpen, setInvoiceOpen] = useState(false)
-  const [preview, setPreview] = useState<TicketData | null>(null)
+  /**
+   * THE PREVIEW FOLLOWS THE SALE, NOT A SNAPSHOT OF IT.
+   *
+   * It used to hold a TicketData built once on click. That dropped the sale's
+   * id and client, so nothing could be edited from here — and after an edit
+   * the preview would have gone on showing the old lines while the list
+   * behind it showed the new ones. Holding the id and resolving it against
+   * the live list on every render means the preview, and the reprint, are
+   * always the ticket as it is now.
+   *
+   * `justRecorded` is the one case with no id in the list yet: a facture the
+   * owner has just saved, whose snapshot may be a beat behind.
+   */
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const [justRecorded, setJustRecorded] = useState<TicketData | null>(null)
+  const [editing, setEditing] = useState<{ sale: Sale; intent: 'edit' | 'toCredit' } | null>(null)
   const [paper, setPaper] = useState<'thermal' | 'a4'>('thermal')
 
   const symbol = t(moneySymbolKey())
@@ -106,6 +122,13 @@ export function SalesTab() {
     mode: s.mode,
     clientName: clientOf(s),
   })
+
+  const previewSale = previewId ? (sales.find((s) => s.id === previewId) ?? null) : null
+  const preview: TicketData | null = previewSale ? toTicket(previewSale) : justRecorded
+  const closePreview = () => {
+    setPreviewId(null)
+    setJustRecorded(null)
+  }
 
   const doPrint = (which: 'thermal' | 'a4') => {
     setPaper(which)
@@ -199,7 +222,10 @@ export function SalesTab() {
                 key={s.id}
                 cursor="pointer"
                 _hover={{ borderColor: 'brand.solid' }}
-                onClick={() => setPreview(toTicket(s))}
+                onClick={() => {
+                  setJustRecorded(null)
+                  setPreviewId(s.id)
+                }}
               >
                 <Card.Body>
                   <Flex align="center" gap={3} wrap="wrap">
@@ -263,8 +289,8 @@ export function SalesTab() {
 
       {/* ---------------- Ticket detail + reprint ---------------- */}
       <Dialog.Root
-        open={!!preview}
-        onOpenChange={(e) => !e.open && setPreview(null)}
+        open={!!preview && !editing}
+        onOpenChange={(e) => !e.open && closePreview()}
         size="lg"
         scrollBehavior="inside"
       >
@@ -284,6 +310,13 @@ export function SalesTab() {
                       {formatDateTime(preview.date)}
                       {preview.clientName ? ` · ${preview.clientName}` : ''}
                     </Text>
+                    {/* A corrected ticket says so, because the paper in the
+                        client's pocket is the uncorrected one. */}
+                    {previewSale?.updatedAt && (
+                      <Badge colorPalette="orange" alignSelf="flex-start">
+                        {t('sales.edited', { date: formatDateTime(previewSale.updatedAt) })}
+                      </Badge>
+                    )}
 
                     <Stack gap={2}>
                       {preview.lines.map((l) => (
@@ -332,7 +365,37 @@ export function SalesTab() {
                   </Stack>
                 )}
               </Dialog.Body>
-              <Dialog.Footer>
+              <Dialog.Footer flexWrap="wrap" gap={2}>
+                {/*
+                  Correcting lives here, on the ticket the owner is looking at,
+                  rather than as an icon on the list row — a row is tapped a
+                  hundred times a day to reprint, and an edit icon beside the
+                  reprint one is how a ticket gets changed by accident.
+                */}
+                {previewSale && (
+                  <>
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      onClick={() => setEditing({ sale: previewSale, intent: 'edit' })}
+                    >
+                      <Pencil size={18} />
+                      {t('common.edit')}
+                    </Button>
+                    {previewSale.total > 0 && previewSale.total - previewSale.paid <= 0 && (
+                      <Button
+                        size="lg"
+                        variant="outline"
+                        colorPalette="orange"
+                        onClick={() => setEditing({ sale: previewSale, intent: 'toCredit' })}
+                      >
+                        <HandCoins size={18} />
+                        {t('sales.putOnCarnet')}
+                      </Button>
+                    )}
+                  </>
+                )}
+                <Box flex="1" />
                 <Button size="lg" variant="outline" onClick={() => doPrint('thermal')}>
                   <Printer size={20} />
                   {t('sales.reprint')} 80mm
@@ -341,7 +404,7 @@ export function SalesTab() {
                   <Printer size={20} />
                   A4
                 </Button>
-                <Button size="lg" colorPalette="brand" onClick={() => setPreview(null)}>
+                <Button size="lg" colorPalette="brand" onClick={closePreview}>
                   {t('common.close')}
                 </Button>
               </Dialog.Footer>
@@ -355,9 +418,22 @@ export function SalesTab() {
           open
           onClose={() => setInvoiceOpen(false)}
           // Straight from "enregistrer" to the printable invoice, defaulted to A4.
-          onRecorded={(ticket) => {
+          onRecorded={(ticket, saleId) => {
             setPaper('a4')
-            setPreview(ticket)
+            setJustRecorded(ticket)
+            setPreviewId(saleId)
+          }}
+        />
+      )}
+
+      {editing && (
+        <SaleEditor
+          sale={editing.sale}
+          intent={editing.intent}
+          onClose={() => setEditing(null)}
+          // A voided ticket has nothing left to preview.
+          onSaved={(kind) => {
+            if (kind === 'voided') closePreview()
           }}
         />
       )}

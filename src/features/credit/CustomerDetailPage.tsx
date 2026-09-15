@@ -15,6 +15,7 @@ import {
   ChevronRight,
   ShoppingBag,
   Link2,
+  FileText,
 } from 'lucide-react'
 import {
   Alert,
@@ -36,7 +37,8 @@ import {
 } from '@chakra-ui/react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useSale } from '@/features/sales/useSales'
-import type { CreditEntry } from '@/types/models'
+import { SaleEditor } from '@/features/sales/SaleEditor'
+import type { CreditEntry, Sale } from '@/types/models'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
 import { useShopSettings } from '@/features/settings/useShopSettings'
@@ -75,9 +77,18 @@ import {
  * Opened one at a time, and only when clicked: the fetch is deliberate work,
  * and a client page can hold a hundred lines.
  */
-function SaleDetailRow({ entry, symbol }: { entry: CreditEntry; symbol: string }) {
+function SaleDetailRow({
+  entry,
+  symbol,
+  onEdit,
+}: {
+  entry: CreditEntry
+  symbol: string
+  /** Opens the ticket editor on the loaded sale. */
+  onEdit: (sale: Sale, entry: CreditEntry) => void
+}) {
   const { t } = useTranslation()
-  const { sale, loading, missing } = useSale(entry.saleId)
+  const { sale, loading, missing } = useSale(entry.saleId, entry.updatedAt ?? 0)
   const money = (m: number) => formatMoney(m, { symbol })
 
   return (
@@ -173,6 +184,16 @@ function SaleDetailRow({ entry, symbol }: { entry: CreditEntry; symbol: string }
                     <Text fontWeight="bold">-{money(sale.discount ?? 0)}</Text>
                   </Box>
                 )}
+                {/*
+                  The ticket is corrected FROM the carnet, on the row it wrote.
+                  The live entry goes with it as knownEntry: this page already
+                  holds the line, so updateSale need not go and look for it —
+                  and offline, could not.
+                */}
+                <Button size="sm" variant="outline" ms="auto" onClick={() => onEdit(sale, entry)}>
+                  <FileText size={16} />
+                  {t('sales.editTicket')}
+                </Button>
               </Flex>
             </Stack>
           )}
@@ -204,6 +225,8 @@ export function CustomerDetailPage() {
   const [editOpen, setEditOpen] = useState(false)
   /** A hand-written line being corrected. Ticket lines never land here. */
   const [editingEntry, setEditingEntry] = useState<CreditEntry | null>(null)
+  /** A ticket being corrected from its carnet line. */
+  const [editingSale, setEditingSale] = useState<{ sale: Sale; entry: CreditEntry } | null>(null)
   const [entryError, setEntryError] = useState('')
   const deletingEntry = useRef<string | null>(null)
 
@@ -601,7 +624,13 @@ export function CustomerDetailPage() {
                           )}
                         </Table.Cell>
                       </Table.Row>
-                      {isOpen && <SaleDetailRow entry={entry} symbol={symbol} />}
+                      {isOpen && (
+                        <SaleDetailRow
+                          entry={entry}
+                          symbol={symbol}
+                          onEdit={(sale, line) => setEditingSale({ sale, entry: line })}
+                        />
+                      )}
                       </Fragment>
                     )
                   })}
@@ -666,6 +695,18 @@ export function CustomerDetailPage() {
       )}
       {editOpen && (
         <CustomerForm open onClose={() => setEditOpen(false)} customer={customer} />
+      )}
+      {editingSale && (
+        <SaleEditor
+          sale={editingSale.sale}
+          knownEntry={editingSale.entry}
+          onClose={() => setEditingSale(null)}
+          // The entry listener redraws the row; the detail re-reads through
+          // useSale's refresh key (entry.updatedAt moves on every correction).
+          onSaved={(kind) => {
+            if (kind === 'voided') setOpenId(null)
+          }}
+        />
       )}
       {editingEntry && (
         <CreditEntryForm

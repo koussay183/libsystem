@@ -49,7 +49,7 @@ export function NewSaleInvoice({
 }: {
   open: boolean
   onClose: () => void
-  onRecorded: (ticket: TicketData) => void
+  onRecorded: (ticket: TicketData, saleId: string) => void
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -163,7 +163,7 @@ export function NewSaleInvoice({
         received: paid,
         mode,
         clientName: customer?.name,
-      })
+      }, rec.id)
       onClose()
     } catch (e) {
       // Nothing was written — the form stays as it is so nothing is retyped.
