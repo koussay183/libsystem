@@ -100,3 +100,23 @@ export function beepWarn() {
   if (!soundEnabled()) return
   tone(560, 0.16)
 }
+
+/**
+ * The till has STOPPED: an article nobody has ever entered was scanned, and
+ * nothing will be rung up until somebody says so.
+ *
+ * Three falling notes, twice as long and two and a half times as loud as
+ * beepError, because it has to be heard by a man looking at the customer and
+ * not at the screen, over the noise of a shop. beepError said "not that" and
+ * was routinely scanned straight past; this is meant to make him look up.
+ *
+ * Still silenced by the mute switch, like every other tone. A sound that
+ * ignored the switch would teach him the switch is broken; the red screen it
+ * comes with is the channel that cannot be muted.
+ */
+export function beepFail() {
+  if (!soundEnabled()) return
+  tone(520, 0.18, 0, 0.2)
+  tone(390, 0.18, 0.2, 0.2)
+  tone(260, 0.26, 0.4, 0.22)
+}

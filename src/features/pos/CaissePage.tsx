@@ -57,6 +57,7 @@ import {
   beepWarn,
   beepError,
   beepDone,
+  beepFail,
   soundEnabled,
   setSoundEnabled,
 } from '@/lib/beep'
@@ -71,6 +72,7 @@ import { usePosCart } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
 import { ScanSuggestions } from './ScanSuggestions'
 import { commandOf } from './scanCommands'
+import { UnknownScanOverlay } from './UnknownScanOverlay'
 import {
   searchChoices,
   fold,
@@ -596,6 +598,29 @@ export function CaissePage() {
    * closes it and opens the next ticket by itself, which is one less button to
    * find between two customers.
    */
+  /**
+   * THE TILL IS STOPPED ON AN UNKNOWN ARTICLE.
+   *
+   * Set by the miss tail of lookup() for a scanned code that matches nothing,
+   * cleared only by a human on the red screen (UnknownScanOverlay). While it is
+   * set it counts as a blocking dialog below, which is the whole mechanism: one
+   * OR in dialogBlocking is what stops the next sweep of the reader from
+   * quietly ringing up the next article on top of an unresolved miss — and
+   * disables the F-keys, the auto-add effect and the suggestion list with it.
+   *
+   * `nag` counts the scans refused while it was up, so the screen can say
+   * "finish this first" louder the second time. `at` is refreshed on each of
+   * them, so the burst that was just refused can never dismiss the screen.
+   */
+  const [unknown, setUnknown] = useState<{
+    term: string
+    code: string
+    at: number
+    nag: number
+  } | null>(null)
+  const unknownRef = useRef(unknown)
+  unknownRef.current = unknown
+
   const dialogBlocking =
     payOpen ||
     miscOpen ||
@@ -605,7 +630,8 @@ export function CaissePage() {
     moreOpen ||
     !!serviceAsk ||
     !!matches ||
-    !!priceLine
+    !!priceLine ||
+    !!unknown
   const anyDialogOpen = dialogBlocking || !!ticket
 
   /**
@@ -913,7 +939,7 @@ export function CaissePage() {
   const runCommandRef = useRef<(c: 'pay' | 'confirm' | 'reprint') => void>(() => {})
 
   const lookup = useCallback(
-    (raw: string, physical: string | null = null) => {
+    (raw: string, physical: string | null = null, source: 'scan' | 'typed' = 'typed') => {
       const term = codeOf(raw)
       if (!term) {
         setScan('')
@@ -959,6 +985,20 @@ export function CaissePage() {
       // wedge; drop the code rather than drop an article into a basket that is
       // on its way out. Queried from the DOM so a dialog added later cannot be
       // forgotten here.
+      /*
+        The red screen is up and he scanned anyway — the next article, or the
+        same one again, harder. Refused, with the loud tone, and the screen is
+        told to say so. `at` moves so this very burst cannot count as the
+        keypress that dismisses it.
+      */
+      if (unknownRef.current) {
+        beepFail()
+        setUnknown((u) => (u ? { ...u, nag: u.nag + 1, at: performance.now() } : u))
+        consumed.current = { term, at: performance.now() }
+        setScan('')
+        return
+      }
+
       if (
         blocked.current ||
         document.querySelector('[data-scope="drawer"][data-state="open"]')
@@ -1089,7 +1129,6 @@ export function CaissePage() {
       setNoticeStatus('warning')
       setNotice(t('pos.notFound', { term }))
       setCanCreate(true)
-      beepError()
       /**
        * looksLikeCode(), the same test the stock page uses (StockPage.tsx:522).
        * /^\d+$/ was stricter in the one direction that hurts: a hyphenated ISBN,
@@ -1125,33 +1164,42 @@ export function CaissePage() {
         may have moved on to the next article. @see missCode
       */
       missCode.current = missed
+
+      /*
+        A SCANNED CODE THIS SHOP DOES NOT CARRY STOPS THE TILL.
+
+        It used to open the create-product form straight away, which was one
+        good idea hiding a bad one. Good: the article is in the cashier's hand
+        and entering it is the only thing that can happen next. Bad: the form
+        was small, orange, and quiet, and the cashier — looking at the customer,
+        next article already in hand — scanned straight past it. The wedge
+        refused that scan, correctly, with a beep not so different from the one
+        for "added". Six articles went across the reader; five were on the
+        ticket; nobody knew which one until the customer counted his change.
+
+        So the miss is now a red screen over everything, with a sound that is
+        meant to be heard across a shop, and it stays until a human presses a
+        button. "Créer ce produit" is on that screen; the form is the optional
+        next step, not the stop itself.
+
+        For a SCAN, or for typed text that looks like a code. Words the owner
+        typed mean he was searching, and a red screen thrown at a failed search
+        is an interruption, not a safeguard — the orange line is enough there.
+      */
+      if (source === 'scan' || missed !== '') {
+        beepFail()
+        setUnknown({ term, code: missed || term, at: performance.now(), nag: 0 })
+      } else {
+        beepError()
+      }
+
       if (missed !== '') {
-        /*
-          A SCANNED CODE THIS SHOP DOES NOT CARRY OPENS THE FORM AT ONCE.
-
-          The notice and its "Créer ce produit" button are still there, but they
-          were one step too many: an article is in the cashier's hand, the
-          customer is waiting, and the only thing that can happen next is
-          entering it. So the dialog opens itself, with the barcode already in
-          it and the name filled from the catalogue the moment it answers.
-
-          Only for something that LOOKS LIKE A CODE. A miss on words the owner
-          typed means he was searching, not scanning, and a modal thrown at a
-          failed search is an interruption rather than a shortcut.
-
-          Safe from the scanner, and not by luck: while any dialog is open,
-          lookup() refuses codes outright at the `blocked.current` check above
-          rather than letting the wedge type them into whatever field has focus.
-          So the next article scanned at a half-filled form is beeped away, not
-          silently appended to a price.
-        */
         setNewPrice('')
         setNewCost('')
         setNewError('')
         setNewPriceError('')
         setNewQty('1')
         setNewOffer('')
-        setNewOpen(true)
 
         void lookupCatalog(missed).then((hit) => {
           if (!hit || !alive.current) return
@@ -1286,7 +1334,7 @@ export function CaissePage() {
    */
   const scanner = useBarcodeScanner({
     targetRef: scanRef,
-    onScan: lookup,
+    onScan: (code, physical) => lookup(code, physical, 'scan'),
     // A machine is typing: whatever list was open is not what it is after.
     onBurstStart: closeSuggestions,
     // Known code, nothing longer starts with it: do not wait for the silence.
@@ -1363,7 +1411,7 @@ export function CaissePage() {
       // before every replay, or the second copy is mistaken for a scanner's
       // trailing Enter and dropped.
       consumed.current = { term: '', at: 0 }
-      lookup(code)
+      lookup(code, null, 'scan')
     }
   }, [productsLoading, packsLoading, shopLoading, lookup])
 
@@ -1514,7 +1562,8 @@ export function CaissePage() {
     const term = codeOf(text)
     if (term.length < 4) return false
     scanner.reset()
-    lookup(term)
+    // A paste from a camera scanner is a scan, not a search.
+    lookup(term, null, 'scan')
     return true
   }
 
@@ -3711,6 +3760,24 @@ export function CaissePage() {
 
       {/* Hidden on screen; revealed by the print stylesheet */}
       {ticket && <Ticket data={ticket} shop={shop} symbol={symbol} paper={paper} />}
+
+      {/* The till, stopped: an article nobody has entered. See the state. */}
+      {unknown && (
+        <UnknownScanOverlay
+          code={unknown.term}
+          at={unknown.at}
+          nag={unknown.nag}
+          recognised={recognised}
+          onDismiss={() => {
+            setUnknown(null)
+            focusScan()
+          }}
+          onCreate={() => {
+            setUnknown(null)
+            openNewProduct()
+          }}
+        />
+      )}
     </Flex>
   )
 }

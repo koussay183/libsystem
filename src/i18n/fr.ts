@@ -51,6 +51,12 @@ export const fr = {
     partialData: 'Trop de tickets sur cette période : les chiffres ci-dessous sont incomplets.',
   },
   pos: {
+    unknownTitle: 'PRODUIT INEXISTANT',
+    unknownBody: 'Cet article n’est pas dans le stock. Rien n’a été ajouté au ticket.',
+    unknownNag: 'Terminez d’abord : produit inexistant',
+    unknownAck: 'Compris',
+    unknownRecognised: 'Le catalogue le connaît : {{name}}',
+    unknownKeys: 'Espace ou Échap pour fermer',
     return: 'Retour',
     ticketTotal: 'Total du ticket',
     paidAtCounter: 'Payé au comptoir',

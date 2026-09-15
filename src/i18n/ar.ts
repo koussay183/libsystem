@@ -55,6 +55,12 @@ export const ar: Dict = {
     partialData: 'عدد التذاكر كبير في هذه الفترة: الأرقام أدناه غير كاملة.',
   },
   pos: {
+    unknownTitle: 'منتج غير موجود',
+    unknownBody: 'هذه المادة ليست في المخزون. لم يُضَف شيء إلى التذكرة.',
+    unknownNag: 'أكمل أولًا: منتج غير موجود',
+    unknownAck: 'فهمت',
+    unknownRecognised: 'الكتالوج يعرفه: {{name}}',
+    unknownKeys: 'مسافة أو Échap للإغلاق',
     return: 'إرجاع',
     ticketTotal: 'مجموع التذكرة',
     paidAtCounter: 'دُفع عند الصندوق',
