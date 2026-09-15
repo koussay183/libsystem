@@ -46,10 +46,28 @@ export function NewSaleInvoice({
   open,
   onClose,
   onRecorded,
+  presetCustomerId,
+  defaultCredit = false,
 }: {
   open: boolean
   onClose: () => void
   onRecorded: (ticket: TicketData, saleId: string) => void
+  /**
+   * The client this ticket is for, chosen before the form opened.
+   *
+   * This is the carnet's "Nouveau ticket à crédit": the owner is on a client's
+   * page and wants to put articles on his account. Opening the same form with
+   * the client already selected — still changeable — is what makes that one
+   * button rather than a second product picker with a second set of pricing
+   * rules to keep in step with this one.
+   */
+  presetCustomerId?: string
+  /**
+   * Seeds "payé" to nothing instead of to the total. The whole ticket goes on
+   * the carnet unless the owner types what was handed over. Paired with
+   * presetCustomerId, because a credit ticket for nobody is refused anyway.
+   */
+  defaultCredit?: boolean
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -65,13 +83,15 @@ export function NewSaleInvoice({
 
   useEffect(() => {
     if (!open) return
-    setCustomerId('')
+    setCustomerId(presetCustomerId ?? '')
     setLines([])
     setPaidStr('')
-    setPaidTouched(false)
+    // "Touched" with nothing in it is what makes paid read as zero rather than
+    // follow the total — see paidValue below.
+    setPaidTouched(defaultCredit)
     setError('')
     setBusy(false)
-  }, [open])
+  }, [open, presetCustomerId, defaultCredit])
 
   const addProduct = (p: Product) => {
     setError('')
@@ -190,9 +210,11 @@ export function NewSaleInvoice({
                   <FileText size={22} />
                 </Box>
                 <Box>
-                  <Dialog.Title>{t('sales.newInvoice')}</Dialog.Title>
+                  <Dialog.Title>
+                    {defaultCredit ? t('credit.newCreditTicketTitle') : t('sales.newInvoice')}
+                  </Dialog.Title>
                   <Text fontSize="sm" color="fg.muted">
-                    {t('sales.invoiceHint')}
+                    {defaultCredit ? t('credit.newCreditTicketHint') : t('sales.invoiceHint')}
                   </Text>
                 </Box>
                 <Badge colorPalette="brand" size="lg" ms="auto">

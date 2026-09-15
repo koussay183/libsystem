@@ -464,6 +464,9 @@ export const fr = {
     alreadyExists: 'Un client porte déjà ce nom — vérifiez avant de créer.',
   },
   credit: {
+    newCreditTicket: 'Ticket à crédit',
+    newCreditTicketTitle: 'Nouveau ticket à crédit',
+    newCreditTicketHint: 'Les articles partent du stock et le montant va sur le carnet de ce client. Tapez ce qu’il paie aujourd’hui, s’il paie quelque chose.',
     editTicket: 'Ouvrir le ticket',
     editEntry: 'Modifier la ligne',
     deleteEntry: 'Supprimer la ligne',

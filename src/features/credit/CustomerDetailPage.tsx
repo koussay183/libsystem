@@ -16,6 +16,7 @@ import {
   ShoppingBag,
   Link2,
   FileText,
+  ShoppingCart,
 } from 'lucide-react'
 import {
   Alert,
@@ -38,6 +39,7 @@ import {
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useSale } from '@/features/sales/useSales'
 import { SaleEditor } from '@/features/sales/SaleEditor'
+import { NewSaleInvoice } from '@/features/sales/NewSaleInvoice'
 import type { CreditEntry, Sale } from '@/types/models'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
@@ -227,6 +229,8 @@ export function CustomerDetailPage() {
   const [editingEntry, setEditingEntry] = useState<CreditEntry | null>(null)
   /** A ticket being corrected from its carnet line. */
   const [editingSale, setEditingSale] = useState<{ sale: Sale; entry: CreditEntry } | null>(null)
+  /** "Nouveau ticket à crédit": articles put on this client's account, from here. */
+  const [ticketOpen, setTicketOpen] = useState(false)
   const [entryError, setEntryError] = useState('')
   const deletingEntry = useRef<string | null>(null)
 
@@ -418,6 +422,21 @@ export function CustomerDetailPage() {
             >
               <HandCoins size={24} />
               {t('credit.recordDebit')}
+            </Button>
+            {/*
+              A debt WITH the articles on it. "Il a pris" writes an amount; this
+              writes a ticket — stock moves, the carnet line carries the ticket
+              number, and the client can be shown what the money was for.
+            */}
+            <Button
+              size="xl"
+              colorPalette="orange"
+              variant="subtle"
+              flex={{ base: '1 1 100%', sm: '1 1 auto' }}
+              onClick={() => setTicketOpen(true)}
+            >
+              <ShoppingCart size={24} />
+              {t('credit.newCreditTicket')}
             </Button>
             <Button size="xl" variant="outline" onClick={() => window.print()}>
               <Printer size={22} />
@@ -695,6 +714,16 @@ export function CustomerDetailPage() {
       )}
       {editOpen && (
         <CustomerForm open onClose={() => setEditOpen(false)} customer={customer} />
+      )}
+      {ticketOpen && (
+        <NewSaleInvoice
+          open
+          presetCustomerId={customer.id}
+          defaultCredit
+          onClose={() => setTicketOpen(false)}
+          // The carnet line lands through the entries listener; nothing to do.
+          onRecorded={() => setTicketOpen(false)}
+        />
       )}
       {editingSale && (
         <SaleEditor

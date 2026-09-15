@@ -442,6 +442,9 @@ export const ar: Dict = {
     alreadyExists: 'يوجد حريف بنفس الاسم — تحقق قبل الإنشاء.',
   },
   credit: {
+    newCreditTicket: 'تذكرة بالدين',
+    newCreditTicketTitle: 'تذكرة جديدة بالدين',
+    newCreditTicketHint: 'تخرج المواد من المخزون ويُسجَّل المبلغ في دفتر هذا الحريف. اكتب ما يدفعه اليوم، إن دفع شيئًا.',
     editTicket: 'فتح التذكرة',
     editEntry: 'تعديل السطر',
     deleteEntry: 'حذف السطر',
