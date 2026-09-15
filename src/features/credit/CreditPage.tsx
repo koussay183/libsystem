@@ -248,19 +248,27 @@ export function CreditPage() {
         </Alert.Root>
       )}
 
-      {/* ---------------- The clients ---------------- */}
-      {loading ? (
-        <Flex justify="center" align="center" py={16}>
-          <Spinner size="lg" colorPalette="brand" />
-        </Flex>
-      ) : error ? (
-        <Alert.Root status="error">
+      {/*
+        Said ABOVE the list, never instead of it. The live collection keeps its
+        last snapshot when the listener dies, so the clients are still there —
+        and a screen that replaced them all with an English SDK message read as
+        "my clients are gone" the one afternoon the line was bad.
+      */}
+      {error && !loading && (
+        <Alert.Root status="warning" mb={4}>
           <Alert.Indicator />
           <Alert.Content>
             <Alert.Title>{error}</Alert.Title>
           </Alert.Content>
         </Alert.Root>
-      ) : customers.length === 0 ? (
+      )}
+
+      {/* ---------------- The clients ---------------- */}
+      {loading ? (
+        <Flex justify="center" align="center" py={16}>
+          <Spinner size="lg" colorPalette="brand" />
+        </Flex>
+      ) : customers.length === 0 && !error ? (
         <EmptyState.Root size="lg">
           <EmptyState.Content>
             <EmptyState.Indicator>
@@ -371,7 +379,27 @@ export function CreditPage() {
         </Stack>
       )}
 
-      {formOpen && <CustomerForm open onClose={() => setFormOpen(false)} />}
+      {/*
+        Straight to the new client's page. This is what "the form does not
+        work" turned out to be: the client WAS created — with a zero balance,
+        which the "Seulement ceux qui doivent" switch hides on the spot, and
+        the search box was still holding whatever he last typed. He pressed
+        Save and the screen looked exactly as before. Landing on the client is
+        the one outcome that cannot be mistaken for nothing having happened.
+      */}
+      {formOpen && (
+        <CustomerForm
+          open
+          withOpeningDebt
+          onClose={() => setFormOpen(false)}
+          onCreated={(id) => {
+            setOnlyDebtors(false)
+            setSearch('')
+            setFormOpen(false)
+            navigate(`/credit/${id}`)
+          }}
+        />
+      )}
     </Box>
   )
 }

@@ -442,6 +442,10 @@ export const ar: Dict = {
     alreadyExists: 'يوجد حريف بنفس الاسم — تحقق قبل الإنشاء.',
   },
   credit: {
+    openingDebt: 'مدين مسبقًا (اختياري)',
+    openingDebtHint: 'الرصيد الذي كان عليه في الدفتر القديم، إن وُجد.',
+    openingDebtLabel: 'رصيد سابق',
+    amountInvalid: 'مبلغ غير مقروء',
     seeItems: 'عرض التفاصيل',
     itemsTitle: '{{count}} مادة في هذه التذكرة',
     itemsUnavailable: 'تفاصيل هذه التذكرة غير متوفرة على هذا الحاسوب.',

@@ -464,6 +464,10 @@ export const fr = {
     alreadyExists: 'Un client porte déjà ce nom — vérifiez avant de créer.',
   },
   credit: {
+    openingDebt: 'Il doit déjà (facultatif)',
+    openingDebtHint: 'Le solde qu’il avait sur l’ancien carnet, s’il en avait un.',
+    openingDebtLabel: 'Ancien solde',
+    amountInvalid: 'Montant illisible',
     seeItems: 'voir le détail',
     itemsTitle: '{{count}} article(s) sur ce ticket',
     itemsUnavailable: 'Le détail de ce ticket n’est pas disponible sur cet ordinateur.',
