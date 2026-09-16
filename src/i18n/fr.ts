@@ -532,6 +532,7 @@ export const fr = {
       'Impossible de supprimer maintenant : l’historique de ce client n’a pas pu être lu. Réessayez quand la connexion sera revenue — le reste de l’application continue de fonctionner.',
   },
   sales: {
+    amountInvalid: 'Montant illisible — vérifiez ce qui est tapé',
     ticketRef: 'Ticket {{ref}}',
     editTicket: 'Modifier le ticket',
     editHint: 'Le stock, les compteurs de vente et le carnet du client sont corrigés en même temps.',

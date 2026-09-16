@@ -115,7 +115,7 @@ export function SaleEditor({
   // Subscribed so the resident list is warm: isLiveProduct answers from it, and
   // a save while it is cold would write a counter update to a product this tab
   // has never heard of — which, if the product is gone, refuses the whole batch.
-  const { loading: productsLoading } = useProducts()
+  useProducts()
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
 
@@ -127,7 +127,10 @@ export function SaleEditor({
       productId: it.productId,
       sign: it.qty < 0 ? -1 : 1,
       qtyStr: String(Math.abs(it.qty)),
-      priceStr: toInput(it.unitPrice),
+      // `|| '0'`, because toInput() renders zero as an EMPTY STRING. A line
+      // that costs nothing would otherwise open with a blank price box, which
+      // reads as "somebody forgot to type it" rather than "this one is free".
+      priceStr: toInput(it.unitPrice) || '0',
       unitCost: it.unitCost,
     })),
   )
@@ -149,7 +152,24 @@ export function SaleEditor({
   // --- arithmetic -----------------------------------------------------------
 
   const qtyOf = (l: EditLine) => parseQuantity(l.qtyStr)
-  const priceOf = (l: EditLine) => parseMoney(l.priceStr)
+
+  /**
+   * A PRICE OF ZERO IS A PRICE, and this is what stopped the whole feature
+   * working.
+   *
+   * toInput() renders 0 as '' and parseMoney() reads '' as "no answer", so
+   * every line that costs nothing — a gift with a pack, a free article divers,
+   * the 0,000 DT articles the till used to be able to create — came back as
+   * null, was reported "Prix invalide", and refused the save. Nothing the owner
+   * could do on that screen fixed it; the only way past was to delete the line,
+   * which is the opposite of correcting the ticket.
+   *
+   * So: an empty box means zero. Only text that is not a number at all is
+   * invalid, which is the case worth refusing — a mistyped price saved as zero
+   * would quietly turn a sale into a giveaway.
+   */
+  const priceOf = (l: EditLine): number | null =>
+    l.priceStr.trim() === '' ? 0 : parseMoney(l.priceStr)
   const signedQty = (l: EditLine) => (qtyOf(l) ?? 0) * l.sign
   const lineMinor = (l: EditLine) => signedQty(l) * (priceOf(l) ?? 0)
 
@@ -179,6 +199,16 @@ export function SaleEditor({
   })
   const discountTooBig = subtotal > 0 && (parseMoney(discountStr) ?? 0) > subtotal
   const paidTooBig = !refund && (parseMoney(paidStr) ?? 0) > total
+  /*
+    Typed, but not a number — "2O" with a letter O, say.
+
+    Both of these fall back to 0 in the arithmetic above, and for the paid box
+    that silence is expensive: a mistyped amount would turn a ticket the client
+    paid in full into a debt on his carnet, and the only sign of it would be
+    the carnet line appearing. Worth a refusal, not a fallback.
+  */
+  const discountInvalid = discountStr.trim() !== '' && parseMoney(discountStr) === null
+  const paidInvalid = !refund && paidStr.trim() !== '' && parseMoney(paidStr) === null
 
   // --- line edits -------------------------------------------------------------
 
@@ -262,6 +292,10 @@ export function SaleEditor({
       setError(lineProblems.find(Boolean) ?? '')
       return
     }
+    if (discountInvalid || paidInvalid) {
+      setError(t('sales.amountInvalid'))
+      return
+    }
     if (discountTooBig) {
       setError(t('sales.discountTooBig'))
       return
@@ -312,7 +346,14 @@ export function SaleEditor({
     }
   }
 
-  const loading = customersLoading || productsLoading
+  /*
+    Only the client picker needs the customers list, and `customerGone` already
+    holds its tongue while it is loading. The products list is subscribed for
+    isLiveProduct's benefit, not the form's — disabling Save on it meant a
+    listener that was slow to warm (or that had given up) left the owner with a
+    dead button and no explanation.
+  */
+  const loading = customersLoading
 
   return (
     <Dialog.Root
@@ -463,7 +504,7 @@ export function SaleEditor({
 
                 {/* ---- money ------------------------------------------------ */}
                 <SimpleGrid columns={{ base: 1, sm: 3 }} gap={3}>
-                  <Field.Root invalid={discountTooBig}>
+                  <Field.Root invalid={discountTooBig || discountInvalid}>
                     <Field.Label>{`${t('pos.discount')} (${symbol})`}</Field.Label>
                     <Input
                       size="lg"
@@ -473,11 +514,13 @@ export function SaleEditor({
                       placeholder={moneyPlaceholder()}
                       disabled={subtotal <= 0}
                     />
-                    <Field.ErrorText>{t('sales.discountTooBig')}</Field.ErrorText>
+                    <Field.ErrorText>
+                      {discountInvalid ? t('sales.amountInvalid') : t('sales.discountTooBig')}
+                    </Field.ErrorText>
                   </Field.Root>
 
                   {!refund && (
-                    <Field.Root invalid={paidTooBig}>
+                    <Field.Root invalid={paidTooBig || paidInvalid}>
                       <Field.Label>{`${t('pos.paidAtCounter')} (${symbol})`}</Field.Label>
                       <Input
                         size="lg"
@@ -487,8 +530,10 @@ export function SaleEditor({
                         placeholder={moneyPlaceholder()}
                         fontWeight={toCredit ? 'bold' : undefined}
                       />
-                      <Field.ErrorText>{t('sales.paidTooBig')}</Field.ErrorText>
-                      {!paidTooBig && (
+                      <Field.ErrorText>
+                        {paidInvalid ? t('sales.amountInvalid') : t('sales.paidTooBig')}
+                      </Field.ErrorText>
+                      {!paidTooBig && !paidInvalid && (
                         <Field.HelperText>
                           <Button
                             size="xs"
@@ -597,7 +642,7 @@ export function SaleEditor({
                 variant="ghost"
                 colorPalette="red"
                 onClick={() => void doVoid()}
-                disabled={busy || loading}
+                disabled={busy}
               >
                 <Undo2 size={18} />
                 {t('sales.voidTicket')}
@@ -613,6 +658,7 @@ export function SaleEditor({
                   loading={busy}
                   loadingText={t('common.saving')}
                   disabled={loading}
+                  title={loading ? t('common.loading') : undefined}
                 >
                   {t('sales.saveChanges')}
                 </Button>
