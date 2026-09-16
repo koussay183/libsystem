@@ -509,13 +509,30 @@ export async function updateSale(
     opts.knownEntry !== undefined
       ? { entry: opts.knownEntry, confirmed: true }
       : await findSaleEntry(before.id)
-  if (found === null) throw new SaleLedgerUnreadableError()
-  // A line SHOULD exist and the only answer is an unconfirmed "none": refuse.
-  // See findSaleEntry for why acting on it would double the debt.
-  if (found.entry === null && !found.confirmed && before.onCredit) {
+
+  /*
+    WHEN NOT KNOWING IS ALLOWED.
+
+    A ticket that was paid in full and stays paid in full has no carnet line —
+    not now, not before — so there is nothing to reconcile and nothing that
+    could be got wrong by not knowing. Refusing those was over-caution that
+    cost the shop the whole feature on a bad line: most tickets are cash, and
+    a dead uplink made every one of them unmodifiable.
+
+    The refusal is kept for exactly the case that earns it: money is, or was,
+    on somebody's account. There a wrong guess writes a second line for the
+    same debt, and the client owes it twice with nothing in the data to say
+    which line is the echo.
+  */
+  const touchesCarnet = before.onCredit || unpaid > 0
+  if (found === null) {
+    if (touchesCarnet) throw new SaleLedgerUnreadableError()
+  } else if (found.entry === null && !found.confirmed && before.onCredit) {
+    // A line SHOULD exist and the only answer is an unconfirmed "none".
+    // See findSaleEntry for why acting on it would double the debt.
     throw new SaleLedgerUnreadableError()
   }
-  const old = found.entry
+  const old = found?.entry ?? null
 
   const oldAgg = aggregateLines(before.items)
   const newAgg = aggregateLines(edit.items)
@@ -630,11 +647,14 @@ export async function voidSale(
     opts.knownEntry !== undefined
       ? { entry: opts.knownEntry, confirmed: true }
       : await findSaleEntry(sale.id)
-  if (found === null) throw new SaleLedgerUnreadableError()
-  if (found.entry === null && !found.confirmed && sale.onCredit) {
+  // Same rule as updateSale: a ticket that never touched a carnet has no line
+  // to put back, so not being able to read the carnet costs nothing.
+  if (found === null) {
+    if (sale.onCredit) throw new SaleLedgerUnreadableError()
+  } else if (found.entry === null && !found.confirmed && sale.onCredit) {
     throw new SaleLedgerUnreadableError()
   }
-  const old = found.entry
+  const old = found?.entry ?? null
 
   const agg = aggregateLines(sale.items)
   if (agg.size + 4 > BATCH_LIMIT) throw new Error('voidSale: too many products for one batch')
