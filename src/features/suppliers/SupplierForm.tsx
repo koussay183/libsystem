@@ -13,19 +13,24 @@ import {
 } from '@chakra-ui/react'
 import { Truck, PencilLine } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
+import { useProducts } from '@/features/stock/useProducts'
 import { createSupplier, updateSupplier } from './useSuppliers'
-import type { Supplier } from '@/types/models'
+import type { Purchase, Supplier } from '@/types/models'
 
 export function SupplierForm({
   open,
   onClose,
   supplier,
+  purchases = [],
 }: {
   open: boolean
   onClose: () => void
   supplier?: Supplier | null
+  /** The live purchases, so a rename can carry them to the new name. */
+  purchases?: Purchase[]
 }) {
   const { t } = useTranslation()
+  const { products } = useProducts()
   const alive = useAlive()
   const nameRef = useRef<HTMLInputElement>(null)
 
@@ -58,7 +63,13 @@ export function SupplierForm({
         phone: phone.trim() || undefined,
         note: note.trim() || undefined,
       }
-      if (supplier) await updateSupplier(supplier.id, input)
+      if (supplier) {
+        await updateSupplier(supplier.id, input, {
+          from: supplier.name,
+          purchases,
+          products,
+        })
+      }
       else await createSupplier(input)
       if (alive.current) onClose()
     } finally {

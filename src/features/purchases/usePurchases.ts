@@ -13,6 +13,7 @@ import {
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
+import { isLiveProduct } from '@/features/stock/useProducts'
 import type { Purchase } from '@/types/models'
 
 const PURCHASES = 'purchases'
@@ -224,6 +225,11 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
   }
 
   for (const [productId, agg] of perProduct) {
+    // An article deleted (on the other machine, say) while this invoice was
+    // being typed cannot take an update, and one refused update refuses the
+    // whole batch — the invoice included. The invoice keeps the line; only the
+    // stock of an article that no longer exists is left alone.
+    if (isLiveProduct(productId) === false) continue
     batch.update(doc(db, shopPath(PRODUCTS), productId), {
       quantity: increment(agg.qty),
       // Only a real price refreshes the cost. A blank or zero cost field would
@@ -308,6 +314,11 @@ export async function removePurchase(purchase: Purchase) {
   for (let i = 0; i < entries.length; i += BATCH_LIMIT) {
     const batch = writeBatch(db)
     for (const [productId, agg] of entries.slice(i, i + BATCH_LIMIT)) {
+      // Same guard as voidSale: one article deleted since the delivery would
+      // get the whole reversal refused, while the invoice's own delete (a
+      // separate write) still went through — every other article on it then
+      // kept the stock and the bought cost of a delivery that no longer exists.
+      if (isLiveProduct(productId) === false) continue
       batch.update(doc(db, shopPath(PRODUCTS), productId), {
         quantity: increment(-agg.qty),
         boughtQty: increment(-agg.qty),

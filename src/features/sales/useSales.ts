@@ -11,9 +11,11 @@ import {
   getDocs,
   getDocFromCache,
   getDocsFromCache,
+  getCountFromServer,
   writeBatch,
   increment,
 } from 'firebase/firestore'
+import type { QueryConstraint } from 'firebase/firestore'
 import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
@@ -124,30 +126,6 @@ export function useDayStart(): number {
   return dayStart
 }
 
-/** Live list of sales, newest first. Capped so the till stays fast. */
-export function useSales(max = 200) {
-  const [sales, setSales] = useState<Sale[]>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    const q = query(collection(db, shopPath(SALES)), orderBy('date', 'desc'), limit(max))
-    return onSnapshot(
-      q,
-      (snap) => {
-        setSales(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Sale, 'id'>) })))
-        setLoading(false)
-      },
-      (err) => {
-        setError(err.message)
-        setLoading(false)
-      },
-    )
-  }, [max])
-
-  return { sales, loading, error }
-}
-
 /**
  * The tickets from a date onwards, newest first, with a hard ceiling.
  *
@@ -189,6 +167,112 @@ export function useSalesSince(since: number, cap: number) {
 
   return { sales, loading, error }
 }
+
+/** The tickets of a window, newest first. `to` is exclusive; null is an open end. */
+function rangeQuery(from: number | null, to: number | null, ...rest: QueryConstraint[]) {
+  const parts: QueryConstraint[] = []
+  if (from !== null) parts.push(where('date', '>=', from))
+  if (to !== null) parts.push(where('date', '<', to))
+  return query(collection(db, shopPath(SALES)), ...parts, orderBy('date', 'desc'), ...rest)
+}
+
+/**
+ * THE SALES HISTORY: every ticket in a window, newest first, `max` at a time.
+ *
+ * The Ventes tab used to subscribe to the newest 500 tickets and stop there,
+ * whatever period was picked. At the rentrée that is two or three days of
+ * tickets, so "Tous" and "Cette année" quietly meant "since Tuesday", and a
+ * client bringing back a three-week-old ticket could not be found at all.
+ *
+ * Now the window is a range on `date` — the field the query is ordered by, so
+ * no composite index is needed — and `max` only bounds how much of it is read
+ * at once. The list grows it as the owner pages further back; it never reads a
+ * year of history to show one afternoon.
+ *
+ * One live query, not a chain of page cursors: a corrected ticket, a new sale
+ * on the other till or a void all land in the list by themselves, and nothing
+ * can fall into the gap between two pages.
+ *
+ * `complete` is true once the window holds everything the range contains.
+ */
+export function useSalesHistory(from: number | null, to: number | null, max: number) {
+  const rangeKey = `${from ?? ''}|${to ?? ''}`
+  const [state, setState] = useState<{
+    rangeKey: string
+    max: number
+    sales: Sale[]
+    error: string | null
+  } | null>(null)
+
+  useEffect(() => {
+    const key = `${from ?? ''}|${to ?? ''}`
+    return onSnapshot(
+      rangeQuery(from, to, limit(max)),
+      (snap) => {
+        setState({
+          rangeKey: key,
+          max,
+          sales: snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Sale, 'id'>) })),
+          error: null,
+        })
+      },
+      (err) =>
+        setState((s) => ({
+          rangeKey: key,
+          max,
+          sales: s?.rangeKey === key ? s.sales : [],
+          error: err.message,
+        })),
+    )
+  }, [from, to, max])
+
+  // Another range's tickets are never shown while this one loads — they would
+  // read as the answer. A bigger window of the same range keeps what it has.
+  const current = state?.rangeKey === rangeKey ? state : null
+  const sales = current?.sales ?? []
+  return {
+    sales,
+    loading: current === null,
+    /** The window was widened and the wider answer has not arrived yet. */
+    loadingMore: current !== null && current.max < max,
+    complete: current !== null && current.max >= max && sales.length < max,
+    error: current?.error ?? null,
+  }
+}
+
+/**
+ * How many tickets a window holds on the server — "sur 2 340" — without
+ * reading them. A count costs one read per thousand tickets.
+ *
+ * Null while unknown, and for good when offline or slow: a count is a nicety,
+ * the list works from what it has loaded. `refresh` re-asks; the caller passes
+ * something that changes when a ticket arrives or leaves.
+ */
+export function useSalesCount(from: number | null, to: number | null, refresh: string) {
+  const rangeKey = `${from ?? ''}|${to ?? ''}`
+  const [state, setState] = useState<{ rangeKey: string; count: number | null } | null>(null)
+
+  useEffect(() => {
+    let alive = true
+    const key = `${from ?? ''}|${to ?? ''}`
+    void withDeadline(getCountFromServer(rangeQuery(from, to)), COUNT_DEADLINE_MS).then(
+      (snap) => {
+        if (!alive) return
+        // A failed re-count keeps the last good figure for this range.
+        setState((s) =>
+          snap ? { rangeKey: key, count: snap.data().count } : s?.rangeKey === key ? s : null,
+        )
+      },
+    )
+    return () => {
+      alive = false
+    }
+  }, [from, to, refresh])
+
+  return state?.rangeKey === rangeKey ? state.count : null
+}
+
+const COUNT_DEADLINE_MS = 6000
 
 /**
  * Only today's tickets. The home screen shows "sales so far today" and nothing
@@ -409,6 +493,34 @@ export class SaleLedgerUnreadableError extends Error {
   }
 }
 
+/** The ticket was voided (on the other machine, say) while it was being corrected. */
+export class SaleGoneError extends Error {
+  constructor() {
+    super('this ticket no longer exists')
+    this.name = 'SaleGoneError'
+  }
+}
+
+/**
+ * The ticket as the server holds it now — or `given` when that cannot be
+ * learnt in time.
+ *
+ * A correction is computed as (new − old) on every product counter, so "old"
+ * has to be the ticket as it really is. The carnet hands the editor a ticket
+ * read cache-first (useSale), and nothing keeps that copy current: if the
+ * other machine corrected the same ticket in between, from 2× an article to
+ * 1×, a correction made here from the stale 2× would write 2× back while the
+ * counters moved as if from 1× — the other correction silently undone and the
+ * stock off by one. Asked of the server under the same short deadline as the
+ * carnet line; offline, the copy in hand is the best there is and is used.
+ */
+async function freshSale(given: Sale): Promise<Sale> {
+  const snap = await withDeadline(getDoc(doc(db, shopPath(SALES), given.id)), READ_DEADLINE_MS)
+  if (!snap || snap.metadata.fromCache) return given
+  if (!snap.exists()) throw new SaleGoneError()
+  return { id: snap.id, ...(snap.data() as Omit<Sale, 'id'>) }
+}
+
 /** The ticket leaves money unpaid and the chosen client no longer exists. */
 export class CustomerMissingError extends Error {
   constructor() {
@@ -490,7 +602,7 @@ const BATCH_LIMIT = 400
  * be absent".
  */
 export async function updateSale(
-  before: Sale,
+  given: Sale,
   edit: SaleEdit,
   opts: { knownEntry?: CreditEntry | null } = {},
 ): Promise<void> {
@@ -505,10 +617,13 @@ export async function updateSale(
     throw new CustomerMissingError()
   }
 
-  const found =
+  // Both reads at once, so a dead line costs one deadline and not two.
+  const [before, found] = await Promise.all([
+    freshSale(given),
     opts.knownEntry !== undefined
       ? { entry: opts.knownEntry, confirmed: true }
-      : await findSaleEntry(before.id)
+      : findSaleEntry(given.id),
+  ])
 
   /*
     WHEN NOT KNOWING IS ALLOWED.
@@ -640,13 +755,17 @@ export async function updateSale(
  * knows what to say, not in the store.
  */
 export async function voidSale(
-  sale: Sale,
+  given: Sale,
   opts: { knownEntry?: CreditEntry | null } = {},
 ): Promise<void> {
-  const found =
+  // The ticket as it is now — voiding a stale copy would put back the stock of
+  // lines the other machine has already taken off it. See freshSale.
+  const [sale, found] = await Promise.all([
+    freshSale(given),
     opts.knownEntry !== undefined
       ? { entry: opts.knownEntry, confirmed: true }
-      : await findSaleEntry(sale.id)
+      : findSaleEntry(given.id),
+  ])
   // Same rule as updateSale: a ticket that never touched a carnet has no line
   // to put back, so not being able to read the carnet costs nothing.
   if (found === null) {

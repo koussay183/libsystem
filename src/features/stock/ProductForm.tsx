@@ -36,6 +36,7 @@ import {
 } from './pricing'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { composeName } from './naming'
+import { sameCode } from './barcode'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { Product, ProductInput } from '@/types/models'
@@ -83,7 +84,7 @@ export function ProductForm({
   const nameRef = useRef<HTMLInputElement>(null)
   const { categories } = useCategories()
   const { suppliers } = useSuppliers()
-  const { shop } = useShopSettings()
+  const { shop, loading: shopLoading } = useShopSettings()
 
   const [barcode, setBarcode] = useState('')
   const [name, setName] = useState('')
@@ -228,7 +229,10 @@ export function ProductForm({
         setOffered(hit.name)
       })
     }
-  }, [open, product, template, initialBarcode, initialName, seededName, quick, shop])
+    // `shopLoading`, not `shop`: the defaults are worth one more pass when the
+    // shop document first arrives, but any LATER snapshot — the other machine
+    // saving its settings — re-ran this and wiped everything already typed.
+  }, [open, product, template, initialBarcode, initialName, seededName, quick, shopLoading])
 
   const symbol = t(moneySymbolKey())
 
@@ -414,6 +418,14 @@ export function ProductForm({
       setPriceError(t('common.required'))
       return
     }
+    // A count that cannot be read is refused, not saved as zero: "12a" used to
+    // create the article out of stock, and the first sale took it negative.
+    const qty = parseQuantity(quantity)
+    const low = parseQuantity(threshold)
+    if ((!product && qty === null) || low === null) {
+      setSaveError(t('common.invalidNumber'))
+      return
+    }
 
     const input: ProductInput = {
       barcode: barcode.trim() || null,
@@ -428,8 +440,8 @@ export function ProductForm({
       costPrice: costMinor,
       margin: parsePercent(marginText) ?? undefined,
       salePrice: saleMinor,
-      quantity: parseQuantity(quantity) ?? 0,
-      lowStockThreshold: parseQuantity(threshold) ?? 0,
+      quantity: qty ?? 0,
+      lowStockThreshold: low,
     }
 
     setBusy(true)
@@ -438,7 +450,11 @@ export function ProductForm({
       // loud — it is usually a mistake — but it is not forbidden: two different
       // products really can carry the same printed code, and the till handles
       // it by asking which one. So the first save warns, the second goes ahead.
-      if (input.barcode && twin?.code !== input.barcode) {
+      // An unchanged code was already accepted when it was first saved: looking
+      // it up again warned on every save of an article sharing its code — but
+      // only when the twin happened to sort first, so it looked random.
+      const unchanged = !!product && sameCode(product.barcode, input.barcode)
+      if (input.barcode && !unchanged && twin?.code !== input.barcode) {
         const owner = await findProductByBarcode(input.barcode)
         if (!alive.current) return
         if (owner && owner.id !== product?.id) {
@@ -555,7 +571,10 @@ export function ProductForm({
                             onClick={() => {
                               setName(recognised.name)
                               if (recognised.unit) setUnit(recognised.unit)
-                              if (recognised.category) setCategory(recognised.category)
+                              // Through applyCategory, so the category's own
+                              // margin prices the article — as if he had picked
+                              // it from the list himself.
+                              if (recognised.category) applyCategory(recognised.category)
                               // Dismissed on use: the panel asked a question
                               // and it has been answered.
                               setRecognised(null)

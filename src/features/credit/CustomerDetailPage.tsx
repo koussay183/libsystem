@@ -43,6 +43,8 @@ import { NewSaleInvoice } from '@/features/sales/NewSaleInvoice'
 import type { CreditEntry, Sale } from '@/types/models'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import {
   useCustomer,
@@ -272,6 +274,10 @@ export function CustomerDetailPage() {
     () => needsReminder(entries, customer?.balance ?? 0),
     [entries, customer],
   )
+  // The screen shows a page of the carnet at a time, newest first; the running
+  // balance is still worked out over every line, and the printout keeps them all.
+  const ledgerPage = usePaged(rows, id ?? '')
+  const ledgerTop = useRef<HTMLDivElement>(null)
 
   if (loading) {
     return (
@@ -307,9 +313,15 @@ export function CustomerDetailPage() {
         // A refused delete is not a failure — it is the app protecting a debt.
         setDeleteError(
           err instanceof OutstandingBalanceError
-            ? t('credit.cannotDeleteDebtor', {
-                amount: formatMoney(err.balance, { symbol }),
-              })
+            ? err.balance < 0
+              ? // He has an advance: the shop owes HIM, and "il doit encore
+                // -5,000 DT" said the opposite of what is true.
+                t('credit.cannotDeleteCreditor', {
+                  amount: formatMoney(-err.balance, { symbol }),
+                })
+              : t('credit.cannotDeleteDebtor', {
+                  amount: formatMoney(err.balance, { symbol }),
+                })
             : // Not an error message but an instruction, and the only one in the
               // app that asks the owner to wait for a line: his ledger lines
               // could not be read, and deleting him without them would leave
@@ -503,7 +515,7 @@ export function CustomerDetailPage() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : (
-        <Card.Root>
+        <Card.Root ref={ledgerTop}>
           <Card.Body p={0}>
             <Box overflowX="auto">
               <Table.Root size="lg">
@@ -524,7 +536,7 @@ export function CustomerDetailPage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {rows.map(({ entry, balance }) => {
+                  {ledgerPage.pageItems.map(({ entry, balance }) => {
                     const isDebit = entry.type === 'debit'
                     const openable = !!entry.saleId
                     const isOpen = openId === entry.id
@@ -659,6 +671,17 @@ export function CustomerDetailPage() {
           </Card.Body>
         </Card.Root>
       )}
+      {!ledgerLoading && (
+        <Pager
+          page={ledgerPage.page}
+          pageCount={ledgerPage.pageCount}
+          start={ledgerPage.start}
+          end={ledgerPage.end}
+          total={ledgerPage.total}
+          onChange={ledgerPage.setPage}
+          anchorRef={ledgerTop}
+        />
+      )}
 
       {entryError && (
         <Alert.Root status="error" mt={3}>
@@ -748,7 +771,11 @@ export function CustomerDetailPage() {
           customerId={customer.id}
           type={editingEntry.type}
           balance={customer.balance}
-          entry={editingEntry}
+          // The live line, for the same reason as knownEntry above:
+          // updateCreditEntry moves the balance by the difference from
+          // `entry.amount`, and a change made to this line on the other machine
+          // since the pencil was pressed would otherwise be counted twice.
+          entry={entries.find((e) => e.id === editingEntry.id) ?? editingEntry}
         />
       )}
 

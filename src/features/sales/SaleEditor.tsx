@@ -39,6 +39,7 @@ import {
   paymentModeOf,
   SaleLedgerUnreadableError,
   CustomerMissingError,
+  SaleGoneError,
 } from './useSales'
 import type { SaleEdit } from './useSales'
 import type { CreditEntry, Product, Sale, SaleItem } from '@/types/models'
@@ -137,7 +138,12 @@ export function SaleEditor({
   const [discountStr, setDiscountStr] = useState(() =>
     (sale.discount ?? 0) > 0 ? toInput(sale.discount ?? 0) : '',
   )
-  const [paidStr, setPaidStr] = useState(() => (toCredit ? '' : toInput(sale.paid)))
+  // A refund's paid figure is negative (money handed back). It is never shown
+  // while the ticket stays a refund, but turned into a sale the box would open
+  // on "-5" and refuse the save as unreadable until somebody cleared it.
+  const [paidStr, setPaidStr] = useState(() =>
+    toCredit || sale.paid <= 0 ? '' : toInput(sale.paid),
+  )
   const [customerId, setCustomerId] = useState(sale.customerId ?? '')
   const [dateStr, setDateStr] = useState(() => dayjs(sale.date).format('YYYY-MM-DD'))
   const [error, setError] = useState('')
@@ -282,6 +288,7 @@ export function SaleEditor({
   const failWith = (e: unknown) => {
     if (e instanceof SaleLedgerUnreadableError) return t('sales.ledgerUnreadable')
     if (e instanceof CustomerMissingError) return t('sales.customerGone')
+    if (e instanceof SaleGoneError) return t('sales.saleGone')
     return e instanceof Error ? e.message : t('pos.saveFailed')
   }
 

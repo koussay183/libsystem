@@ -124,11 +124,22 @@ export function parseMoney(input: string | number | null | undefined): Minor | n
   const trimmed = input.trim()
   if (trimmed === '') return null
 
-  const cleaned =
-    mode === 'millime'
-      ? // Millimes are whole; a comma or a space can only be grouping.
-        trimmed.replace(/[\s,\u00a0\u202f]/g, '')
-      : trimmed.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')
+  if (mode === 'millime') {
+    /*
+      Millimes are whole, so a separator can only be thousands grouping \u2014 and
+      only where it actually groups thousands. "10.500" and "10,500" are both
+      10 500 millimes, which is also what either reading of them means at a
+      Tunisian counter. What is refused is a separator that cannot be grouping:
+      "10.5" used to be read as a decimal and rounded to 11 millimes, and
+      "10,5" had its comma stripped into 105 \u2014 both a thousand times too
+      cheap, saved without a word. Refusing makes the form say "illisible".
+    */
+    const spaced = trimmed.replace(/[\s\u00a0\u202f]+/g, ' ')
+    if (!/^\d+$/.test(spaced) && !/^\d{1,3}([ ,.]\d{3})+$/.test(spaced)) return null
+    return toMinor(Number(spaced.replace(/[ ,.]/g, '')))
+  }
+
+  const cleaned = trimmed.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')
 
   if (cleaned === '') return null
   const value = Number(cleaned)

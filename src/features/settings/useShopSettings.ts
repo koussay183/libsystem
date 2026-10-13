@@ -75,6 +75,51 @@ export function saveShopSettings(settings: ShopSettings): void {
   patchShopSettings(settings)
 }
 
+/** The fields the Réglages draft owns — and the only ones its Save may write. */
+const FORM_FIELDS = [
+  'name',
+  'address',
+  'phone',
+  'taxId',
+  'footer',
+  'defaultMargin',
+  'defaultVat',
+] as const satisfies readonly (keyof ShopSettings)[]
+
+/**
+ * Saves the Réglages draft: the shop's identity and its pricing defaults, and
+ * nothing else on the document.
+ *
+ * The page used to hand its whole draft to saveShopSettings. The draft stops
+ * following the live document at the first keystroke, so it carries a frozen
+ * copy of everything else too — the services list, the hidden menu rows, the
+ * money mode. A service added in the Services tab after the owner started
+ * typing his address was wiped by the address's Save.
+ *
+ * And a merge can only add. A margin the owner CLEARED came through as an
+ * absent key (or `undefined`, which the Firestore settings drop), so the old
+ * value stayed on the server and the next snapshot put it straight back in the
+ * field. A cleared value is therefore written as an explicit deleteField(),
+ * and a category margin is deleted only when it was in `baseline` — the
+ * document as the draft first saw it — so a margin another machine added in
+ * the meantime is not mistaken for one the owner removed.
+ */
+export function saveShopForm(form: ShopSettings, baseline: ShopSettings): void {
+  const patch: Record<string, unknown> = { updatedAt: Date.now() }
+  for (const key of FORM_FIELDS) {
+    const value = form[key]
+    patch[key] = value === undefined ? deleteField() : value
+  }
+
+  const margins: Record<string, unknown> = { ...(form.categoryMargins ?? {}) }
+  for (const name of Object.keys(baseline.categoryMargins ?? {})) {
+    if (!(name in margins)) margins[name] = deleteField()
+  }
+  if (Object.keys(margins).length > 0) patch.categoryMargins = margins
+
+  void track(setDoc(REF(), patch, { merge: true })).catch(() => {})
+}
+
 /**
  * Writes only the fields named, leaving the rest of the document alone.
  *

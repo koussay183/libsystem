@@ -90,7 +90,13 @@ export function CreditEntryForm({
   const [dateStr, setDateStr] = useState('')
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
-  const owed = Math.max(0, balance)
+  /**
+   * What he owes as far as THIS line is concerned. Correcting a payment, the
+   * balance already has that payment taken off, so measured against it a
+   * 50 DT payment that exactly settled a 50 DT debt read as a 50 DT advance —
+   * and fixing nothing but its date asked for an overpayment confirmation.
+   */
+  const owed = Math.max(0, balance + (entry?.type === 'payment' ? entry.amount : 0))
 
   useEffect(() => {
     if (!open) return

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -20,6 +20,9 @@ import {
 } from '@chakra-ui/react'
 import { Plus, Search, Truck, Pencil, Trash2, Wallet } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
+import { fold } from '@/lib/textIndex'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useSuppliers, removeSupplier } from './useSuppliers'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { SupplierForm } from './SupplierForm'
@@ -38,15 +41,16 @@ export function SuppliersPage() {
   const totalFor = (name: string) =>
     purchases.filter((p) => p.supplier === name).reduce((s, p) => s + p.total, 0)
   const totalAll = purchases.reduce((s, p) => s + p.total, 0)
+  const listTop = useRef<HTMLDivElement>(null)
 
-  const q = search.trim().toLowerCase()
+  const q = fold(search)
   const filtered =
     q === ''
       ? suppliers
       : suppliers.filter(
-          (s) =>
-            s.name.toLowerCase().includes(q) || (s.phone ?? '').toLowerCase().includes(q),
+          (s) => fold(s.name).includes(q) || fold(s.phone ?? '').includes(q),
         )
+  const paged = usePaged(filtered, q)
 
   const openAdd = () => {
     setEditing(null)
@@ -106,7 +110,7 @@ export function SuppliersPage() {
       </SimpleGrid>
 
       {/* ---------------- Search ---------------- */}
-      <Box mb={4}>
+      <Box mb={4} ref={listTop}>
         <form onSubmit={onSearchSubmit}>
           <InputGroup startElement={<Search size={22} />}>
             <Input
@@ -153,7 +157,7 @@ export function SuppliersPage() {
         </Card.Root>
       ) : (
         <Stack gap={3}>
-          {filtered.map((s) => (
+          {paged.pageItems.map((s) => (
             <Card.Root key={s.id}>
               <Card.Body>
                 <Flex align="center" gap={3}>
@@ -203,8 +207,25 @@ export function SuppliersPage() {
         </Stack>
       )}
 
+      {!loading && !error && (
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={paged.setPage}
+          anchorRef={listTop}
+        />
+      )}
+
       {formOpen && (
-        <SupplierForm open onClose={() => setFormOpen(false)} supplier={editing} />
+        <SupplierForm
+          open
+          onClose={() => setFormOpen(false)}
+          supplier={editing}
+          purchases={purchases}
+        />
       )}
     </Box>
   )

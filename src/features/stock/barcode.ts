@@ -66,13 +66,28 @@ export function generateInStoreCode(taken: Iterable<unknown>): string {
     if (key !== '') used.add(key)
   }
   for (let attempt = 0; attempt < 50; attempt += 1) {
-    let code = '2'
-    for (let i = 0; i < 12; i += 1) code += Math.floor(Math.random() * 10)
+    let body = '2'
+    for (let i = 0; i < 11; i += 1) body += Math.floor(Math.random() * 10)
+    const code = withEanCheckDigit(body)
     if (!used.has(code)) return code
   }
   // 50 collisions against a shop's worth of codes is not a real outcome; the
   // fallback simply never returns nothing.
-  return `2${Date.now()}`.slice(0, 13)
+  return withEanCheckDigit(`2${Date.now()}`.slice(0, 12))
+}
+
+/**
+ * Twelve digits and the EAN-13 check digit that completes them.
+ *
+ * The thirteenth digit used to be random like the rest, so nine codes in ten
+ * were not valid EAN-13. A label tool printing them as EAN-13 either refused
+ * the code or quietly "corrected" its last digit — and the label then scanned
+ * as a code no pack in the shop carried.
+ */
+function withEanCheckDigit(twelve: string): string {
+  let sum = 0
+  for (let i = 0; i < 12; i += 1) sum += Number(twelve[i]) * (i % 2 === 0 ? 1 : 3)
+  return `${twelve}${(10 - (sum % 10)) % 10}`
 }
 
 /**

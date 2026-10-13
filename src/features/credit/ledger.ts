@@ -155,8 +155,27 @@ export function debtAgeDays(entries: CreditEntry[], now?: number): number | null
 }
 
 /**
- * Worth a reminder: he owes money and nothing has come in for REMINDER_DAYS.
- * If he has never paid a millime, the debt's own age is the clock.
+ * Since when the current debt has gone unanswered: his last payment, or the
+ * start of the debt if that is later.
+ *
+ * "Last payment, else start of debt" was not enough. A client who settled his
+ * account in full in March and took 5 DT on credit in October had a last
+ * payment seven months old, so he was flagged "à relancer" the day after his
+ * first new purchase — while a client who had never paid anything was given
+ * the full sixty days. A payment that closed an earlier debt says nothing
+ * about this one.
+ */
+export function reminderSince(entries: CreditEntry[]): number | null {
+  const paid = lastPaymentAt(entries)
+  const started = debtStartedAt(entries)
+  if (paid === null) return started
+  if (started === null) return paid
+  return Math.max(paid, started)
+}
+
+/**
+ * Worth a reminder: he owes money and nothing has come in for REMINDER_DAYS
+ * since the current debt began. See reminderSince for the clock.
  */
 export function needsReminder(
   entries: CreditEntry[],
@@ -164,7 +183,7 @@ export function needsReminder(
   now?: number,
 ): boolean {
   if (balance <= 0) return false
-  const reference = lastPaymentAt(entries) ?? debtStartedAt(entries)
+  const reference = reminderSince(entries)
   if (reference === null) return false
   return daysSince(reference, now) >= REMINDER_DAYS
 }

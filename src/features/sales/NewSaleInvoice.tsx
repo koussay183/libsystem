@@ -135,6 +135,17 @@ export function NewSaleInvoice({
       setError(t('sales.emptyCartError'))
       return
     }
+    // Text that is not an amount is refused, never read as zero — the rule
+    // SaleEditor already follows. "5O" (a letter O) in the paid box used to
+    // put the whole invoice on the client's carnet, and a mistyped price made
+    // the line a gift.
+    if (
+      lines.some((l) => l.priceStr.trim() !== '' && parseMoney(l.priceStr) === null) ||
+      (paidValue.trim() !== '' && parseMoney(paidValue) === null)
+    ) {
+      setError(t('sales.amountInvalid'))
+      return
+    }
     // recordSale refuses an unpaid balance with nobody attached to it.
     if (remaining > 0 && !customerId) {
       setError(t('sales.needCustomer'))

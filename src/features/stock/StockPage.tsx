@@ -1,4 +1,4 @@
-import { Fragment, useDeferredValue, useEffect, useMemo, useState } from 'react'
+import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -11,6 +11,7 @@ import {
   IconButton,
   Input,
   InputGroup,
+  NativeSelect,
   Badge,
   Card,
   SegmentGroup,
@@ -39,8 +40,11 @@ import {
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { buildQuery, matchesQuery, pruneFoldCache } from '@/lib/textIndex'
 import { useAlive } from '@/lib/useAlive'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useProducts, removeProduct } from './useProducts'
 import { groupByFamily } from './naming'
+import type { Family } from './naming'
 import { codeOf, loose, sharedCodes, looksLikeCode } from './barcode'
 import { ProductForm } from './ProductForm'
 import { VariantsDialog } from './VariantsDialog'
@@ -56,16 +60,25 @@ const TONE_PALETTE = {
 } as const satisfies Record<StatusTone, string>
 
 type View = 'grouped' | 'flat'
+type StockState = 'all' | 'low' | 'out' | 'in'
+type SortKey = 'name' | 'qtyAsc' | 'qtyDesc' | 'priceDesc' | 'recent'
+
+/** The category filter's value for articles filed under no category. */
+const NO_CATEGORY = '\u0000none'
 
 /**
- * Rows put in the DOM at once, and how many more a click adds.
+ * Rows on one page of the stock.
  *
- * A screenful is what gets read; everything past it is weight the browser
- * carries on every keystroke. The search box is how an article is found in a
- * stock of thousands — not scrolling.
+ * Twice the app's usual page: the stock is the list that is scanned by eye
+ * most, and a page is still only a screenful or two. The search box remains
+ * how an article is found in a stock of thousands — the pages are for walking
+ * through a category or the low-stock list, which used to mean pressing
+ * "Afficher plus" until the browser groaned.
  */
-const ROW_LIMIT = 60
-const ROW_STEP = 200
+const STOCK_PAGE = 50
+
+/** A row at the top level of the grouped view: a whole family, or one article. */
+type Entry = { family: Family; product?: undefined } | { family?: undefined; product: Product }
 
 export function StockPage() {
   const { t } = useTranslation()
@@ -74,6 +87,10 @@ export function StockPage() {
 
   const [search, setSearch] = useState('')
   const [view, setView] = useState<View>('grouped')
+  const [category, setCategory] = useState('')
+  const [stockState, setStockState] = useState<StockState>('all')
+  const [sort, setSort] = useState<SortKey>('name')
+  const listTop = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<string[]>([])
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState<Product | null>(null)
@@ -113,54 +130,89 @@ export function StockPage() {
    */
   const query = useMemo(() => buildQuery(q), [q])
 
-  const filtered = useMemo(
-    () =>
+  /** Same predicate as the "stock bas" tile, so the filter and the count agree. */
+  const isLow = (p: Product) => p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold
+
+  const filtered = useMemo(() => {
+    let list =
       query.tokens.length === 0
         ? products
         // Nothing is lowercased or re-folded here — every article's searchable
         // text was folded once, when it last changed. Nothing is fetched
         // either: the stock is already in memory, so a search costs no reads.
-        : products.filter((p) => matchesQuery(p, query)),
-    [products, query],
-  )
-
-  /**
-   * How many rows are actually put in the DOM.
-   *
-   * A shop with three thousand articles was rendering three thousand table
-   * rows — tens of thousands of nodes — and reconciling all of them on every
-   * keystroke. Nobody reads past the first screen anyway: the way to find an
-   * article is the search box above.
-   */
-  const [limit, setLimit] = useState(ROW_LIMIT)
-  useEffect(() => setLimit(ROW_LIMIT), [q, view])
-
-  const shown = useMemo(() => filtered.slice(0, limit), [filtered, limit])
-
-  /**
-   * Grouped from the WHOLE result, then cut by whole families.
-   *
-   * Grouping the already-cut list instead would show a family its truncated
-   * contents and then count and price them — "3 variantes, 2,000 à 3,500" for
-   * a family of eight. A row that is missing is obvious; a row that quietly
-   * states a wrong number is not.
-   */
-  const grouped = useMemo(() => {
-    const { families: all, loners: singles } = groupByFamily(filtered)
-    let budget = limit
-    const families = []
-    for (const group of all) {
-      if (budget <= 0) break
-      families.push(group)
-      budget -= group.items.length + 1
+        : products.filter((p) => matchesQuery(p, query))
+    if (category !== '') {
+      list = list.filter((p) =>
+        category === NO_CATEGORY ? !p.category : p.category === category,
+      )
     }
-    const loners = budget > 0 ? singles.slice(0, budget) : []
-    const total = all.length + singles.length
-    return { families, loners, cut: families.length + loners.length < total }
-  }, [filtered, limit])
+    if (stockState === 'low') list = list.filter(isLow)
+    else if (stockState === 'out') list = list.filter((p) => p.quantity <= 0)
+    else if (stockState === 'in') list = list.filter((p) => p.quantity > 0)
 
-  const { families, loners } = grouped
-  const capped = view === 'flat' ? filtered.length > limit : grouped.cut
+    // 'name' keeps the order the collection arrives in, which is by name.
+    if (sort === 'name') return list
+    const byName = (a: Product, b: Product) => a.name.localeCompare(b.name)
+    const cmp: Record<Exclude<SortKey, 'name'>, (a: Product, b: Product) => number> = {
+      qtyAsc: (a, b) => a.quantity - b.quantity || byName(a, b),
+      qtyDesc: (a, b) => b.quantity - a.quantity || byName(a, b),
+      priceDesc: (a, b) => b.salePrice - a.salePrice || byName(a, b),
+      recent: (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || byName(a, b),
+    }
+    return [...list].sort(cmp[sort])
+  }, [products, query, category, stockState, sort])
+
+  /**
+   * The grouped view's top-level rows, built from the WHOLE result and then
+   * paged by whole families.
+   *
+   * Grouping a page instead would show a family its truncated contents and
+   * then count and price them — "3 variantes, 2,000 à 3,500" for a family of
+   * eight. A row that is missing is obvious; a row that quietly states a wrong
+   * number is not.
+   *
+   * By name, families come first as they always have. Sorted any other way,
+   * each family takes the place of its first article in the sorted list — so
+   * a family with one variant nearly out of stock rises to the top with it.
+   */
+  const entries = useMemo<Entry[]>(() => {
+    const { families, loners } = groupByFamily(filtered)
+    if (sort === 'name') {
+      return [
+        ...families.map((family) => ({ family })),
+        ...loners.map((product) => ({ product })),
+      ]
+    }
+    const byName = new Map(families.map((f) => [f.family, f]))
+    const placed = new Set<string>()
+    const out: Entry[] = []
+    for (const p of filtered) {
+      const family = byName.get((p.family ?? '').trim())
+      if (!family) out.push({ product: p })
+      else if (!placed.has(family.family)) {
+        placed.add(family.family)
+        out.push({ family })
+      }
+    }
+    return out
+  }, [filtered, sort])
+
+  const pageKey = `${q}|${view}|${category}|${stockState}|${sort}`
+  const flatPage = usePaged(filtered, pageKey, { pageSize: STOCK_PAGE })
+  const groupPage = usePaged(entries, pageKey, { pageSize: STOCK_PAGE })
+  const paged = view === 'flat' ? flatPage : groupPage
+
+  /** Every category an article is filed under, for the filter. */
+  const categoryNames = useMemo(() => {
+    const names = new Set<string>()
+    let none = false
+    for (const p of products) {
+      if (p.category) names.add(p.category)
+      else none = true
+    }
+    return { names: [...names].sort((a, b) => a.localeCompare(b)), none }
+  }, [products])
+  const narrowed = category !== '' || stockState !== 'all'
 
   // Counted exactly the way the per-row badge decides, so the tile and the
   // rows it summarises can never disagree. Without the threshold check every
@@ -171,6 +223,11 @@ export function StockPage() {
         .length,
     [products],
   )
+  // Pressing the tile shows exactly the articles it counted.
+  const showLow = () => {
+    setStockState('low')
+    setSearch('')
+  }
 
   /** Codes carried by more than one article, so the pairs can be marked. */
   const shared = useMemo(() => sharedCodes(products), [products])
@@ -410,7 +467,11 @@ export function StockPage() {
           </Card.Body>
         </Card.Root>
 
-        <Card.Root>
+        <Card.Root
+          cursor={lowCount > 0 ? 'pointer' : undefined}
+          _hover={lowCount > 0 ? { borderColor: 'orange.solid' } : undefined}
+          onClick={lowCount > 0 ? showLow : undefined}
+        >
           <Card.Body>
             <Flex align="center" gap={3}>
               <Box color={lowCount > 0 ? 'orange.solid' : 'fg.muted'}>
@@ -480,6 +541,67 @@ export function StockPage() {
         </SegmentGroup.Root>
       </Flex>
 
+      {/* ---------------- Filters ---------------- */}
+      <Flex gap={3} mb={4} wrap="wrap" align="center" ref={listTop}>
+        <NativeSelect.Root size="lg" flex="1" minW="12rem">
+          <NativeSelect.Field
+            value={category}
+            onChange={(e) => setCategory(e.currentTarget.value)}
+            aria-label={t('filters.category')}
+          >
+            <option value="">{t('filters.categoryAll')}</option>
+            {categoryNames.names.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+            {categoryNames.none && (
+              <option value={NO_CATEGORY}>{t('filters.categoryNone')}</option>
+            )}
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+        <NativeSelect.Root size="lg" flex="1" minW="11rem">
+          <NativeSelect.Field
+            value={stockState}
+            onChange={(e) => setStockState(e.currentTarget.value as StockState)}
+            aria-label={t('filters.status')}
+          >
+            <option value="all">{t('filters.statusAll')}</option>
+            <option value="low">{t('filters.statusLow')}</option>
+            <option value="out">{t('filters.statusOut')}</option>
+            <option value="in">{t('filters.statusIn')}</option>
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+        <NativeSelect.Root size="lg" flex="1" minW="13rem">
+          <NativeSelect.Field
+            value={sort}
+            onChange={(e) => setSort(e.currentTarget.value as SortKey)}
+            aria-label={t('filters.sort')}
+          >
+            <option value="name">{t('filters.sortName')}</option>
+            <option value="qtyAsc">{t('filters.sortQtyAsc')}</option>
+            <option value="qtyDesc">{t('filters.sortQtyDesc')}</option>
+            <option value="priceDesc">{t('filters.sortPriceDesc')}</option>
+            <option value="recent">{t('filters.sortRecent')}</option>
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
+        {narrowed && (
+          <Button
+            size="lg"
+            variant="ghost"
+            onClick={() => {
+              setCategory('')
+              setStockState('all')
+            }}
+          >
+            {t('filters.clear')}
+          </Button>
+        )}
+      </Flex>
+
       {/* ---------------- States ---------------- */}
       {loading ? (
         <Flex justify="center" align="center" py={16}>
@@ -517,6 +639,14 @@ export function StockPage() {
             </Flex>
           </EmptyState.Content>
         </EmptyState.Root>
+      ) : filtered.length === 0 && narrowed ? (
+        // Nothing in this category / state — not a reason to offer creating
+        // an article named after the search.
+        <Card.Root>
+          <Card.Body>
+            <Text color="fg.muted">{t('stock.noResults')}</Text>
+          </Card.Body>
+        </Card.Root>
       ) : filtered.length === 0 ? (
         /* A scanned code pre-fills the barcode; typed words pre-fill the name.
            Putting "cahier bleu" in the barcode field poisons the till index. */
@@ -544,38 +674,6 @@ export function StockPage() {
       ) : (
         <Card.Root>
           <Card.Body p={0}>
-            {/* A truncated list that does not say so reads as "my article is
-                not in the stock". */}
-            {capped && (
-              <Flex
-                align="center"
-                gap={3}
-                px={4}
-                py={3}
-                wrap="wrap"
-                borderBottomWidth="1px"
-                borderColor="border"
-                bg="bg.subtle"
-              >
-                <Text color="fg.muted">
-                  {t('stock.showingSome', {
-                    shown:
-                      view === 'flat'
-                        ? shown.length
-                        : families.reduce((n, g) => n + g.items.length, 0) + loners.length,
-                    total: filtered.length,
-                  })}
-                </Text>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  ms="auto"
-                  onClick={() => setLimit((n) => n + ROW_STEP)}
-                >
-                  {t('stock.showMore')}
-                </Button>
-              </Flex>
-            )}
             {/* Dimmed for the instant the list is behind the box, so a
                 stale table is never mistaken for the answer. */}
             <Box overflowX="auto" opacity={behind ? 0.55 : 1} transition="opacity 0.12s">
@@ -602,9 +700,10 @@ export function StockPage() {
                 </Table.Header>
                 <Table.Body>
                   {view === 'flat'
-                    ? shown.map((p) => productRow(p, false))
-                    : [
-                        ...families.map((group) => {
+                    ? flatPage.pageItems.map((p) => productRow(p, false))
+                    : groupPage.pageItems.map((entry) => {
+                        if (entry.product) return productRow(entry.product, false)
+                        const group = entry.family
                           // While searching, every family is open: the match is
                           // usually a variant, and a collapsed family showed
                           // nothing but the family name — which is exactly how
@@ -675,14 +774,24 @@ export function StockPage() {
                               {isOpen && group.items.map((p) => productRow(p, true))}
                             </Fragment>
                           )
-                        }),
-                        ...loners.map((p) => productRow(p, false)),
-                      ]}
+                      })}
                 </Table.Body>
               </Table.Root>
             </Box>
           </Card.Body>
         </Card.Root>
+      )}
+
+      {!loading && !error && (
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={paged.setPage}
+          anchorRef={listTop}
+        />
       )}
 
       {formOpen && (

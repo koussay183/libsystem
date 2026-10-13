@@ -174,10 +174,14 @@ export function CatalogPage() {
     setBulkBusy(true)
     let n = 0
     try {
-      // The category has to exist locally for the margin rules and the filters to
-      // find these books later; ensure it once rather than per book.
-      const cat = pending[0]?.category ?? 'Manuels scolaires'
-      if (cat !== '' && !categories.some((c) => c.name === cat)) {
+      // Each book keeps its own catalogue category — they were all filed under
+      // the first one's, so a parascolaire title picked alongside the manuels
+      // landed in "Manuels scolaires". Every category has to exist locally for
+      // the margin rules and the filters to find these books later; each is
+      // ensured once rather than per book.
+      const catOf = (b: CatalogItem) => b.category ?? 'Manuels scolaires'
+      for (const cat of new Set(pending.map(catOf))) {
+        if (cat === '' || categories.some((c) => c.name === cat)) continue
         try {
           createCategory(cat)
         } catch {
@@ -185,6 +189,7 @@ export function CatalogPage() {
         }
       }
       for (const b of pending) {
+        const cat = catOf(b)
         const quantity = parseQuantity(qty[b.id] ?? '') ?? 0
         if (quantity <= 0) continue
         const sale = b.officialPrice ?? 0

@@ -23,6 +23,7 @@ import { useAlive } from '@/lib/useAlive'
 import { parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { createProducts, findProductsByBarcodes } from './useProducts'
 import { composeName } from './naming'
+import { codeOf, loose } from './barcode'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { ProductInput } from '@/types/models'
@@ -133,6 +134,11 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
   const patchRow = (key: string, patch: Partial<VariantRow>) => {
     setRows((current) => current.map((r) => (r.key === key ? { ...r, ...patch } : r)))
     setSaveError('')
+    // The owner accepted ONE shared code, not every code he types afterwards.
+    // Left set, the warning switched both duplicate checks off for the rest of
+    // the dialog, and a second clash — with an article already in stock — went
+    // through without a word.
+    if (patch.barcode !== undefined) setSharedWarning('')
   }
 
   const addRow = () => {
@@ -224,7 +230,9 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     // let the second click through.
     const seen = new Map<string, string>()
     for (const row of filledRows) {
-      const code = row.barcode.trim()
+      // Compared the way the till matches them: 978-2-07-036822-8 on one row
+      // and 9782070368228 on the next are the same book.
+      const code = loose(codeOf(row.barcode))
       if (code === '') continue
       const other = seen.get(code)
       if (other && !sharedOk) {
@@ -234,9 +242,28 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
       seen.set(code, composeName(familyName, row.variant))
     }
 
+    /*
+      Every number is read strictly, and one that cannot be read stops the save.
+      They used to fall back without a word: "1 000" in a row's quantity went
+      through Number() and came out 0, "2,5O" in a row's price quietly became the
+      shared price, and an unreadable shared field became 0.
+    */
+    const unreadable = (text: string, parse: (s: string) => number | null) =>
+      text.trim() !== '' && parse(text) === null
+    if (
+      [costPrice, salePrice].some((v) => unreadable(v, parseMoney)) ||
+      [quantity, threshold].some((v) => unreadable(v, parseQuantity)) ||
+      filledRows.some(
+        (r) => unreadable(r.salePrice, parseMoney) || unreadable(r.quantity, parseQuantity),
+      )
+    ) {
+      setSaveError(t('common.invalidNumber'))
+      return
+    }
+
     const inputs: ProductInput[] = filledRows.map((row) => {
       const rowSale = row.salePrice.trim() === '' ? null : parseMoney(row.salePrice)
-      const rowQty = row.quantity.trim() === '' ? null : Number(row.quantity)
+      const rowQty = row.quantity.trim() === '' ? null : parseQuantity(row.quantity)
       return {
         barcode: row.barcode.trim() || null,
         name: composeName(familyName, row.variant),
@@ -247,10 +274,18 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
         supplier: supplier.trim() || undefined,
         costPrice: sharedCost,
         salePrice: rowSale ?? sharedSale,
-        quantity: rowQty === null ? sharedQty : Math.max(0, Math.trunc(rowQty || 0)),
+        quantity: rowQty ?? sharedQty,
         lowStockThreshold: sharedThreshold,
       }
     })
+
+    // The rule ProductForm applies to every new article: one the till cannot
+    // price rings up 0,000 DT. A family left without a price did exactly that,
+    // once per variant.
+    if (inputs.some((i) => i.salePrice <= 0)) {
+      setSaveError(t('stock.priceRequiredVariants'))
+      return
+    }
 
     setBusy(true)
     try {

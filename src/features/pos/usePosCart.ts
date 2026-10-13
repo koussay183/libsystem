@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Product } from '@/types/models'
 import { currentShopId } from '@/lib/tenant'
 
@@ -357,6 +357,9 @@ export function usePosCart() {
   /** Percent off the whole ticket, 0-100. */
   const [discount, setDiscountState] = useState(restored.discountPercent)
   const [parked, setParked] = useState<ParkedSession[]>(loadParked)
+  /** What is on the counter right now, for resume() to swap out. */
+  const counter = useRef({ lines, discount, parked })
+  counter.current = { lines, discount, parked }
 
   useEffect(() => {
     const key = parkedKey()
@@ -647,15 +650,36 @@ export function usePosCart() {
     })
   }, [])
 
-  const resume = useCallback((id: string) => {
+  /**
+   * Puts a parked ticket back on the counter — and the one that was there
+   * goes into its place.
+   *
+   * It used to overwrite the counter. A cashier with eight articles scanned for
+   * the customer in front of him tapped the chip of the one who had gone to
+   * fetch his wallet, and those eight lines and their discount were gone, with
+   * the draft mirror rewritten over them a moment later. A swap loses nothing:
+   * the basket he was on is one tap away, labelled like any other.
+   */
+  const resume = useCallback((id: string, currentLabel: string) => {
+    const { lines: current, discount: currentPercent, parked: list } = counter.current
+    const session = list.find((s) => s.id === id)
+    if (!session) return
     setParked((prev) => {
-      const session = prev.find((s) => s.id === id)
-      if (session) {
-        setLines(session.lines)
-        setDiscountState(session.discountPercent ?? 0)
-      }
-      return prev.filter((s) => s.id !== id)
+      const rest = prev.filter((s) => s.id !== id)
+      if (current.length === 0) return rest
+      return [
+        ...rest,
+        {
+          id: `${Date.now()}`,
+          label: currentLabel,
+          at: Date.now(),
+          lines: current,
+          discountPercent: currentPercent,
+        },
+      ]
     })
+    setLines(session.lines)
+    setDiscountState(session.discountPercent ?? 0)
   }, [])
 
   const dropParked = useCallback((id: string) => {

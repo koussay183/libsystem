@@ -22,6 +22,7 @@ import {
   Alert,
   Spinner,
 } from '@chakra-ui/react'
+import type { InputProps } from '@chakra-ui/react'
 import {
   Settings as SettingsIcon,
   Store,
@@ -67,7 +68,7 @@ import {
   countProductsInCategory,
 } from '@/features/categories/useCategories'
 import { useProducts } from '@/features/stock/useProducts'
-import { useShopSettings, saveShopSettings, patchShopSettings } from './useShopSettings'
+import { useShopSettings, saveShopForm, patchShopSettings } from './useShopSettings'
 import type { Category, ShopSettings } from '@/types/models'
 
 /* ==========================================================================
@@ -103,6 +104,12 @@ function useShopForm() {
    */
   const dirty = useRef(false)
   const [dirtyNow, setDirtyNow] = useState(false)
+  /**
+   * The document as it stood when the owner started typing — what the draft
+   * was taken from. Saving compares against it to tell a margin he cleared
+   * from one the other machine added since.
+   */
+  const baseline = useRef<ShopSettings>(shop)
 
   /**
    * The live document is the source of truth UNTIL THE OWNER STARTS EDITING.
@@ -120,6 +127,7 @@ function useShopForm() {
 
   /** An edit that waits for the Save button. */
   const edit = (patch: Partial<ShopSettings>) => {
+    if (!dirty.current) baseline.current = form
     dirty.current = true
     setDirtyNow(true)
     setDone(false)
@@ -162,7 +170,7 @@ function useShopForm() {
     setBusy(true)
     setError('')
     try {
-      await saveShopSettings({ ...form, name: form.name.trim() || 'Librairie' })
+      saveShopForm({ ...form, name: form.name.trim() || 'Librairie' }, baseline.current)
       // Saved, so the document is authoritative again and a later snapshot may
       // overwrite the form. Cleared before the alive check on purpose: the write
       // happened whether or not this component is still mounted to hear about it.
@@ -348,14 +356,11 @@ function PricingSection({ f }: { f: ShopForm }) {
           <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
             <Field.Root>
               <Field.Label>{t('settings.defaultMargin')}</Field.Label>
-              <Input
+              <PercentInput
                 size="lg"
-                inputMode="decimal"
                 placeholder={String(FALLBACK_MARGIN)}
-                value={form.defaultMargin === undefined ? '' : String(form.defaultMargin)}
-                onChange={(e) =>
-                  f.edit({ defaultMargin: parsePercent(e.target.value) ?? undefined })
-                }
+                value={form.defaultMargin}
+                onValue={(pct) => f.edit({ defaultMargin: pct })}
               />
               <Field.HelperText>{t('settings.defaultMarginHint')}</Field.HelperText>
             </Field.Root>
@@ -400,21 +405,15 @@ function PricingSection({ f }: { f: ShopForm }) {
                   <Text minW={0} flex="1" truncate>
                     {c.name}
                   </Text>
-                  <Input
+                  <PercentInput
                     size="md"
                     w="7rem"
                     textAlign="center"
-                    inputMode="decimal"
                     placeholder={String(form.defaultMargin ?? FALLBACK_MARGIN)}
-                    value={
-                      form.categoryMargins?.[c.name] === undefined
-                        ? ''
-                        : String(form.categoryMargins[c.name])
-                    }
-                    onChange={(e) => {
-                      const pct = parsePercent(e.target.value)
+                    value={form.categoryMargins?.[c.name]}
+                    onValue={(pct) => {
                       const next = { ...(form.categoryMargins ?? {}) }
-                      if (pct === null) delete next[c.name]
+                      if (pct === undefined) delete next[c.name]
                       else next[c.name] = pct
                       f.edit({ categoryMargins: next })
                     }}
@@ -1150,5 +1149,46 @@ export function SettingsPage() {
         </Box>
       </Flex>
     </Box>
+  )
+}
+
+/**
+ * A percentage field that keeps what is typed.
+ *
+ * The margin fields used to redraw themselves from the parsed number on every
+ * keystroke. "35," parses to 35, so the comma vanished the instant it was
+ * typed, and the next digit made "355" — a 355 % margin, saved, and every new
+ * article priced at four and a half times its cost. A lone "-" parsed to
+ * nothing and emptied the field, so "-10" was saved as +10.
+ *
+ * The text is the field's own. The number goes up on every change, and the
+ * text is only replaced when the value moves for some other reason — a revert,
+ * or the document arriving — so it never fights the owner's typing.
+ */
+function PercentInput({
+  value,
+  onValue,
+  ...rest
+}: {
+  value: number | undefined
+  onValue: (pct: number | undefined) => void
+} & Omit<InputProps, 'value' | 'onChange'>) {
+  const shown = (v: number | undefined) => (v === undefined ? '' : String(v))
+  const [text, setText] = useState(() => shown(value))
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    if ((parsePercent(text) ?? undefined) !== value) setText(shown(value))
+  }
+  return (
+    <Input
+      {...rest}
+      inputMode="decimal"
+      value={text}
+      onChange={(e) => {
+        setText(e.target.value)
+        onValue(parsePercent(e.target.value) ?? undefined)
+      }}
+    />
   )
 }

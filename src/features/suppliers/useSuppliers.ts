@@ -8,15 +8,18 @@ import {
   deleteDoc,
   doc,
   deleteField,
+  writeBatch,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
 import { createLiveCollection } from '@/lib/liveCollection'
 import type { LiveFatalReason } from '@/lib/liveCollection'
-import type { Supplier } from '@/types/models'
+import type { Product, Purchase, Supplier } from '@/types/models'
 
 const COL = 'suppliers'
+/** Writes per batch when re-tagging, well clear of Firestore's 500. */
+const BATCH_LIMIT = 400
 
 export interface SupplierInput {
   name: string
@@ -111,17 +114,52 @@ export function createSupplier(input: SupplierInput): string {
  * deleteField() rather than undefined: `ignoreUndefinedProperties` (firebase.ts)
  * would silently drop the key and keep the old phone number on the supplier.
  */
-export async function updateSupplier(id: string, input: SupplierInput): Promise<void> {
+export async function updateSupplier(
+  id: string,
+  input: SupplierInput,
+  rename?: { from: string; purchases: Purchase[]; products: Product[] },
+): Promise<void> {
+  const name = input.name.trim()
+  const now = Date.now()
   void track(
     updateDoc(doc(db, shopPath(COL), id), {
-      name: input.name.trim(),
+      name,
       phone: input.phone ? input.phone : deleteField(),
       note: input.note ? input.note : deleteField(),
-      updatedAt: Date.now(),
+      updatedAt: now,
     }),
   ).catch(() => {
     /* replayed by the SDK; a refusal surfaces through the sync badge */
   })
+
+  /*
+    A RENAME CARRIES THE HISTORY WITH IT.
+
+    Purchases and articles hold the supplier's NAME, not his id. Renaming
+    "Hachette" to "Hachette TN" used to leave every facture d'achat under the
+    old name: his "total acheté" dropped to zero, the Achats filter still
+    offered the old name, and nothing tied the two back together. They are
+    re-tagged here, from the caller's live lists — the same choice, and the
+    same honest limit, as renameCategory: what this device knows about.
+  */
+  if (!rename || rename.from === name) return
+  const writes = [
+    ...rename.purchases
+      .filter((p) => p.supplier === rename.from)
+      .map((p) => doc(db, shopPath('purchases'), p.id)),
+    ...rename.products
+      .filter((p) => p.supplier === rename.from)
+      .map((p) => doc(db, shopPath('products'), p.id)),
+  ]
+  for (let i = 0; i < writes.length; i += BATCH_LIMIT) {
+    const batch = writeBatch(db)
+    for (const ref of writes.slice(i, i + BATCH_LIMIT)) {
+      batch.update(ref, { supplier: name, updatedAt: now })
+    }
+    void track(batch.commit()).catch(() => {
+      /* replayed by the SDK; a refusal surfaces through the sync badge */
+    })
+  }
 }
 
 /**

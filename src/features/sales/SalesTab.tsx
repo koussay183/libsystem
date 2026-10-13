@@ -1,8 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link as RouterLink } from 'react-router-dom'
-import dayjs from 'dayjs'
 import {
   Box,
   Card,
@@ -21,10 +20,26 @@ import {
   Alert,
   EmptyState,
 } from '@chakra-ui/react'
-import { ShoppingCart, Receipt, Search, Printer, FileText, Plus, Pencil, HandCoins } from 'lucide-react'
+import {
+  ShoppingCart,
+  Receipt,
+  Search,
+  Printer,
+  FileText,
+  Plus,
+  Pencil,
+  HandCoins,
+  History,
+} from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
-import { useSales } from './useSales'
+import { fold } from '@/lib/textIndex'
+import { spanOf } from '@/lib/dateRange'
+import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
+import { PeriodFilter } from '@/components/PeriodFilter'
+import { useSalesHistory, useSalesCount } from './useSales'
 import { NewSaleInvoice } from './NewSaleInvoice'
 import { SaleEditor } from './SaleEditor'
 import { useCustomers } from '@/features/customers/useCustomers'
@@ -33,34 +48,63 @@ import { Ticket } from '@/features/pos/Ticket'
 import type { TicketData } from '@/features/pos/Ticket'
 import type { Sale } from '@/types/models'
 
-type Period = 'all' | 'today' | 'week' | 'month' | 'year'
+type KindFilter = 'all' | 'ticket' | 'invoice'
+type StatusFilter = 'all' | 'paid' | 'credit' | 'partial' | 'return'
 
-/** Oldest timestamp kept by each period, or 0 for "everything". */
-function cutoffOf(period: Period): number {
-  switch (period) {
-    case 'today':
-      return dayjs().startOf('day').valueOf()
-    case 'week':
-      return dayjs().subtract(7, 'day').valueOf()
-    case 'month':
-      return dayjs().subtract(30, 'day').valueOf()
-    case 'year':
-      return dayjs().subtract(12, 'month').valueOf()
-    default:
-      return 0
-  }
+/**
+ * How many tickets are read from the server at a time, and how much further
+ * each step back reaches. 500 is what this tab always read; the difference is
+ * that it is now a step, not a wall.
+ */
+const HISTORY_STEP = 500
+
+/**
+ * How a ticket was settled, decided exactly the way its badge is drawn, so
+ * the "Crédit" filter and the orange badge can never disagree about a row.
+ */
+function statusOf(s: Sale): 'paid' | 'credit' | 'partial' {
+  if (s.mode === 'partial') return 'partial'
+  return s.onCredit ? 'credit' : 'paid'
+}
+
+/** The stored name wins: it still reads correctly if the client was deleted. */
+function clientName(s: Sale, nameById: Map<string, string>): string | undefined {
+  return s.customerName ?? (s.customerId ? nameById.get(s.customerId) : undefined) ?? undefined
 }
 
 export function SalesTab() {
   const { t } = useTranslation()
-  // A deeper window than the till's default: this tab is the sales history.
-  const { sales, loading, error } = useSales(500)
   const { customers } = useCustomers()
   const { shop } = useShopSettings()
 
   const [search, setSearch] = useState('')
-  const [period, setPeriod] = useState<Period>('all')
+  const [period, setPeriod] = useState<HistoryPeriod>('all')
+  const [custom, setCustom] = useState<CustomDates>({ from: '', to: '' })
+  const [kind, setKind] = useState<KindFilter>('all')
+  const [status, setStatus] = useState<StatusFilter>('all')
   const [invoiceOpen, setInvoiceOpen] = useState(false)
+  const listTop = useRef<HTMLDivElement>(null)
+
+  const span = spanOf(period, custom)
+  const rangeKey = `${span.from ?? ''}|${span.to ?? ''}`
+
+  /**
+   * How far back this range has been read. Keyed on the range so a new period
+   * starts again from one step — the same derive-in-render reset usePaged uses,
+   * so a period switch never fires one oversized query on the way.
+   */
+  const [reach, setReach] = useState({ rangeKey, max: HISTORY_STEP })
+  const max = reach.rangeKey === rangeKey ? reach.max : HISTORY_STEP
+  const reachTo = (rows: number) =>
+    setReach({ rangeKey, max: Math.max(max, Math.ceil(rows / HISTORY_STEP) * HISTORY_STEP) })
+
+  const { sales, loading, loadingMore, complete, error } = useSalesHistory(
+    span.from,
+    span.to,
+    max,
+  )
+  const serverCount = useSalesCount(span.from, span.to, `${sales[0]?.id ?? ''}|${sales.length}`)
+
   /**
    * THE PREVIEW FOLLOWS THE SALE, NOT A SNAPSHOT OF IT.
    *
@@ -76,26 +120,56 @@ export function SalesTab() {
    */
   const [previewId, setPreviewId] = useState<string | null>(null)
   const [justRecorded, setJustRecorded] = useState<TicketData | null>(null)
+  /**
+   * The ticket being corrected, by id, for the same reason as the preview: the
+   * editor computes the stock and carnet corrections against the ticket it is
+   * handed, so it must be handed the ticket as it is NOW. A copy taken at the
+   * click would, after the other till corrected the same ticket, undo that
+   * correction's counters while keeping its lines.
+   */
   const [editing, setEditing] = useState<{ sale: Sale; intent: 'edit' | 'toCredit' } | null>(null)
   const [paper, setPaper] = useState<'thermal' | 'a4'>('thermal')
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
-  const nameOf = (id?: string | null) => customers.find((c) => c.id === id)?.name
 
+  const nameById = useMemo(() => new Map(customers.map((c) => [c.id, c.name])), [customers])
   /** The stored name wins: it still reads correctly if the client was deleted. */
-  const clientOf = (s: Sale) => s.customerName ?? nameOf(s.customerId) ?? undefined
+  const clientOf = (s: Sale) => clientName(s, nameById)
 
-  const q = search.trim().toLowerCase()
-  const cutoff = cutoffOf(period)
-  const filtered = sales.filter((s) => {
-    if (s.date < cutoff) return false
-    if (q === '') return true
-    return (
-      s.ticketNo.toLowerCase().includes(q) ||
-      (clientOf(s) ?? '').toLowerCase().includes(q)
-    )
-  })
+  const q = fold(search)
+  const narrowed = q !== '' || kind !== 'all' || status !== 'all'
+  const filtered = useMemo(() => {
+    if (!narrowed) return sales
+    return sales.filter((s) => {
+      if (kind === 'invoice' && s.kind !== 'invoice') return false
+      if (kind === 'ticket' && s.kind === 'invoice') return false
+      if (status === 'return' ? !s.hasReturn : status !== 'all' && statusOf(s) !== status) {
+        return false
+      }
+      if (q === '') return true
+      return fold(s.ticketNo).includes(q) || fold(clientName(s, nameById) ?? '').includes(q)
+    })
+  }, [sales, narrowed, kind, status, q, nameById])
+
+  /**
+   * Unfiltered, the pages are counted from what the SERVER holds for the
+   * period, so the last page really is the oldest ticket and every page in
+   * between can be reached; turning to one that is not loaded yet reads further
+   * back. Filtered, they are counted from what matched in what has been read,
+   * and the "search further back" button below says that is what it is.
+   */
+  const knownTotal = !narrowed && !complete ? serverCount : null
+  const paged = usePaged(filtered, `${rangeKey}|${q}|${kind}|${status}`, { total: knownTotal })
+  const pageShort = paged.pageItems.length < paged.end - paged.start
+  const goToPage = (page: number) => {
+    paged.setPage(page)
+    if (!narrowed && !complete) reachTo(page * paged.pageSize)
+  }
+
+  /** Money on the tickets shown — only once the whole period is in hand. */
+  const filteredTotal = complete ? filtered.reduce((sum, s) => sum + s.total, 0) : null
+  const shownCount = narrowed || complete ? filtered.length : (serverCount ?? sales.length)
 
   /** A stored sale, rebuilt into what the printable ticket expects. */
   const toTicket = (s: Sale): TicketData => ({
@@ -129,12 +203,24 @@ export function SalesTab() {
     setPreviewId(null)
     setJustRecorded(null)
   }
+  const editingSale = editing
+    ? (sales.find((s) => s.id === editing.sale.id) ?? editing.sale)
+    : null
 
   const doPrint = (which: 'thermal' | 'a4') => {
     setPaper(which)
     // Let the paper class land on #print-area before the print dialog opens.
     setTimeout(() => window.print(), 50)
   }
+
+  const resetFilters = () => {
+    setSearch('')
+    setPeriod('all')
+    setCustom({ from: '', to: '' })
+    setKind('all')
+    setStatus('all')
+  }
+  const neverSold = !loading && !error && sales.length === 0 && period === 'all' && !narrowed
 
   return (
     <Box>
@@ -161,23 +247,79 @@ export function SalesTab() {
             placeholder={t('sales.searchTicket')}
           />
         </InputGroup>
-        <NativeSelect.Root size="lg">
-          <NativeSelect.Field
-            value={period}
-            onChange={(e: ChangeEvent<HTMLSelectElement>) =>
-              setPeriod(e.currentTarget.value as Period)
-            }
-            aria-label={t('common.period')}
-          >
-            <option value="all">{t('common.all')}</option>
-            <option value="today">{t('dashboard.today')}</option>
-            <option value="week">{t('dashboard.week')}</option>
-            <option value="month">{t('dashboard.month')}</option>
-            <option value="year">{t('dashboard.year')}</option>
-          </NativeSelect.Field>
-          <NativeSelect.Indicator />
-        </NativeSelect.Root>
+        <Flex gap={3} wrap="wrap" align="flex-end">
+          <PeriodFilter
+            period={period}
+            onPeriod={setPeriod}
+            custom={custom}
+            onCustom={setCustom}
+          />
+          <Box flex="1" minW="11rem">
+            <NativeSelect.Root size="lg">
+              <NativeSelect.Field
+                value={kind}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setKind(e.currentTarget.value as KindFilter)
+                }
+                aria-label={t('filters.kind')}
+              >
+                <option value="all">{t('filters.kindAll')}</option>
+                <option value="ticket">{t('filters.kindTicket')}</option>
+                <option value="invoice">{t('filters.kindInvoice')}</option>
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+          </Box>
+          <Box flex="1" minW="11rem">
+            <NativeSelect.Root size="lg">
+              <NativeSelect.Field
+                value={status}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setStatus(e.currentTarget.value as StatusFilter)
+                }
+                aria-label={t('filters.payment')}
+              >
+                <option value="all">{t('filters.paymentAll')}</option>
+                <option value="paid">{t('sales.paid')}</option>
+                <option value="credit">{t('sales.credit')}</option>
+                <option value="partial">{t('pos.partial')}</option>
+                <option value="return">{t('filters.withReturn')}</option>
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+          </Box>
+        </Flex>
       </Stack>
+
+      {/* How many, and for how much — the first thing asked of a filtered list. */}
+      {!loading && !error && !neverSold && (
+        <Flex
+          ref={listTop}
+          align="center"
+          gap={3}
+          mb={3}
+          wrap="wrap"
+          color="fg.muted"
+          fontSize="sm"
+        >
+          <Text>
+            {t('sales.countLabel', { count: shownCount })}
+            {filteredTotal !== null && filtered.length > 0 && (
+              <>
+                {' · '}
+                <Text as="span" fontWeight="bold" color="fg">
+                  {money(filteredTotal)}
+                </Text>
+              </>
+            )}
+          </Text>
+          {(narrowed || period !== 'all') && (
+            <Button size="xs" variant="ghost" onClick={resetFilters}>
+              {t('filters.clear')}
+            </Button>
+          )}
+        </Flex>
+      )}
 
       {loading ? (
         <Flex align="center" justify="center" py={16}>
@@ -190,7 +332,7 @@ export function SalesTab() {
             <Alert.Title>{error}</Alert.Title>
           </Alert.Content>
         </Alert.Root>
-      ) : sales.length === 0 ? (
+      ) : neverSold ? (
         <EmptyState.Root size="lg" py={12}>
           <EmptyState.Content>
             <EmptyState.Indicator>
@@ -206,6 +348,11 @@ export function SalesTab() {
             </Button>
           </EmptyState.Content>
         </EmptyState.Root>
+      ) : pageShort && loadingMore ? (
+        // A page further back than what is loaded: it is on its way.
+        <Flex align="center" justify="center" py={16}>
+          <Spinner size="xl" colorPalette="brand" />
+        </Flex>
       ) : filtered.length === 0 ? (
         <Card.Root>
           <Card.Body>
@@ -214,7 +361,7 @@ export function SalesTab() {
         </Card.Root>
       ) : (
         <Stack gap={3}>
-          {filtered.map((s) => {
+          {paged.pageItems.map((s) => {
             const itemCount = s.items.reduce((n, i) => n + i.qty, 0)
             const client = clientOf(s)
             return (
@@ -266,11 +413,11 @@ export function SalesTab() {
                         {client ? ` · ${client}` : ''}
                       </Text>
                     </Box>
-                    {s.mode === 'partial' ? (
+                    {statusOf(s) === 'partial' ? (
                       <Badge colorPalette="orange" size="lg" variant="subtle">
                         {t('pos.partial')}
                       </Badge>
-                    ) : s.onCredit ? (
+                    ) : statusOf(s) === 'credit' ? (
                       <Badge colorPalette="orange" size="lg">
                         {t('sales.credit')}
                       </Badge>
@@ -285,6 +432,47 @@ export function SalesTab() {
             )
           })}
         </Stack>
+      )}
+
+      {!loading && !error && (
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={goToPage}
+          anchorRef={listTop}
+        />
+      )}
+
+      {/*
+        A filtered search only sees what has been read so far. Said plainly,
+        with the way further back right under it — "aucun résultat" over the
+        newest 500 tickets is exactly how a three-week-old ticket went missing.
+      */}
+      {/* Also when the count is unknown (offline, slow line): then the pages
+          stop at what is loaded, and this is the only way further back. */}
+      {!loading && !error && !complete && (narrowed || serverCount === null) && (
+        <Card.Root mt={4} variant="subtle">
+          <Card.Body>
+            <Flex align="center" gap={3} wrap="wrap">
+              <Text color="fg.muted" flex="1" minW="14rem">
+                {t('sales.searchedRecent', { count: sales.length })}
+              </Text>
+              <Button
+                size="lg"
+                variant="outline"
+                colorPalette="brand"
+                loading={loadingMore}
+                onClick={() => reachTo(max + HISTORY_STEP)}
+              >
+                <History size={20} />
+                {t('sales.searchOlder')}
+              </Button>
+            </Flex>
+          </Card.Body>
+        </Card.Root>
       )}
 
       {/* ---------------- Ticket detail + reprint ---------------- */}
@@ -426,9 +614,9 @@ export function SalesTab() {
         />
       )}
 
-      {editing && (
+      {editing && editingSale && (
         <SaleEditor
-          sale={editing.sale}
+          sale={editingSale}
           intent={editing.intent}
           onClose={() => setEditing(null)}
           // A voided ticket has nothing left to preview.

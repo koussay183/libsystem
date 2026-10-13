@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   collection,
   query,
@@ -10,7 +10,6 @@ import {
 } from 'firebase/firestore'
 import type { DocumentData, QueryDocumentSnapshot, QueryConstraint } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
-import { withDeadline } from '@/lib/deadline'
 
 /**
  * Reading the shared catalogue, in pages.
@@ -159,12 +158,33 @@ export function useCatalog(filter: CatalogFilter) {
     [filter.search, filter.category, filter.level, filter.officialOnly],
   )
 
+  /**
+   * Which request is the current one. Typing "fr", "fra", "fran" fires three
+   * queries and they do not come back in order: without this, an older prefix
+   * answering last replaced the newer results, and a "Plus" page arriving
+   * after the filter changed was appended — with its old cursor — to a
+   * different search.
+   */
+  const seq = useRef(0)
+
   const run = useCallback(
     async (after: QueryDocumentSnapshot<DocumentData> | null) => {
+      const mine = ++seq.current
       setLoading(true)
       setError(null)
+      let timer: ReturnType<typeof setTimeout> | undefined
       try {
-        const snap = await withDeadline(getDocs(build(after)), QUERY_MS)
+        // A race of its own rather than withDeadline: that one turns a
+        // rejection into the same null as a timeout, so a refused query or a
+        // missing index was reported as "offline" and the catch below — the
+        // only place that tells them apart — never ran.
+        const snap = await Promise.race([
+          getDocs(build(after)),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), QUERY_MS)
+          }),
+        ])
+        if (mine !== seq.current) return
         // Null means the deadline ran out. Said plainly rather than shown as an
         // empty catalogue, which would read as "there is nothing in there".
         if (snap === null) {
@@ -176,13 +196,15 @@ export function useCatalog(filter: CatalogFilter) {
         setCursor(snap.docs.length > 0 ? snap.docs[snap.docs.length - 1] : null)
         setDone(snap.docs.length < PAGE_SIZE)
       } catch (e) {
+        if (mine !== seq.current) return
         // failed-precondition here almost always means a composite index has not
         // finished building, which is worth telling apart from being offline: one
         // fixes itself in minutes, the other when the line comes back.
         const code = (e as { code?: string } | null)?.code ?? ''
         setError(code === 'failed-precondition' ? 'index' : 'error')
       } finally {
-        setLoading(false)
+        clearTimeout(timer)
+        if (mine === seq.current) setLoading(false)
       }
     },
     [build],

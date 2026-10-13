@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -15,6 +15,8 @@ import {
   HStack,
   IconButton,
   Input,
+  InputGroup,
+  NativeSelect,
   Portal,
   Spinner,
   Stack,
@@ -22,9 +24,12 @@ import {
   Table,
   Text,
 } from '@chakra-ui/react'
-import { Barcode, Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { Barcode, Boxes, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
 import { formatMoney, fromMinor, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
+import { fold } from '@/lib/textIndex'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useProducts } from '@/features/stock/useProducts'
 import { ProductScanField } from '@/components/ProductScanField'
 import { codeOf, loose, generateInStoreCode } from '@/features/stock/barcode'
@@ -53,9 +58,20 @@ export function PacksPage() {
   const [editing, setEditing] = useState<Pack | null>(null)
   const [formOpen, setFormOpen] = useState(false)
   const [actionError, setActionError] = useState('')
+  const [search, setSearch] = useState('')
+  const [show, setShow] = useState<'all' | 'active' | 'inactive'>('all')
+  const listTop = useRef<HTMLDivElement>(null)
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
+
+  const q = fold(search)
+  const visible = packs.filter(
+    (p) =>
+      (show === 'all' || (show === 'active') === (p.active !== false)) &&
+      (q === '' || fold(p.name).includes(q) || (p.barcode ?? '').includes(search.trim())),
+  )
+  const paged = usePaged(visible, `${q}|${show}`)
 
   const openNew = () => {
     setEditing(null)
@@ -166,6 +182,29 @@ export function PacksPage() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : (
+        <>
+        <Flex gap={3} mb={4} wrap="wrap" ref={listTop}>
+          <InputGroup flex="2" minW="14rem" startElement={<Search size={20} />}>
+            <Input
+              size="lg"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder={t('common.search')}
+            />
+          </InputGroup>
+          <NativeSelect.Root size="lg" flex="1" minW="11rem">
+            <NativeSelect.Field
+              value={show}
+              onChange={(e) => setShow(e.currentTarget.value as 'all' | 'active' | 'inactive')}
+              aria-label={t('packs.active')}
+            >
+              <option value="all">{t('common.all')}</option>
+              <option value="active">{t('packs.filterActive')}</option>
+              <option value="inactive">{t('packs.filterInactive')}</option>
+            </NativeSelect.Field>
+            <NativeSelect.Indicator />
+          </NativeSelect.Root>
+        </Flex>
         <Card.Root>
           <Card.Body p={0}>
             <Box overflowX="auto">
@@ -198,7 +237,14 @@ export function PacksPage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {packs.map((pack) => {
+                  {paged.pageItems.length === 0 && (
+                    <Table.Row>
+                      <Table.Cell colSpan={6}>
+                        <Text color="fg.muted">{t('stock.noResults')}</Text>
+                      </Table.Cell>
+                    </Table.Row>
+                  )}
+                  {paged.pageItems.map((pack) => {
                     const info = resolvePack(pack, products)
                     const broken = !productsLoading && info.missing.length > 0
                     return (
@@ -295,6 +341,16 @@ export function PacksPage() {
             </Box>
           </Card.Body>
         </Card.Root>
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={paged.setPage}
+          anchorRef={listTop}
+        />
+        </>
       )}
 
       {formOpen && (

@@ -28,7 +28,7 @@ import { formatMoney, fromMinor, parseMoney, moneySymbolKey, moneyPlaceholder } 
 import { fold, foldCode } from '@/lib/textIndex'
 import { qrDataUrl, downloadQrLabel } from '@/lib/qr'
 import { useProducts } from '@/features/stock/useProducts'
-import { useShopSettings, saveShopSettings } from './useShopSettings'
+import { useShopSettings, patchShopSettings } from './useShopSettings'
 import type { QuickService } from '@/types/models'
 
 /**
@@ -180,7 +180,10 @@ export function ServicesTab() {
       return false
     }
     setError('')
-    saveShopSettings({ ...shop, services: next })
+    // Only the services. Spreading the whole document back used to push this
+    // machine's copy of the name, the margins and the menu over whatever the
+    // other machine had saved since.
+    patchShopSettings({ services: next })
     return true
   }
 

@@ -179,6 +179,17 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
       setError(t('purchases.emptyItemsError'))
       return
     }
+    // A cost or a payment that cannot be read is refused, not taken as zero.
+    // "2,5O0" (a letter O) used to save the line at cost 0 — the invoice total
+    // and the bought cost came out short — and "1OO" in the paid box left the
+    // whole invoice owed to a supplier who had in fact been paid.
+    const unreadable =
+      cart.some((i) => i.costStr.trim() !== '' && parseMoney(i.costStr) === null) ||
+      (paidValue.trim() !== '' && parseMoney(paidValue) === null)
+    if (unreadable) {
+      setError(t('sales.amountInvalid'))
+      return
+    }
     setError('')
     setBusy(true)
     try {

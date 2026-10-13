@@ -67,7 +67,7 @@ import type { CatalogEntry } from '@/lib/catalog'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
-import { recordSale } from '@/features/sales/useSales'
+import { recordSale, paymentModeOf } from '@/features/sales/useSales'
 import { usePosCart } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
 import { ScanSuggestions } from './ScanSuggestions'
@@ -322,13 +322,17 @@ function ClientPicker({
   const { t } = useTranslation()
   const [q, setQ] = useState('')
   const [adding, setAdding] = useState(false)
-  const needle = q.trim().toLowerCase()
+  // Folded like the carnet's search: "hedi" finds "Hédi", "احمد" finds "أحمد",
+  // and "98 123 456" is the same phone number as "98123456".
+  const needle = fold(q)
+  const digits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '')
+  const needleDigits = digits(q.trim())
   const filtered = needle
     ? customers.filter(
         (c) =>
-          c.name.toLowerCase().includes(needle) ||
-          (c.phone ?? '').includes(needle) ||
-          (c.cin ?? '').toLowerCase().includes(needle),
+          fold(c.name).includes(needle) ||
+          (needleDigits !== '' &&
+            (digits(c.phone).includes(needleDigits) || digits(c.cin).includes(needleDigits))),
       )
     : customers
 
@@ -409,6 +413,9 @@ function ClientPicker({
               variant={value === c.id ? 'solid' : 'ghost'}
               colorPalette="brand"
               justifyContent="space-between"
+              // Enter on the client already chosen finishes the sale; Enter on
+              // any other row chooses that one first (see the payment dialog).
+              data-enter-confirms={value === c.id ? '' : undefined}
               onClick={() => onChange(c.id)}
             >
               <Text truncate>{c.name}</Text>
@@ -472,6 +479,8 @@ export function CaissePage() {
     productId: string | null
     name: string
     price: number
+    /** Set when it was a pack: "Annuler" then takes the whole pack back off. */
+    packId?: string
   } | null>(null)
 
   const [sound, setSound] = useState(soundEnabled)
@@ -794,7 +803,7 @@ export function CaissePage() {
         { packId: pack.id, packName: pack.name, packPrice: pack.price },
         returnMode,
       )
-      setLastAdded({ productId: null, name: pack.name, price: pack.price })
+      setLastAdded({ productId: null, name: pack.name, price: pack.price, packId: pack.id })
       setCanCreate(false)
 
       // The pack still sells — the shelf knows better than the count — but a
@@ -1419,21 +1428,32 @@ export function CaissePage() {
     t,
   ])
 
-  /** The stock arrived - serve every code that was scanned while it loaded. */
+  /**
+   * The stock arrived - serve the codes scanned while it loaded, ONE AT A TIME.
+   *
+   * They used to be replayed in one loop, and every lookup in it read the
+   * dialog gates from the render before the loop: a code shared by two
+   * articles opened the "which one?" chooser, and the next code in the queue
+   * — not seeing it — rang up its article and closed the chooser, so the first
+   * article was never sold. Two unknown codes left only the second on the red
+   * screen. Now one code is served per render, and the queue waits whenever
+   * anything is on screen asking the cashier a question, then carries on.
+   */
+  const [replayTick, setReplayTick] = useState(0)
   useEffect(() => {
     if (productsLoading || packsLoading || shopLoading) return
-    const held = pendingScans.current
-    if (held.length === 0) return
-    pendingScans.current = []
-    for (const code of held) {
-      // Each code was stamped as dealt with when it went on hold, and the same
-      // article can legitimately appear twice in the queue. Clear the stamp
-      // before every replay, or the second copy is mistaken for a scanner's
-      // trailing Enter and dropped.
-      consumed.current = { term: '', at: 0 }
-      lookup(code, null, 'scan')
-    }
-  }, [productsLoading, packsLoading, shopLoading, lookup])
+    if (dialogBlocking || busy) return
+    const code = pendingScans.current.shift()
+    if (code === undefined) return
+    // Each code was stamped as dealt with when it went on hold, and the same
+    // article can legitimately appear twice in the queue. Clear the stamp
+    // before every replay, or the second copy is mistaken for a scanner's
+    // trailing Enter and dropped.
+    consumed.current = { term: '', at: 0 }
+    lookup(code, null, 'scan')
+    // Come back after this code's render for the next one.
+    setReplayTick((n) => n + 1)
+  }, [productsLoading, packsLoading, shopLoading, lookup, dialogBlocking, busy, replayTick])
 
   /**
    * With the chooser open, 1 / 2 / 3 pick an article — a till is driven with
@@ -1601,10 +1621,25 @@ export function CaissePage() {
     const target = lastAdded
     setLastAdded(null)
     if (!target) return
+    /*
+      A pack is taken back off whole — its most recent insertion. It used to be
+      looked for as a free line named after the pack, which no pack line is
+      (they are the real articles), so "Annuler" cleared the banner and left
+      the pack on the ticket: the customer was charged for what the cashier had
+      just cancelled.
+    */
+    if (target.packId) {
+      const last = [...cart.lines].reverse().find((l) => l.packId === target.packId)
+      if (last) cart.removeLine(last.id)
+      focusScan()
+      return
+    }
     for (let i = cart.lines.length - 1; i >= 0; i -= 1) {
       const l = cart.lines[i]
+      // Never a line inside a pack: taking one unit off a pack member would
+      // break the pack's price, which its lines were apportioned to add up to.
       const same = target.productId
-        ? l.productId === target.productId
+        ? l.productId === target.productId && !l.packUid
         : l.productId === null && l.name === target.name
       if (same && l.qty !== 0) {
         // One unit back toward zero, whichever side of it the line is on.
@@ -1705,7 +1740,9 @@ export function CaissePage() {
       the badge stayed for the whole ticket. The sale then decremented it to -1.
       One is the honest default: he is selling one of them right now.
     */
-    const quantity = parseQuantity(newQty) ?? 1
+    // parseQuantity reads an empty box as 0, not null, so `?? 1` alone never
+    // applied to the very case it was written for — a cleared box.
+    const quantity = newQty.trim() === '' ? 1 : (parseQuantity(newQty) ?? 1)
     setBusy(true)
     try {
       const id = await createProduct({
@@ -1860,6 +1897,10 @@ export function CaissePage() {
 
   const confirmPay = async () => {
     if (payKind === 'cash') {
+      if (received.trim() !== '' && parseMoney(received) === null) {
+        setPayError(t('sales.amountInvalid'))
+        return
+      }
       const given = parseMoney(received)
       // An empty field means "exact money" — one keystroke for the common case.
       const receivedNow = given ?? cart.total
@@ -1879,9 +1920,17 @@ export function CaissePage() {
       await finish('credit', 0, 0, customerId)
       return
     }
+    // Typed but unreadable ("5O") is refused: read as zero, the whole ticket
+    // went on the client's carnet although he had just paid part of it.
+    if (received.trim() !== '' && parseMoney(received) === null) {
+      setPayError(t('sales.amountInvalid'))
+      return
+    }
     const given = Math.max(0, parseMoney(received) ?? 0)
     const paidNow = Math.min(given, cart.total)
-    await finish(paidNow > 0 ? 'partial' : 'credit', paidNow, given, customerId)
+    // The shared rule, so a client who hands over the whole amount in this
+    // dialog is "payé" — not a "paiement partiel" badge on a settled ticket.
+    await finish(paymentModeOf(cart.total, paidNow), paidNow, given, customerId)
   }
 
   /**
@@ -1917,6 +1966,30 @@ export function CaissePage() {
    * nothing would be scanned again and again.
    */
   const runCommand = (command: 'pay' | 'confirm' | 'reprint') => {
+    /*
+      THE RED SCREEN STOPS THE LABELS TOO.
+
+      lookup() reads a label before its dialog gate — deliberately, so the
+      "valider" label can answer the payment dialog — which meant it also read
+      them before the unknown-article check. Scanning "payer" twice with the red
+      screen up opened the payment under it and recorded the sale, without the
+      article that had just been refused. "Plus rien ne passe" includes these.
+    */
+    if (unknownRef.current) {
+      beepFail()
+      setUnknown((u) => (u ? { ...u, nag: u.nag + 1, at: performance.now() } : u))
+      return
+    }
+    // Any OTHER question on screen — which article, what price, a pack — is
+    // answered first. Only the payment dialog itself may be open for a label.
+    const otherDialog =
+      miscOpen || newOpen || discountOpen || packOpen || moreOpen ||
+      !!serviceAsk || !!matches || !!priceLine
+    if (otherDialog && command !== 'reprint') {
+      beepError()
+      return
+    }
+
     if (command === 'reprint') {
       if (!lastTicket) {
         beepError()
@@ -1962,7 +2035,9 @@ export function CaissePage() {
         openPay('cash')
       } else if (e.key === 'F3') {
         e.preventDefault()
-        openPay('partial')
+        // The same condition as the button it stands for: a refund has nothing
+        // to part-pay, and recorded through this dialog it came out "crédit".
+        if (cart.total > 0) openPay('partial')
       } else if (e.key === 'F4') {
         e.preventDefault()
         if (cart.lines.length > 0) cart.park(parkLabel())
@@ -2295,7 +2370,7 @@ export function CaissePage() {
                 variant="ghost"
                 borderRadius="full"
                 maxW="16rem"
-                onClick={() => cart.resume(s.id)}
+                onClick={() => cart.resume(s.id, parkLabel())}
               >
                 <PlayCircle size={16} />
                 <Text truncate>{s.label}</Text>
@@ -3225,6 +3300,13 @@ export function CaissePage() {
                 // A textarea is the one place Enter legitimately means
                 // "new line" rather than "yes".
                 if (el?.tagName === 'TEXTAREA') return
+                // A focused control that means something ELSE keeps its own
+                // Enter: "Annuler", the ✕, another client in the list. Taken over,
+                // Enter on Annuler recorded the sale, and Enter on client B
+                // recorded it on client A's carnet. The quick-cash amounts are
+                // the buttons this exists for, and say so with the attribute.
+                const control = el?.closest('button, a, [role="button"], [role="option"]')
+                if (control && !control.hasAttribute('data-enter-confirms')) return
                 e.preventDefault()
                 void confirmPay()
               }}
@@ -3303,6 +3385,7 @@ export function CaissePage() {
                           <Button
                             size="lg"
                             variant="subtle"
+                            data-enter-confirms=""
                             onClick={() => setReceived(String(fromMinor(cart.total)))}
                           >
                             {t('pos.payExact')}
@@ -3312,6 +3395,7 @@ export function CaissePage() {
                               key={v}
                               size="lg"
                               variant="outline"
+                              data-enter-confirms=""
                               onClick={() => setReceived(String(fromMinor(v)))}
                             >
                               {money(v)}

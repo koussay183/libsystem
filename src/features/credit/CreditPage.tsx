@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -19,7 +19,6 @@ import {
   Spinner,
   Stack,
   Stat,
-  Switch,
   Text,
 } from '@chakra-ui/react'
 import {
@@ -33,11 +32,18 @@ import {
   CalendarClock,
 } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
+import { fold } from '@/lib/textIndex'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { CustomerForm } from './CustomerForm'
 import { daysSince, debtStartedAt, groupByCustomer, needsReminder } from './ledger'
 
 type SortKey = 'debt' | 'name' | 'oldest'
+type Show = 'all' | 'debtors' | 'reminder' | 'settled' | 'advance'
+
+/** A phone number or a CIN as typed: "98 123 456" and "98123456" are one number. */
+const digits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '')
 
 /**
  * The index of the carnet: every client, what he owes, and how long he has
@@ -52,7 +58,8 @@ export function CreditPage() {
 
   const [search, setSearch] = useState('')
   const [sort, setSort] = useState<SortKey>('debt')
-  const [onlyDebtors, setOnlyDebtors] = useState(false)
+  const [show, setShow] = useState<Show>('all')
+  const listTop = useRef<HTMLDivElement>(null)
   const [formOpen, setFormOpen] = useState(false)
 
   const symbol = t(moneySymbolKey())
@@ -75,17 +82,24 @@ export function CreditPage() {
   }, [customers, byCustomer])
 
   const visible = useMemo(() => {
-    const q = search.trim().toLowerCase()
+    // Folded like every other search in the app: "hedi" finds "Hédi", and
+    // "احمد" finds "أحمد". A plain lowercase missed both.
+    const q = fold(search)
+    const qDigits = digits(search)
     let list = rows
     if (q !== '') {
       list = list.filter(
         (r) =>
-          r.customer.name.toLowerCase().includes(q) ||
-          (r.customer.phone ?? '').toLowerCase().includes(q) ||
-          (r.customer.cin ?? '').toLowerCase().includes(q),
+          fold(r.customer.name).includes(q) ||
+          (qDigits !== '' &&
+            (digits(r.customer.phone).includes(qDigits) ||
+              digits(r.customer.cin).includes(qDigits))),
       )
     }
-    if (onlyDebtors) list = list.filter((r) => r.customer.balance > 0)
+    if (show === 'debtors') list = list.filter((r) => r.customer.balance > 0)
+    else if (show === 'reminder') list = list.filter((r) => r.relance)
+    else if (show === 'settled') list = list.filter((r) => r.customer.balance === 0)
+    else if (show === 'advance') list = list.filter((r) => r.customer.balance < 0)
 
     const sorted = [...list]
     if (sort === 'name') {
@@ -109,7 +123,9 @@ export function CreditPage() {
       })
     }
     return sorted
-  }, [rows, search, onlyDebtors, sort])
+  }, [rows, search, show, sort])
+
+  const paged = usePaged(visible, `${search}|${show}|${sort}`)
 
   const totalOwed = customers.reduce((s, c) => s + Math.max(0, c.balance), 0)
   const withDebt = customers.filter((c) => c.balance > 0).length
@@ -211,7 +227,7 @@ export function CreditPage() {
         </Box>
       </form>
 
-      <Flex wrap="wrap" align="center" gap={4} mb={4}>
+      <Flex wrap="wrap" align="center" gap={4} mb={4} ref={listTop}>
         <NativeSelect.Root size="lg" width="auto">
           <NativeSelect.Field
             value={sort}
@@ -225,18 +241,20 @@ export function CreditPage() {
           <NativeSelect.Indicator />
         </NativeSelect.Root>
 
-        <Switch.Root
-          size="lg"
-          colorPalette="brand"
-          checked={onlyDebtors}
-          onCheckedChange={(e) => setOnlyDebtors(e.checked)}
-        >
-          <Switch.HiddenInput />
-          <Switch.Control>
-            <Switch.Thumb />
-          </Switch.Control>
-          <Switch.Label>{t('credit.onlyDebtors')}</Switch.Label>
-        </Switch.Root>
+        <NativeSelect.Root size="lg" width="auto">
+          <NativeSelect.Field
+            value={show}
+            onChange={(e) => setShow(e.currentTarget.value as Show)}
+            aria-label={t('common.filter')}
+          >
+            <option value="all">{t('common.all')}</option>
+            <option value="debtors">{t('filters.debtorsOnly')}</option>
+            <option value="reminder">{t('filters.reminderOnly')}</option>
+            <option value="settled">{t('filters.settledOnly')}</option>
+            <option value="advance">{t('filters.advanceOnly')}</option>
+          </NativeSelect.Field>
+          <NativeSelect.Indicator />
+        </NativeSelect.Root>
       </Flex>
 
       {entriesError && (
@@ -290,7 +308,7 @@ export function CreditPage() {
         </Card.Root>
       ) : (
         <Stack gap={3}>
-          {visible.map(({ customer: c, ageDays, relance }) => {
+          {paged.pageItems.map(({ customer: c, ageDays, relance }) => {
             const owes = c.balance > 0
             return (
               <Card.Root
@@ -379,6 +397,18 @@ export function CreditPage() {
         </Stack>
       )}
 
+      {!loading && (
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={paged.setPage}
+          anchorRef={listTop}
+        />
+      )}
+
       {/*
         Straight to the new client's page. This is what "the form does not
         work" turned out to be: the client WAS created — with a zero balance,
@@ -393,7 +423,7 @@ export function CreditPage() {
           withOpeningDebt
           onClose={() => setFormOpen(false)}
           onCreated={(id) => {
-            setOnlyDebtors(false)
+            setShow('all')
             setSearch('')
             setFormOpen(false)
             navigate(`/credit/${id}`)

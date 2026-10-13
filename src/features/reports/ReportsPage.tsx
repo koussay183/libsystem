@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -12,13 +12,19 @@ import {
   Stat,
   SimpleGrid,
   Badge,
+  Input,
+  InputGroup,
   NativeSelect,
   EmptyState,
   Spinner,
+  Switch,
 } from '@chakra-ui/react'
-import { TrendingUp, TrendingDown, Wallet, BarChart3, Package } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, BarChart3, Package, Search } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
+import { fold } from '@/lib/textIndex'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
 import { useProducts } from '@/features/stock/useProducts'
 
 type SortKey = 'profit' | 'revenue' | 'sold'
@@ -26,6 +32,7 @@ type SortKey = 'profit' | 'revenue' | 'sold'
 interface Row {
   id: string
   name: string
+  category: string
   soldQty: number
   soldRevenue: number
   soldCost: number
@@ -41,6 +48,10 @@ export function ReportsPage() {
   const { t } = useTranslation()
   const { products, loading, error } = useProducts()
   const [sort, setSort] = useState<SortKey>('profit')
+  const [search, setSearch] = useState('')
+  const [category, setCategory] = useState('')
+  const [onlySold, setOnlySold] = useState(true)
+  const listTop = useRef<HTMLDivElement>(null)
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
@@ -71,6 +82,7 @@ export function ReportsPage() {
     return {
       id: p.id,
       name: p.name,
+      category: p.category ?? '',
       soldQty: p.soldQty ?? 0,
       soldRevenue,
       soldCost,
@@ -82,11 +94,30 @@ export function ReportsPage() {
     }
   })
 
-  const sorted = [...rows].sort((a, b) => {
-    if (sort === 'revenue') return b.soldRevenue - a.soldRevenue
-    if (sort === 'sold') return b.soldQty - a.soldQty
-    return b.profit - a.profit
-  })
+  const categories = useMemo(
+    () => [...new Set(products.map((p) => p.category ?? ''))].sort((a, b) => a.localeCompare(b)),
+    [products],
+  )
+
+  const q = fold(search)
+  const sorted = rows
+    .filter(
+      (r) =>
+        (!onlySold || r.soldQty !== 0) &&
+        (category === '' || r.category === category) &&
+        (q === '' || fold(r.name).includes(q)),
+    )
+    .sort((a, b) => {
+      if (sort === 'revenue') return b.soldRevenue - a.soldRevenue
+      if (sort === 'sold') return b.soldQty - a.soldQty
+      // An uncosted article's "profit" is its whole revenue, so ranked by that
+      // number it went straight to the top of "les plus rentables" — the very
+      // thing the comment above says must not happen. It sinks below every
+      // article whose profit is real, still visible, with its orange badge.
+      if (a.uncosted !== b.uncosted) return a.uncosted ? 1 : -1
+      return b.profit - a.profit
+    })
+  const paged = usePaged(sorted, `${sort}|${q}|${category}|${onlySold}`)
 
   const totalRevenue = rows.reduce((s, r) => s + r.soldRevenue, 0)
   const totalCost = rows.reduce((s, r) => s + r.soldCost, 0)
@@ -163,12 +194,35 @@ export function ReportsPage() {
         </EmptyState.Root>
       ) : (
         <>
-          <Flex align="center" gap={3} mb={3}>
-            <Text fontWeight="semibold">{t('reports.sortBy')}</Text>
-            <NativeSelect.Root size="md" width="auto">
+          <Flex gap={3} mb={3} wrap="wrap" align="center" ref={listTop}>
+            <InputGroup flex="2" minW="14rem" startElement={<Search size={20} />}>
+              <Input
+                size="lg"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder={t('stock.searchPlaceholder')}
+              />
+            </InputGroup>
+            <NativeSelect.Root size="lg" flex="1" minW="11rem">
+              <NativeSelect.Field
+                value={category}
+                onChange={(e) => setCategory(e.currentTarget.value)}
+                aria-label={t('filters.category')}
+              >
+                <option value="">{t('filters.categoryAll')}</option>
+                {categories.map((c) => (
+                  <option key={c} value={c}>
+                    {c || t('filters.categoryNone')}
+                  </option>
+                ))}
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+            <NativeSelect.Root size="lg" flex="1" minW="11rem">
               <NativeSelect.Field
                 value={sort}
                 onChange={(e) => setSort(e.currentTarget.value as SortKey)}
+                aria-label={t('reports.sortBy')}
               >
                 <option value="profit">{t('reports.byProfit')}</option>
                 <option value="revenue">{t('reports.byRevenue')}</option>
@@ -176,6 +230,18 @@ export function ReportsPage() {
               </NativeSelect.Field>
               <NativeSelect.Indicator />
             </NativeSelect.Root>
+            <Switch.Root
+              size="lg"
+              colorPalette="brand"
+              checked={onlySold}
+              onCheckedChange={(e) => setOnlySold(e.checked)}
+            >
+              <Switch.HiddenInput />
+              <Switch.Control>
+                <Switch.Thumb />
+              </Switch.Control>
+              <Switch.Label>{t('filters.onlySold')}</Switch.Label>
+            </Switch.Root>
           </Flex>
 
           <Card.Root>
@@ -206,7 +272,14 @@ export function ReportsPage() {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {sorted.map((r) => {
+                    {paged.pageItems.length === 0 && (
+                      <Table.Row>
+                        <Table.Cell colSpan={7}>
+                          <Text color="fg.muted">{t('stock.noResults')}</Text>
+                        </Table.Cell>
+                      </Table.Row>
+                    )}
+                    {paged.pageItems.map((r) => {
                       const losing = r.soldQty > 0 && r.profit <= 0
                       return (
                         <Table.Row key={r.id}>
@@ -258,6 +331,15 @@ export function ReportsPage() {
               </Table.ScrollArea>
             </Card.Body>
           </Card.Root>
+          <Pager
+            page={paged.page}
+            pageCount={paged.pageCount}
+            start={paged.start}
+            end={paged.end}
+            total={paged.total}
+            onChange={paged.setPage}
+            anchorRef={listTop}
+          />
         </>
       )}
     </Box>

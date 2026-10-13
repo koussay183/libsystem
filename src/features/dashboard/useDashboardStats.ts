@@ -19,7 +19,7 @@
 import { useMemo } from 'react'
 import type { Customer, CreditEntry, Product, Purchase, Sale } from '@/types/models'
 import { purchaseOwed, purchaseStatus } from '@/features/purchases/usePurchases'
-import { groupByCustomer, lastPaymentAt, debtStartedAt } from '@/features/credit/ledger'
+import { groupByCustomer, reminderSince } from '@/features/credit/ledger'
 import { bucketKey, buildBuckets, periodRange, previousRange } from './periods'
 import type { Period, Range } from './periods'
 import { fromMinor } from '@/lib/money'
@@ -296,7 +296,8 @@ export function useDashboardStats({
     const bestSellers: SellerRow[] = products
       .map((p) => {
         const revenue = p.soldRevenue ?? 0
-        const profit = revenue - (p.soldCost ?? 0)
+        const cost = p.soldCost ?? 0
+        const profit = revenue - cost
         return {
           id: p.id,
           name: p.name,
@@ -304,9 +305,14 @@ export function useDashboardStats({
           revenue,
           profit,
           margin: revenue > 0 ? (profit / revenue) * 100 : null,
+          // Sold with no purchase price behind it: its "profit" is its whole
+          // revenue. See ReportsPage — left in, these were "vos meilleures
+          // ventes" at 100 % simply because nobody had costed them. They are
+          // already listed under "Prix d'achat manquant".
+          uncosted: cost === 0 && revenue > 0,
         }
       })
-      .filter((r) => r.soldQty > 0)
+      .filter((r) => r.soldQty > 0 && !r.uncosted)
       .sort((a, b) => b.profit - a.profit)
       .slice(0, TOP_N)
 
@@ -412,15 +418,17 @@ export function useDashboardStats({
       .map((p) => ({ id: p.id, name: p.name, amount: null, count: p.quantity }))
       .sort((a, b) => (a.count ?? 0) - (b.count ?? 0))
 
-    // The clock runs from the client's last actual payment (or, if he has never
-    // paid, from the day the debt started). `updatedAt` would have been wrong:
-    // merely correcting a phone number bumps it and would clear the alert.
+    // The clock runs from the client's last actual payment, or from the day
+    // the current debt started if that is later — the same clock as the
+    // carnet's "à relancer" badge (ledger.reminderSince). `updatedAt` would have
+    // been wrong: merely correcting a phone number bumps it and would clear the
+    // alert.
     const byClient = groupByCustomer(creditEntries)
     const creditRisk: FixRow[] = customers
       .filter((c) => c.balance > 0)
       .map((c) => {
         const entries = byClient.get(c.id) ?? []
-        const since = lastPaymentAt(entries) ?? debtStartedAt(entries)
+        const since = reminderSince(entries)
         return {
           id: c.id,
           name: c.name,

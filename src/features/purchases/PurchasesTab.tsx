@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -20,9 +20,16 @@ import {
   Alert,
   EmptyState,
 } from '@chakra-ui/react'
-import { Plus, Truck, Wallet, Search, Trash2, Filter } from 'lucide-react'
+import { Plus, Truck, Wallet, Search, Trash2 } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
+import { fold } from '@/lib/textIndex'
+import { inSpan, spanOf } from '@/lib/dateRange'
+import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
+import { usePaged } from '@/lib/usePaged'
+import { Pager } from '@/components/Pager'
+import { PeriodFilter } from '@/components/PeriodFilter'
+import { useProducts } from '@/features/stock/useProducts'
 import { usePurchases, purchaseOwed, purchaseStatus, removePurchase } from './usePurchases'
 import type { PurchaseStatus } from './usePurchases'
 import { NewPurchase } from './NewPurchase'
@@ -41,13 +48,25 @@ const STATUS_STYLE = {
 export function PurchasesTab() {
   const { t } = useTranslation()
   const { purchases, loading, error } = usePurchases()
+  // Kept warm so removePurchase can tell a deleted article from a live one
+  // (isLiveProduct answers from this list, and says "don't know" without it).
+  useProducts()
 
   const [open, setOpen] = useState(false)
-  const [settling, setSettling] = useState<Purchase | null>(null)
+  /**
+   * The invoice being paid, by id — resolved against the live list, so the
+   * dialog's "reste à payer" and its cap follow a payment made on the other
+   * machine. A copy taken at the click let the same 1000 be paid twice.
+   */
+  const [settlingId, setSettlingId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [supplier, setSupplier] = useState(ALL)
-  const [onlyUnpaid, setOnlyUnpaid] = useState(false)
+  const [status, setStatus] = useState<PurchaseStatus | typeof ALL>(ALL)
+  const [period, setPeriod] = useState<HistoryPeriod>('all')
+  const [custom, setCustom] = useState<CustomDates>({ from: '', to: '' })
   const [actionError, setActionError] = useState('')
+  const listTop = useRef<HTMLDivElement>(null)
+  const settling = settlingId ? (purchases.find((p) => p.id === settlingId) ?? null) : null
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
@@ -62,17 +81,33 @@ export function PurchasesTab() {
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [purchases])
 
-  const q = search.trim().toLowerCase()
+  const q = fold(search)
+  const span = spanOf(period, custom)
   const filtered = purchases.filter((p) => {
-    if (onlyUnpaid && purchaseOwed(p) <= 0) return false
+    if (!inSpan(p.date, span)) return false
+    if (status !== ALL && purchaseStatus(p) !== status) return false
     if (supplier !== ALL && (p.supplier ?? '') !== supplier) return false
     if (q === '') return true
     return (
-      (p.supplier ?? '').toLowerCase().includes(q) ||
-      (p.reference ?? '').toLowerCase().includes(q) ||
-      (p.note ?? '').toLowerCase().includes(q)
+      fold(p.supplier ?? '').includes(q) ||
+      fold(p.reference ?? '').includes(q) ||
+      fold(p.note ?? '').includes(q)
     )
   })
+  const narrowed = q !== '' || supplier !== ALL || status !== ALL || period !== 'all'
+  const paged = usePaged(
+    filtered,
+    `${q}|${supplier}|${status}|${span.from ?? ''}|${span.to ?? ''}`,
+  )
+  const filteredTotal = filtered.reduce((s, p) => s + p.total, 0)
+  const filteredOwed = filtered.reduce((s, p) => s + purchaseOwed(p), 0)
+  const resetFilters = () => {
+    setSearch('')
+    setSupplier(ALL)
+    setStatus(ALL)
+    setPeriod('all')
+    setCustom({ from: '', to: '' })
+  }
 
   /**
    * removePurchase enqueues the stock reversal and the delete and returns, so the
@@ -172,17 +207,64 @@ export function PurchasesTab() {
               <NativeSelect.Indicator />
             </NativeSelect.Root>
           </Box>
-          <Button
-            size="lg"
-            variant={onlyUnpaid ? 'solid' : 'outline'}
-            colorPalette={onlyUnpaid ? 'red' : 'gray'}
-            onClick={() => setOnlyUnpaid((v) => !v)}
-          >
-            <Filter size={20} />
-            {t('purchases.filterUnpaid')}
-          </Button>
+          <Box flex="1" minW="12rem">
+            <NativeSelect.Root size="lg">
+              <NativeSelect.Field
+                value={status}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setStatus(e.currentTarget.value as PurchaseStatus | typeof ALL)
+                }
+                aria-label={t('purchases.status')}
+              >
+                <option value={ALL}>{t('filters.paymentAll')}</option>
+                <option value="unpaid">{t('purchases.unpaid')}</option>
+                <option value="partial">{t('purchases.paidPartial')}</option>
+                <option value="paid">{t('purchases.paidFull')}</option>
+              </NativeSelect.Field>
+              <NativeSelect.Indicator />
+            </NativeSelect.Root>
+          </Box>
         </Flex>
+        <PeriodFilter period={period} onPeriod={setPeriod} custom={custom} onCustom={setCustom} />
       </Stack>
+
+      {/* What the filtered invoices add up to: how much was bought from him this month. */}
+      {!loading && !error && purchases.length > 0 && (
+        <Flex
+          ref={listTop}
+          align="center"
+          gap={3}
+          mb={3}
+          wrap="wrap"
+          color="fg.muted"
+          fontSize="sm"
+        >
+          <Text>
+            {t('purchases.countLabel', { count: filtered.length })}
+            {filtered.length > 0 && (
+              <>
+                {' · '}
+                <Text as="span" fontWeight="bold" color="fg">
+                  {money(filteredTotal)}
+                </Text>
+                {filteredOwed > 0 && (
+                  <>
+                    {' · '}
+                    <Text as="span" fontWeight="bold" color="red.600">
+                      {t('purchases.owedLabel', { amount: money(filteredOwed) })}
+                    </Text>
+                  </>
+                )}
+              </>
+            )}
+          </Text>
+          {narrowed && (
+            <Button size="xs" variant="ghost" onClick={resetFilters}>
+              {t('filters.clear')}
+            </Button>
+          )}
+        </Flex>
+      )}
 
       {actionError && (
         <Alert.Root status="error" mb={4}>
@@ -248,7 +330,7 @@ export function PurchasesTab() {
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {filtered.map((p) => {
+              {paged.pageItems.map((p) => {
                 const owed = purchaseOwed(p)
                 const status = purchaseStatus(p)
                 const style = STATUS_STYLE[status]
@@ -295,7 +377,7 @@ export function PurchasesTab() {
                           <Button
                             size="lg"
                             colorPalette="brand"
-                            onClick={() => setSettling(p)}
+                            onClick={() => setSettlingId(p.id)}
                           >
                             <Wallet size={20} />
                             {t('purchases.settle')}
@@ -321,9 +403,21 @@ export function PurchasesTab() {
         </Box>
       )}
 
+      {!loading && !error && (
+        <Pager
+          page={paged.page}
+          pageCount={paged.pageCount}
+          start={paged.start}
+          end={paged.end}
+          total={paged.total}
+          onChange={paged.setPage}
+          anchorRef={listTop}
+        />
+      )}
+
       {open && <NewPurchase open onClose={() => setOpen(false)} />}
       {settling && (
-        <SettlePurchase open purchase={settling} onClose={() => setSettling(null)} />
+        <SettlePurchase open purchase={settling} onClose={() => setSettlingId(null)} />
       )}
     </Box>
   )
