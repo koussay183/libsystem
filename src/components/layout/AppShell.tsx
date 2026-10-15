@@ -386,7 +386,7 @@ export function AppShell() {
   const brand = (
     <HStack asChild gap={2} color="ink" px={4} py={4} minH="4.5rem">
       <Link to="/" aria-label={t('app.name')}>
-        <BrandLogo size={30} />
+        <BrandLogo height={30} />
       </Link>
     </HStack>
   )

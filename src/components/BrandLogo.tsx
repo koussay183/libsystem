@@ -1,81 +1,46 @@
 /**
- * The Mektebti mark: three rising bars under a growth arrow — the "M" of the
- * logo the brand was drawn from — and the wordmark beside it.
+ * The Mektebti logo, exactly as the owner drew it — the PNGs in public/brand
+ * are cut straight out of the original artwork, never redrawn.
  *
- * Plain SVG and plain spans, no Chakra: the landing page uses it too, and it
- * must render identically there, in the sidebar and on the login screen.
- * Colours come from `currentColor` + one accent, so it works on light and dark.
+ *  · `tone="light"` — dark wordmark, for white/pale backgrounds (the app).
+ *  · `tone="dark"`  — white wordmark, for the black/ink backgrounds (landing).
+ *
+ * Plain <img>, no Chakra, so the landing page can use it without pulling the
+ * design system's styling in. Width/height are set so nothing jumps on load.
  */
 
-type MarkProps = {
-  size?: number
-  /** Colour of the bars and arrow. Defaults to the brand ultramarine. */
-  color?: string
-  /** Colour of the arrow head and the last bar — the "growth" note. */
-  accent?: string
-  title?: string
+const RATIO = 510 / 110
+
+type LogoProps = {
+  /** Rendered height in px. */
+  height?: number
+  tone?: 'light' | 'dark'
 }
 
-export function BrandMark({ size = 32, color = '#2A12CF', accent = '#5B4BFF', title }: MarkProps) {
+export function BrandLogo({ height = 32, tone = 'light' }: LogoProps) {
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 64 64"
-      role={title ? 'img' : undefined}
-      aria-hidden={title ? undefined : true}
-      aria-label={title}
-      focusable="false"
-    >
-      <rect x="6" y="38" width="12" height="20" rx="2.5" fill={color} />
-      <rect x="22" y="30" width="12" height="28" rx="2.5" fill={color} />
-      <rect x="38" y="22" width="12" height="36" rx="2.5" fill={accent} />
-      <path
-        d="M4 32 C 20 30, 36 22, 50 10"
-        fill="none"
-        stroke={accent}
-        strokeWidth="5"
-        strokeLinecap="round"
-      />
-      <path d="M43 6 L58 4 L54 19 Z" fill={accent} />
-    </svg>
+    <img
+      src={tone === 'dark' ? '/brand/logo-on-dark.png' : '/brand/logo-on-light.png'}
+      alt="Mektebti.tn"
+      width={Math.round(height * RATIO)}
+      height={height}
+      style={{ display: 'block', height, width: 'auto', maxWidth: '100%' }}
+      decoding="async"
+    />
   )
 }
 
-type LogoProps = {
-  size?: number
-  /** Text colour of the wordmark. */
-  textColor?: string
-  color?: string
-  accent?: string
-  /** Hide the ".tn" — the sidebar is narrow. */
-  short?: boolean
-}
-
-/** Mark + "MEKTEBTI.TN" set in the heaviest weight the system font has. */
-export function BrandLogo({ size = 32, textColor = 'currentColor', color, accent, short }: LogoProps) {
+/** The bars-and-arrow mark alone (blue), for small places. */
+export function BrandMark({ size = 32 }: { size?: number }) {
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: size * 0.22,
-        color: textColor,
-        direction: 'ltr',
-        lineHeight: 1,
-      }}
-    >
-      <BrandMark size={size} color={color} accent={accent} />
-      <span
-        style={{
-          fontWeight: 900,
-          fontSize: size * 0.62,
-          letterSpacing: '0.02em',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        MEKTEBTI{short ? '' : <span style={{ opacity: 0.55 }}>.TN</span>}
-      </span>
-    </span>
+    <img
+      src="/brand/mark.png"
+      alt=""
+      aria-hidden="true"
+      width={Math.round(size * (97 / 107))}
+      height={size}
+      style={{ display: 'block', height: size, width: 'auto' }}
+      decoding="async"
+    />
   )
 }

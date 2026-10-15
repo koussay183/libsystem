@@ -8,7 +8,7 @@ export type Mark = 'yes' | 'part' | 'no'
 
 export const CONTACT = {
   /** WhatsApp number without +216, e.g. '20123456'. Empty = CTAs scroll to the prices. */
-  whatsapp: '',
+  whatsapp: '98158160',
 }
 
 const fr = {
@@ -38,6 +38,14 @@ const fr = {
     debt: 'Carnet · Ahmed',
     debtValue: '35,000 DT',
   },
+  facts: [
+    ['100 %', 'utilisable hors ligne'],
+    ['0,001', 'DT : au millime près'],
+    ['2', 'langues : FR et عربي'],
+    ['1 mois', 'offert pour commencer'],
+  ] as [string, string][],
+  trust: 'Déjà en service dans des librairies en Tunisie',
+  wa: { label: 'WhatsApp', plan: 'Bonjour, je suis intéressé par la formule {{plan}} de Mektebti.' },
   why: {
     title: 'Pourquoi Mektebti ?',
     cols: ['Mektebti', 'Caisse classique', 'Cahier & Excel'],
@@ -133,6 +141,14 @@ const ar: LandingCopy = {
     debt: 'الكرّاس · أحمد',
     debtValue: '35,000 د',
   },
+  facts: [
+    ['100 %', 'يخدم بلا إنترنت'],
+    ['0,001', 'د : بالمليم'],
+    ['2', 'لغات : عربي و FR'],
+    ['شهر', 'مجاني للبداية'],
+  ],
+  trust: 'يخدم توّا في مكتبات في تونس',
+  wa: { label: 'واتساب', plan: 'السلام، يهمّني العرض {{plan}} متاع مكتبتي.' },
   why: {
     title: 'علاش مكتبتي؟',
     cols: ['مكتبتي', 'كاسة عادية', 'كرّاس و Excel'],

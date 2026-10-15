@@ -73,7 +73,7 @@ export function LoginPage() {
       <Box w="full" maxW="md">
         <Flex align="center" justify="space-between" mb={6}>
           <Link to="/decouvrir" aria-label={t('app.name')} style={{ color: '#0b0a1f' }}>
-            <BrandLogo size={36} />
+            <BrandLogo height={40} />
           </Link>
           <LanguageToggle />
         </Flex>
