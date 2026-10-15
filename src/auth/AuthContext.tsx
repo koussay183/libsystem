@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   signInWithEmailAndPassword,
@@ -11,6 +11,7 @@ import { auth, db } from '@/lib/firebase'
 import { setShopId, clearShopId, currentShopId } from '@/lib/tenant'
 import { resetLiveCollections } from '@/lib/liveCollection'
 import { syncStore, beginShutdown, resetLedger } from '@/lib/syncStatus'
+import { withDeadline } from '@/lib/deadline'
 
 /**
  * Real accounts, one shop each.
@@ -54,6 +55,24 @@ const DRAIN_TIMEOUT_MS = 4000
  */
 const LAPSE_TICK_MS = 60_000
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** How far ahead of the deadline the owner is warned, so he can pay in time. */
+export const EXPIRY_WARN_DAYS = 7
+
+/**
+ * While the plan is lapsed, how often the till asks Firebase for a fresh token.
+ * A renewal from the CLI only reaches the browser with a new token, and the SDK
+ * hands out the cached one for up to an hour — a reload does not change that.
+ */
+const CLAIM_POLL_MS = 5 * 60_000
+
+/** A forced token refresh is one round trip; past this, the line is not there. */
+const CLAIM_REFRESH_MS = 6_000
+
+/** What "J'ai renouvelé — vérifier" found. */
+export type ClaimCheck = 'renewed' | 'unchanged' | 'unreachable'
+
 /** What the CLI writes into the token, and what the rules read back out. */
 interface ShopClaims {
   shopId?: string
@@ -82,6 +101,12 @@ export interface AuthContextValue {
    * owner that nothing can be saved.
    */
   blocked: boolean
+  /** The plan ends within EXPIRY_WARN_DAYS and has not ended yet. */
+  expiresSoon: boolean
+  /** When the server starts refusing writes: paidUntil plus the grace window. */
+  graceEndsAt: number | null
+  /** Re-reads the plan from the server instead of the cached token. */
+  refreshClaims: () => Promise<ClaimCheck>
   email: string
   login: (email: string, password: string) => Promise<void>
   logout: () => Promise<void>
@@ -183,6 +208,12 @@ function isBlocked(shop: string, paidUntil: number | null): boolean {
   return shop !== '' && paidUntil !== null && paidUntil + RULES_GRACE_MS < Date.now()
 }
 
+function isExpiringSoon(shop: string, paidUntil: number | null): boolean {
+  if (shop === '' || paidUntil === null) return false
+  const left = paidUntil - Date.now()
+  return left >= 0 && left < EXPIRY_WARN_DAYS * DAY_MS
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   // Seeded from disk so the very first render already knows whether to show
   // the till or the login screen, with or without a connection.
@@ -196,6 +227,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   // correct on the first frame of an offline reload.
   const [lapsed, setLapsed] = useState<boolean>(() => isLapsed(shopId, paidUntil))
   const [blocked, setBlocked] = useState<boolean>(() => isBlocked(shopId, paidUntil))
+  const [expiresSoon, setExpiresSoon] = useState<boolean>(() => isExpiringSoon(shopId, paidUntil))
 
   /**
    * The plan deadline is a moment in time, so noticing it requires a clock.
@@ -222,6 +254,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // tickers could report a plan that had lapsed but not yet lapsed.
       const shut = isBlocked(shopId, paidUntil)
       setBlocked((prev) => (prev === shut ? prev : shut))
+      const soon = isExpiringSoon(shopId, paidUntil)
+      setExpiresSoon((prev) => (prev === soon ? prev : soon))
     }
     tick()
     const timer = setInterval(tick, LAPSE_TICK_MS)
@@ -336,6 +370,51 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         .finally(() => setLoading(false))
     })
   }, [])
+
+  /**
+   * Asks the server for the plan instead of trusting the cached token.
+   *
+   * The token is only renewed by the SDK when it is about to expire, so a shop
+   * that has just paid kept being told — and refused — for up to an hour, even
+   * after a reload. Forcing a refresh is one round trip; onIdTokenChanged above
+   * also sees the new token, this only answers the button sooner.
+   */
+  const refreshClaims = useCallback(async (): Promise<ClaimCheck> => {
+    const account = auth.currentUser
+    if (!account) return 'unreachable'
+    const result = await withDeadline(account.getIdTokenResult(true), CLAIM_REFRESH_MS)
+    if (!result) return 'unreachable'
+    const claims = result.claims as unknown as ShopClaims
+    const until = typeof claims.paidUntil === 'number' ? claims.paidUntil : null
+    setPaidUntil(until)
+    writePaidUntil(until)
+    return isLapsed(currentShopId(), until) ? 'unchanged' : 'renewed'
+  }, [])
+
+  // While lapsed, look again every few minutes and whenever the till comes back
+  // to the screen, so a renewal lands without anybody pressing anything.
+  useEffect(() => {
+    if (!lapsed) return
+    let last = 0
+    const attempt = () => {
+      if (!syncStore.getSnapshot().online) return
+      if (Date.now() - last < CLAIM_POLL_MS) return
+      last = Date.now()
+      void refreshClaims()
+    }
+    attempt()
+    const timer = setInterval(attempt, CLAIM_POLL_MS)
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') attempt()
+    }
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      clearInterval(timer)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
+  }, [lapsed, refreshClaims])
+
+  const graceEndsAt = paidUntil === null ? null : paidUntil + RULES_GRACE_MS
 
   const login = async (emailInput: string, password: string) => {
     const credential = await signInWithEmailAndPassword(auth, emailInput.trim(), password)
@@ -461,7 +540,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   return (
     <AuthContext.Provider
-      value={{ user, loading, shopId, paidUntil, lapsed, blocked, email, login, logout }}
+      value={{
+        user,
+        loading,
+        shopId,
+        paidUntil,
+        lapsed,
+        blocked,
+        expiresSoon,
+        graceEndsAt,
+        refreshClaims,
+        email,
+        login,
+        logout,
+      }}
     >
       {children}
     </AuthContext.Provider>

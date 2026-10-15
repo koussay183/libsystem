@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -18,6 +18,7 @@ import { BrandLogo } from '@/components/BrandLogo'
 import { markShopMachine } from '@/features/landing/shopMachine'
 import { useAuth } from '@/auth/AuthContext'
 import { LanguageToggle } from '@/components/LanguageToggle'
+import { CONTACT_DISPLAY, whatsappLink } from '@/lib/contact'
 
 /**
  * Email and password, one account per shop.
@@ -29,7 +30,7 @@ import { LanguageToggle } from '@/components/LanguageToggle'
  */
 export function LoginPage() {
   const { t } = useTranslation()
-  const { login } = useAuth()
+  const { login, user, shopId } = useAuth()
   const navigate = useNavigate()
 
   const [email, setEmail] = useState('')
@@ -53,12 +54,16 @@ export function LoginPage() {
       const code = (err as { code?: string } | null)?.code ?? ''
       if (code === 'auth/network-request-failed') setError(t('auth.offline'))
       else if (code === 'auth/too-many-requests') setError(t('auth.tooMany'))
-      else if (code === 'auth/user-disabled') setError(t('auth.disabled'))
+      else if (code === 'auth/user-disabled') setError(t('auth.disabled', { phone: CONTACT_DISPLAY }))
       else setError(t('auth.invalid'))
     } finally {
       setBusy(false)
     }
   }
+
+  // Already signed in on this machine (a bookmark, or Back after logging in):
+  // the form again would read as "my session is gone".
+  if (user && shopId && !busy) return <Navigate to="/" replace />
 
   return (
     <Flex
@@ -100,6 +105,8 @@ export function LoginPage() {
                     value={email}
                     onChange={(e: ChangeEvent<HTMLInputElement>) => setEmail(e.target.value)}
                     required
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? 'login-error' : undefined}
                   />
                 </Field.Root>
 
@@ -114,11 +121,13 @@ export function LoginPage() {
                       setPassword(e.target.value)
                     }
                     required
+                    aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? 'login-error' : undefined}
                   />
                 </Field.Root>
 
                 {error && (
-                  <Alert.Root status="error">
+                  <Alert.Root status="error" role="alert" id="login-error">
                     <Alert.Indicator />
                     <Alert.Content>
                       <Alert.Title>{error}</Alert.Title>
@@ -136,9 +145,26 @@ export function LoginPage() {
                   {busy ? t('auth.signingIn') : t('auth.signIn')}
                 </Button>
 
-                <Text fontSize="sm" color="fg.subtle" textAlign="center">
-                  {t('auth.noAccountHint')}
-                </Text>
+                {/* Accounts and passwords are handled by Mektebti, so both ways
+                    out of this screen are a WhatsApp message already written. */}
+                <Flex justify="space-between" gap={3} wrap="wrap" fontSize="sm">
+                  <a
+                    href={whatsappLink(t('platformFix.forgotMessage', { email: email.trim() }))}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textDecoration: 'underline' }}
+                  >
+                    {t('platformFix.forgotPassword')}
+                  </a>
+                  <a
+                    href={whatsappLink(t('platformFix.newClientMessage'))}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ textDecoration: 'underline' }}
+                  >
+                    {t('auth.noAccountHint')}
+                  </a>
+                </Flex>
               </Stack>
             </form>
           </Card.Body>

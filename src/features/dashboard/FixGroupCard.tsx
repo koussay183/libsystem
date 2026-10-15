@@ -13,6 +13,7 @@ import {
 } from '@chakra-ui/react'
 import { ChevronDown, Wrench } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
+import { writeSession } from '@/lib/useSessionState'
 import { FIX_ROWS_SHOWN } from './useDashboardStats'
 import type { FixRow } from './useDashboardStats'
 
@@ -32,6 +33,11 @@ interface FixGroupCardProps {
   showAmount?: boolean
   /** Renders the per-row secondary figure (units left, days late…). */
   countLabel?: (count: number) => string
+  /**
+   * List filters to set before opening `to` (useSessionState keys), so
+   * "Corriger" lands on the offenders rather than on the whole list.
+   */
+  preset?: Record<string, unknown>
 }
 
 /**
@@ -50,6 +56,7 @@ export function FixGroupCard({
   total,
   showAmount = false,
   countLabel,
+  preset,
 }: FixGroupCardProps) {
   const { t } = useTranslation()
   const symbol = t(moneySymbolKey())
@@ -90,7 +97,7 @@ export function FixGroupCard({
               <Text
                 fontSize="lg"
                 fontWeight="bold"
-                color={total < 0 ? 'red.600' : 'fg'}
+                color={total < 0 ? 'red.fg' : 'fg'}
                 whiteSpace="nowrap"
               >
                 {formatMoney(total, { symbol })}
@@ -105,7 +112,12 @@ export function FixGroupCard({
             </Collapsible.Trigger>
 
             <Button asChild size="sm" colorPalette="brand">
-              <RouterLink to={to}>
+              <RouterLink
+                to={to}
+                onClick={() => {
+                  for (const [key, value] of Object.entries(preset ?? {})) writeSession(key, value)
+                }}
+              >
                 <Wrench size={16} />
                 {t('dashboard.fixNow')}
               </RouterLink>
@@ -142,7 +154,7 @@ export function FixGroupCard({
                           textAlign="end"
                           fontWeight="semibold"
                           whiteSpace="nowrap"
-                          color={(r.amount ?? 0) < 0 ? 'red.600' : 'fg'}
+                          color={(r.amount ?? 0) < 0 ? 'red.fg' : 'fg'}
                         >
                           {formatMoney(r.amount ?? 0, { symbol })}
                         </Table.Cell>

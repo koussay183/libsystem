@@ -37,6 +37,7 @@ export function CustomerForm({
   onPickExisting,
   initialName,
   initialPhone,
+  initialCin,
 }: {
   open: boolean
   onClose: () => void
@@ -59,6 +60,7 @@ export function CustomerForm({
   /** Pre-fills a NEW client from what was typed in the search box. */
   initialName?: string
   initialPhone?: string
+  initialCin?: string
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -104,11 +106,19 @@ export function CustomerForm({
    * over the half-typed one.
    */
   const customerId = customer?.id
+  /** The values the dialog opened with: what "changed" is measured against. */
+  const initial = useRef({ name: '', phone: '', cin: '', note: '' })
   useEffect(() => {
     if (!open) return
+    initial.current = {
+      name: customer?.name ?? '',
+      phone: customer?.phone ?? '',
+      cin: customer?.cin ?? '',
+      note: customer?.note ?? '',
+    }
     setName(customer?.name ?? initialName ?? '')
     setPhone(customer?.phone ?? (initialPhone ? formatPhoneTyping(initialPhone) : ''))
-    setCin(customer?.cin ?? '')
+    setCin(customer?.cin ?? initialCin ?? '')
     setNote(customer?.note ?? '')
     setOpening('')
     setNameError('')
@@ -144,14 +154,25 @@ export function CustomerForm({
     setBusy(true)
     setSaveError('')
     try {
+      // A stored phone the owner did not touch is not re-tidied: saving a
+      // note must not rewrite "98123456 papa" or any number he typed his way.
+      const was = initial.current
+      const phoneChanged = phone !== (customer ? was.phone : '')
       const input = {
         name: name.trim(),
-        phone: normalizePhone(phone) || undefined,
+        phone: (phoneChanged ? normalizePhone(phone) : phone.trim()) || undefined,
         cin: cin.trim() || undefined,
         note: note.trim() || undefined,
       }
       if (customer) {
-        await updateCustomer(customer.id, input)
+        // Only what changed in this dialog, so an edit made on the other till
+        // in the meantime is not reverted by a field nobody touched here.
+        const changed: Partial<typeof input> = {}
+        if (input.name !== was.name) changed.name = input.name
+        if (phoneChanged) changed.phone = input.phone
+        if ((input.cin ?? '') !== was.cin) changed.cin = input.cin
+        if ((input.note ?? '') !== was.note) changed.note = input.note
+        await updateCustomer(customer.id, changed)
       } else {
         const id = createCustomer(input)
         // Queued right behind the customer's own write. Firestore replays

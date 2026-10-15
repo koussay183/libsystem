@@ -184,7 +184,17 @@ export function useAllCreditEntries(max = 3000) {
     )
   }, [max])
 
-  return { entries, loading, error }
+  /**
+   * When the cap was hit, the date of the oldest line read: older history
+   * exists but was not loaded. Null when the feed is the whole carnet. See
+   * carnetClock in src/features/credit/ledger.ts.
+   */
+  const horizon =
+    entries.length >= max && entries.length > 0
+      ? entryTime(entries[entries.length - 1])
+      : null
+
+  return { entries, loading, error, horizon }
 }
 
 /**
@@ -232,19 +242,20 @@ export function createCustomer(input: CustomerInput): string {
  * `await updateCustomer(...)` and now resolves on the next microtask. Do not
  * "clean this up" by dropping async.
  */
-export async function updateCustomer(id: string, input: CustomerInput): Promise<void> {
-  // deleteField() removes a cleared optional field. Plain undefined would be
-  // silently ignored (db is created with ignoreUndefinedProperties), leaving
-  // the stale value in place.
-  void track(
-    updateDoc(doc(db, shopPath(CUSTOMERS), id), {
-      name: input.name,
-      phone: input.phone ? input.phone : deleteField(),
-      cin: input.cin ? input.cin : deleteField(),
-      note: input.note ? input.note : deleteField(),
-      updatedAt: Date.now(),
-    }),
-  ).catch(() => {
+export async function updateCustomer(
+  id: string,
+  input: Partial<CustomerInput>,
+): Promise<void> {
+  // Only the fields present in `input` are written — the ones the owner
+  // changed. Writing all four put back a phone the other till had corrected
+  // meanwhile. deleteField() removes a cleared optional field; plain undefined
+  // would be silently ignored (ignoreUndefinedProperties).
+  const patch: Record<string, unknown> = { updatedAt: Date.now() }
+  if ('name' in input && input.name) patch.name = input.name
+  for (const key of ['phone', 'cin', 'note'] as const) {
+    if (key in input) patch[key] = input[key] ? input[key] : deleteField()
+  }
+  void track(updateDoc(doc(db, shopPath(CUSTOMERS), id), patch)).catch(() => {
     /* replayed by the SDK; a refusal surfaces through the sync badge */
   })
 }
@@ -318,8 +329,8 @@ export async function removeCustomer(id: string) {
     (await getDocFromCache(ref).catch(() => null))
   // A cache miss and an already-deleted customer are indistinguishable from
   // here: both are a non-existent snapshot. Trusting the implied zero would let
-  // an evicted document (there is no cacheSizeBytes, so the SDK's 40 MB LRU
-  // applies) turn a debtor into a deletable customer, so the resident list gets
+  // a document this device never cached (the cache is unlimited, but only holds
+  // what was loaded here) turn a debtor into a deletable customer, so the resident list gets
   // the last word — it is the same document, and createLiveCollection keeps its
   // final snapshot after the last screen unmounts.
   const listed = customersStore.getSnapshot().data.find((c) => c.id === id)
@@ -442,11 +453,14 @@ export async function addCreditEntry(
  * batch. A client who settled and was deleted can still be named on an old
  * ticket, and correcting that ticket must not be refused because of him.
  *
- * `null` = the customers listener has never delivered here; callers proceed.
+ * `null` = the customers listener has never delivered here, or has failed and
+ * cannot be trusted; callers proceed.
  */
 export function isLiveCustomer(id: string): boolean | null {
   const state = customersStore.getSnapshot()
-  if (state.loading) return null
+  // A listener that errored or gave up holds a frozen list; a client created
+  // since is missing from it and is still very much alive.
+  if (state.loading || state.fatal || state.error !== null) return null
   return state.data.some((c) => c.id === id)
 }
 

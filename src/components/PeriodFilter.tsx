@@ -1,7 +1,8 @@
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Box, Field, Flex, Input, NativeSelect } from '@chakra-ui/react'
-import { HISTORY_PERIODS } from '@/lib/dateRange'
+import dayjs from 'dayjs'
+import { HISTORY_PERIODS, spanOf } from '@/lib/dateRange'
 import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
 import type { ActiveFilter } from './ActiveFilters'
 
@@ -27,11 +28,24 @@ export function periodChip(
   onRemove: () => void,
 ): ActiveFilter[] {
   if (period === 'all') return []
-  const label =
-    period === 'custom'
-      ? [custom.from, custom.to].filter(Boolean).join(' → ') || t(LABEL_KEY.custom)
-      : t(LABEL_KEY[period])
-  return [{ key: 'period', label, onRemove }]
+  return [
+    { key: 'period', label: period === 'custom' ? customLabel(t, custom) : t(LABEL_KEY[period]), onRemove },
+  ]
+}
+
+/**
+ * The window actually applied, oldest first and in DD/MM/YYYY — built from
+ * spanOf, which swaps dates typed the wrong way round. The raw fields read
+ * "2026-10-12 → 2026-10-05" for a list that was in fact 05 → 12.
+ */
+function customLabel(t: (key: string) => string, custom: CustomDates): string {
+  const span = spanOf('custom', custom)
+  if (span.from === null && span.to === null) return t(LABEL_KEY.custom)
+  const fmt = (ms: number) => dayjs(ms).format('DD/MM/YYYY')
+  const from = span.from === null ? '…' : fmt(span.from)
+  // `to` is exclusive (the next midnight); the last day shown is the one before.
+  const to = span.to === null ? '…' : fmt(span.to - 1)
+  return `${from} → ${to}`
 }
 
 /** For useSessionState: a stored custom window must still be two strings. */
@@ -77,9 +91,11 @@ export function PeriodFilter({
           <NativeSelect.Indicator />
         </NativeSelect.Root>
       </Box>
+      {/* Wide enough for two real date inputs, and wrapping, so the "Au"
+          field no longer slides under the neighbouring select at 1024. */}
       {period === 'custom' && (
-        <Flex gap={3} flex="1" minW="16rem">
-          <Field.Root flex="1">
+        <Flex gap={3} flex="1" wrap="wrap" minW={{ base: 'full', sm: '26rem' }}>
+          <Field.Root flex="1" minW="11rem">
             <Field.Label>{t('filters.from')}</Field.Label>
             <Input
               size="lg"
@@ -88,7 +104,7 @@ export function PeriodFilter({
               onChange={(e) => onCustom({ ...custom, from: e.target.value })}
             />
           </Field.Root>
-          <Field.Root flex="1">
+          <Field.Root flex="1" minW="11rem">
             <Field.Label>{t('filters.to')}</Field.Label>
             <Input
               size="lg"

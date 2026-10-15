@@ -227,8 +227,13 @@ if (typeof window !== 'undefined') {
     // Deliberately does NOT set online: this event fires on a captive portal
     // and on a router whose uplink is dead. All it earns is a fresh look, and
     // Firestore decides.
+    //
+    // Re-armed even when the listener is still alive. After a short blip the
+    // SDK reconnects its stream without the listener ever leaving the server
+    // view, so it never re-fires and the `false` set above would stand for the
+    // rest of the day. A fresh listener answers from the server again.
     publish()
-    if (armed !== '' && unsub === null) arm(armed)
+    if (armed !== '') arm(armed)
   })
 }
 

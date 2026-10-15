@@ -21,11 +21,14 @@ import {
   ShoppingCart,
   BarChart3,
   Settings,
+  Library,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useTodaySales } from '@/features/sales/useSales'
 import { ROUTE_PALETTE } from '@/lib/navColors'
+import { isNavVisible } from '@/lib/navItems'
+import { useShopSettings } from '@/features/settings/useShopSettings'
 
 interface Tile {
   to: string
@@ -39,6 +42,7 @@ interface Tile {
 export function HomePage() {
   const { t } = useTranslation()
   const { sales, loading } = useTodaySales()
+  const { shop } = useShopSettings()
   const symbol = t(moneySymbolKey())
 
   // "How did today go?" is the first thing the owner wants when he walks in.
@@ -57,6 +61,13 @@ export function HomePage() {
       title: t('home.stockTitle'),
       desc: t('home.stockDesc'),
       palette: ROUTE_PALETTE['/stock'],
+    },
+    {
+      to: '/catalog',
+      icon: Library,
+      title: t('catalog.title'),
+      desc: t('platformFix.catalogDesc'),
+      palette: ROUTE_PALETTE['/catalog'] ?? 'brand',
     },
     {
       to: '/packs',
@@ -107,7 +118,9 @@ export function HomePage() {
       desc: t('settings.subtitle'),
       palette: ROUTE_PALETTE['/settings'],
     },
-  ]
+    // The same choice as the sidebar: a module switched off in Réglages → Menu
+    // does not keep a tile here.
+  ].filter((tile) => isNavVisible(shop.hiddenNav, tile.to))
 
   return (
     <Box>
@@ -132,13 +145,21 @@ export function HomePage() {
             >
               <ShoppingCart size={38} />
             </Box>
-            <Box minW={0} flex="1">
+            {/* minW so that on a phone the button wraps to its own row
+                instead of squeezing "Caisse" to two letters per line. */}
+            <Box minW="12rem" flex="1">
               <Text fontSize="3xl" fontWeight="bold">
                 {t('home.posTitle')}
               </Text>
               <Text opacity={0.9}>{t('home.posDesc')}</Text>
             </Box>
-            <Button asChild size="xl" colorPalette="green" flexShrink={0}>
+            <Button
+              asChild
+              size="xl"
+              colorPalette="green"
+              flexShrink={0}
+              w={{ base: 'full', sm: 'auto' }}
+            >
               <Link to="/caisse">{t('home.openCaisse')}</Link>
             </Button>
           </Flex>

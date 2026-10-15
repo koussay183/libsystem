@@ -26,9 +26,8 @@ import { withDeadline } from './deadline'
  *
  * HOW ISOLATION SURVIVES A SHARED COLLECTION. /catalog is the only path in this
  * system outside shops/{shopId}/…, and clients CANNOT WRITE TO IT AT ALL. The
- * rules grant `get` and nothing else — not even `list`, because list would let
- * one account walk the whole catalogue, and a competitor's stock list is not on
- * offer here.
+ * rules grant `get`, and `list` only in pages of at most 120 (the catalogue
+ * browser); nothing in a client can create or change an entry.
  *
  * A shop contributes by writing into its OWN subtree, at
  * shops/{shopId}/catalog_contributions/{code}, which the existing tenant rules

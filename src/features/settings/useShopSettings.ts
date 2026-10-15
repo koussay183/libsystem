@@ -105,15 +105,22 @@ const FORM_FIELDS = [
  * the meantime is not mistaken for one the owner removed.
  */
 export function saveShopForm(form: ShopSettings, baseline: ShopSettings): void {
+  // Only what the owner changed since the draft was taken. Writing the whole
+  // frozen draft put back a margin or a phone the other machine had changed in
+  // the meantime, and resurrected the margin of a category renamed since.
   const patch: Record<string, unknown> = { updatedAt: Date.now() }
   for (const key of FORM_FIELDS) {
     const value = form[key]
+    if (value === baseline[key]) continue
     patch[key] = value === undefined ? deleteField() : value
   }
 
-  const margins: Record<string, unknown> = { ...(form.categoryMargins ?? {}) }
-  for (const name of Object.keys(baseline.categoryMargins ?? {})) {
-    if (!(name in margins)) margins[name] = deleteField()
+  const before = baseline.categoryMargins ?? {}
+  const after = form.categoryMargins ?? {}
+  const margins: Record<string, unknown> = {}
+  for (const name of new Set([...Object.keys(before), ...Object.keys(after)])) {
+    if (after[name] === before[name]) continue
+    margins[name] = after[name] === undefined ? deleteField() : after[name]
   }
   if (Object.keys(margins).length > 0) patch.categoryMargins = margins
 

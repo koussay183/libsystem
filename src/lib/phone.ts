@@ -55,6 +55,9 @@ export function formatPhoneTyping(input: string): string {
 
 /** The tidy form saved with the customer: "98 123 456", or what was typed. */
 export function normalizePhone(input: string): string {
+  // Text around the number ("98 123 456 (sa mère)") is the owner's note and
+  // is kept as typed — the same rule formatPhoneTyping follows.
+  if (/[^\d\s+.\-/()]/.test(input)) return input.trim()
   const d = tnDigits(input)
   if (!d) return input.trim()
   const b = bare(input)

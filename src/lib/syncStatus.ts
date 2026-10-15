@@ -261,6 +261,9 @@ function confirmDrained() {
 
   const barrier = seq
   const queuedBefore = readLedger().q
+  // The writes queuedBefore counts that this tab started. One acknowledged
+  // during the probe has already been subtracted by done().
+  const claimed = [...inFlight].filter((id) => id <= barrier)
   drainSeq += 1
   const token = drainSeq
   draining = token
@@ -272,15 +275,17 @@ function confirmDrained() {
     if (!drained) return
 
     // Everything queued before the barrier is acknowledged; writes started
-    // during the probe are not, and keep their place in the count.
-    for (const id of inFlight) {
-      if (id <= barrier) inFlight.delete(id)
+    // during the probe are not, and keep their place in the count. Taking an id
+    // out of inFlight here also stops its own done() from subtracting it again.
+    let settledMeanwhile = 0
+    for (const id of claimed) {
+      if (!inFlight.delete(id)) settledMeanwhile += 1
     }
 
     const now = Date.now()
     editLedger((current) => ({
       ...current,
-      q: Math.max(0, current.q - queuedBefore),
+      q: Math.max(0, current.q - Math.max(0, queuedBefore - settledMeanwhile)),
       at: now,
     }))
     publish({ pending: inFlight.size, carried: 0, syncedAt: now })

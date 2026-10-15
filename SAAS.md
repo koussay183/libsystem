@@ -10,7 +10,7 @@ Everything below is written so that shop is never the thing that breaks.
 | | |
 | --- | --- |
 | Firebase project | `libsystem-tn` (Paris, `europe-west9`, Native mode) |
-| Pre-SaaS project | `mindora-2ded0` — **frozen, never written to, this is the rollback** |
+| Pre-SaaS project | id in `.env.legacy` (not in git) — **frozen, never written to, this is the rollback** |
 | Hosting | Netlify |
 | Data layout | `shops/{shopId}/products`, `…/sales`, … one subtree per shop |
 | Auth | Firebase email + password, self sign-up **off** |
@@ -24,11 +24,13 @@ changed.** A new region means a new project and another migration.
 
 ## Cut over — done 17 Aug 2026
 
+The shop's name, id and login are deliberately not written here: this file is in
+the repository, and `shops:list` / `shops:show` give them to whoever holds the
+admin key.
+
 | | |
 | --- | --- |
-| shop | Librairie Sofiene |
-| shopId | `dtMPyfM3krtS6wgdxhJ3` |
-| login | `librairie.sofiene@libsystem.tn` |
+| shop | the first client (see `shops:list`) |
 | plan | paid until 2027-08-17 |
 | imported | 791 documents — 740 products, 30 packs, 14 categories, 3 suppliers, 3 customers, settings |
 | not imported | 17 sales, 9 credit entries, 0 purchases — the fresh start that was asked for |
@@ -54,10 +56,10 @@ node cli/lib.mjs import:file --shop <shopId>
 node cli/lib.mjs verify      --shop <shopId> --file backups/<that file>
 ```
 
-`pull:legacy` needs **no service-account key for the old project** — that
-project still carries `allow read, write: if true`, so the public web API key
-frozen in `.env.legacy` is already enough to read every document. It therefore
-keeps working now that the old project sits under a different Google account.
+`pull:legacy` reads the old project with the web config frozen in
+`.env.legacy`, which stays out of git, so it keeps working now that the old
+project sits under a different Google account. If that project is ever locked
+down, `pull:legacy` needs a service-account key for it instead.
 
 `verify` must exit zero. It compares, file against shop: every collection's
 document count, the **total stock on hand**, a checksum over every product's
@@ -85,7 +87,7 @@ root-denied rules with no way to push a fix (`scripts/pwa.ts` has no
 `skipWaiting`, so a deploy does not reach a till until a full load).
 
 Moving to a separate project removed that constraint. The client's installed
-bundle points at `mindora-2ded0` and has never heard of `libsystem-tn`, so
+bundle points at the pre-SaaS project and has never heard of `libsystem-tn`, so
 locking this project down cannot reach them. **The rules went out first, safely.**
 
 What that also means: the cutover moment is now the **Netlify deploy**. The
@@ -97,8 +99,8 @@ first.
 After the app deploy, at the till:
 
 1. Sign in. The full catalogue, with correct quantities.
-2. The ticket header prints **Librairie Sofiene**, not "Librairie" — the default
-   name showing up here is how a wrong settings path announces itself.
+2. The ticket header prints **the shop's real name**, not "Librairie" — the
+   default name showing up here is how a wrong settings path announces itself.
 3. Ventes and Achats empty, as intended. Fournisseurs and Carnet load. A pack scans.
 4. Ring one real one-unit sale, confirm the quantity dropped, ring the return.
 5. Create a throwaway product, reload, confirm it persisted, delete it.
@@ -109,7 +111,7 @@ After the app deploy, at the till:
 
 ## Abort
 
-The old project was never written to and its permissive rules are untouched, so
+The old project was never written to and its rules are untouched, so
 aborting is: roll the Netlify deploy back to the pinned build, and put the old
 `.env.legacy` values back in `.env.local`. The old app resumes exactly where it
 was, with its own data, in its own project. Nothing needs undoing here.
@@ -170,7 +172,7 @@ token — which is stronger, since it tests what is actually deployed:
 | **the shop extends its own plan** | **403** |
 | the shop invents a new shop record | 403 |
 | a shop `get`s one catalogue entry | 200 |
-| **a shop `list`s the catalogue** | **403** |
+| a shop `list`s the catalogue without a limit, or above 120 | 403 |
 | a shop writes, or invents, a catalogue entry | 403 |
 | a stranger with only the bundled key reads, or lists, the catalogue | 403 |
 | a shop writes its own `catalog_contributions` | 200 |
@@ -193,7 +195,7 @@ cost, no category, no shop id.
 
 ```
 /catalog/{code}            get: signed in AND carries a shopId claim
-                           list: false        ← walking it is the whole risk
+                           list: capped at 120 per query (the browser, below)
                            write: false       ← for everyone, always
 /shops/{id}/catalog_contributions/{code}      the shop's own subtree
 ```
@@ -249,7 +251,7 @@ already stocks needs no catalogue. It runs from "create this product" instead,
 bounded at 700 ms, swallowing every failure into a plain `null`, and it never
 overwrites a field the owner has already typed in.
 
-Seeded: 546 entries from Librairie Sofiene's 740 products (194 skipped — no
+Seeded: 546 entries from the first shop's 740 products (194 skipped — no
 usable code, a code shared by two of its own articles, or an unusable name).
 
 ---
@@ -257,8 +259,10 @@ usable code, a code shared by two of its own articles, or an unusable name).
 ## Signing up a new bookshop
 
 Everything runs from `cli/`, against the service-account key in
-`cli/service-account.json`. One command creates the account, the shop and the
-plan together:
+`cli/service-account.json` (or `GOOGLE_APPLICATION_CREDENTIALS`). Never save the
+key at the repository root: only `cli/service-account*.json` is git-ignored, and
+the CLI refuses a key it finds at the root. One command creates the account, the
+shop, its ticket header and the plan together:
 
 ```bash
 cd cli
@@ -296,7 +300,25 @@ about 25 seconds. That is the Admin SDK's **Auth** cold start, not a failure —
 Firestore calls in the same process are fine. Run it again; it checks before it
 writes, so a timed-out attempt leaves nothing behind.
 
-Then, so their first day is not a week of typing:
+Then, so their first day is not a week of typing — load the stock they already
+have in a spreadsheet. Have it saved as CSV (Excel: *Enregistrer sous → CSV
+point-virgule*); `cli/templates/stock-modele.csv` shows the expected columns,
+and the usual French headers are recognised (Code-barres, Désignation,
+Catégorie, Prix d'achat, Prix de vente, TVA, Quantité, Fournisseur, Seuil):
+
+```bash
+node lib.mjs import:products --shop <shopId> --file stock.csv --dry-run   # read the report
+node lib.mjs import:products --shop <shopId> --file stock.csv             # type the shop name to confirm
+```
+
+Rows with no name, an unreadable price or a barcode repeated in the file are
+refused and listed; a bad EAN check digit or a missing purchase price is only a
+warning. Barcodes the shop already stocks are skipped (`--update` refreshes
+their name, prices and category, never their quantity). Missing categories and
+suppliers are created. Prices are dinars (`12,500`); add `--millimes` if the
+file counts in millimes.
+
+And the shared catalogue:
 
 ```bash
 node lib.mjs catalog:seed --shop <shopId> --cnp --dry-run   # the CNP school books
@@ -320,7 +342,7 @@ node lib.mjs backup --shop <shopId>
 
 ```bash
 node cli/lib.mjs shops:list                        # who, and how much plan is left
-node cli/lib.mjs shops:show librairie.sofiene@libsystem.tn
+node cli/lib.mjs shops:show <email|shopId>
 node cli/lib.mjs plan:extend  <email|shopId> --days 365
 node cli/lib.mjs shops:suspend <email|shopId>      # writes stop, reading still works
 node cli/lib.mjs shops:resume  <email|shopId> --days 30
@@ -329,7 +351,11 @@ node cli/lib.mjs backup --shop <shopId>
 node cli/lib.mjs stats                             # docs per shop, against the free tier
 ```
 
-A plan change reaches an open browser within the hour, or at once on reload.
+A renewal reaches a lapsed till within five minutes once it has a line (it
+re-reads its token while the plan is lapsed), or at once when the owner presses
+**« J'ai renouvelé — vérifier »** on the plan banner. A reload alone does not do
+it: the SDK keeps the cached token for up to an hour. A change to a plan that
+has not lapsed yet lands at the next hourly token refresh.
 
 **`shops:suspend` no longer revokes the session, and that is deliberate.** It
 used to, which made the suspension bite on the next reload instead of at the end
@@ -361,18 +387,36 @@ worker precaches all of it — so bandwidth is *(devices × deploys × bundle)*,
 *(devices × page views)*. Fifty shops on two devices each with a monthly deploy
 is well under a gigabyte a *year*, against Netlify's 100 GB a *month*.
 
-Firestore reads are the cost model. Free every day: 50 000 reads, 20 000 writes,
-1 GiB. Past that, **$0.06 per 100 000 reads** in a single region. A cold app
-start on this shop attaches listeners across ~800 documents; warm starts are
-near-free because `persistentLocalCache` plus resume tokens only bill what
-changed. Call it 1 000–2 000 reads per shop per day → roughly 25–40 shops inside
-the free tier, and a million reads a month costs 60 cents.
+Firestore reads are the cost model, and the free quota is **per project, shared
+by every shop**: 50 000 reads, 20 000 writes, 1 GiB a day. Past that, reads in
+`europe-west9` cost about **$0.04 per 100 000** (prices are per region — check
+https://cloud.google.com/firestore/pricing before quoting a client).
 
-**Enable Blaze anyway, with a budget alert.** Not to spend — Blaze includes the
-same free quota. The reason is that on Spark, exceeding the daily quota does not
-bill you, it starts *refusing reads*: a paying client's till would stop working
-mid-afternoon and not recover until the quota resets. On Blaze the same busy day
-costs a few cents. Know the caveat: a budget alert **notifies, it does not cap**.
+The earlier estimate here (1 000–2 000 reads per shop per day, "25–40 shops in
+the free tier") was wrong, for two reasons:
+
+- **A listener that has been disconnected for more than 30 minutes is billed as
+  a new query** on reconnect — every document it matches, not just what changed.
+  A till that loses its line over lunch re-reads its five pinned collections.
+- **The Argent page is a new query every day** (its window is day-aligned), so
+  the first open of the day reads two periods of tickets, every purchase and up
+  to 3 000 carnet lines.
+
+A typical shop is therefore nearer **12 000 reads a day**, 15–20 000 at the
+rentrée (estimate — replace it with a week of real numbers from the usage
+graph). **On Spark the fourth or fifth shop exhausts the daily quota**, and then
+every listener of every shop is refused until midnight Pacific
+(`liveCollection.ts` treats that as terminal: the red "service saturé" banner).
+
+**So Blaze is mandatory before the third shop, with budgets.** Blaze keeps the
+same free quota; on Spark, going over does not bill you, it *refuses reads*, and
+paying clients' tills stop mid-afternoon.
+
+1. Console → Usage and billing: confirm `libsystem-tn` is on Blaze.
+2. Cloud Billing → Budgets & alerts: budgets at $5, $10 and $25 a month, mailed
+   to the founder. A budget **notifies, it does not cap**.
+3. Cloud Monitoring: alert on `firestore.googleapis.com/document/read_count`
+   above 40 000 a day, and on any `resource-exhausted` error.
 
 ---
 
@@ -420,6 +464,18 @@ denormalise `debtStartedAt`/`lastPaymentAt` onto the customer document so
 `useAllCreditEntries` can go (capping it instead would silently drop the oldest
 debtors from the dashboard), and lifetime spend onto the supplier document so
 `usePurchases` needs no documents on the suppliers page.
+
+**Server-side backups.** The only copies are the owner's own downloads and an
+ad-hoc `backup` from the CLI. On Blaze: turn on point-in-time recovery
+(Firestore → Disaster recovery, 7 days), add a daily scheduled backup kept 14
+days (`gcloud firestore backups schedules create --database='(default)'
+--recurrence=daily --retention=14d`), and write the restore runbook (a restore
+creates a new database; copy one `shops/{id}` subtree back from it).
+
+**Rules: an allowlist of collections.** The tenant rule accepts any collection
+name, any depth and any document shape. An allowlist of the ten collections the
+app uses, at exactly one level, closes junk writes; keep type checks minimal,
+because a refused write is rolled back and can take queued offline sales with it.
 
 **App Check** in monitoring mode, then enforced. It closes the "the API key is
 in the bundle" hole properly, but it puts a token fetch in front of a till that

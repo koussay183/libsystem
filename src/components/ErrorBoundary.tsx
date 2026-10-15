@@ -46,6 +46,11 @@ interface ErrorBoundaryProps {
    * push the navigation the owner needs in order to walk to another screen.
    */
   fullScreen?: boolean
+  /**
+   * Rendered instead of the crash screen. For an optional piece of a page —
+   * the dashboard chart — whose failure must not take the figures with it.
+   */
+  fallback?: ReactNode
 }
 
 interface ErrorBoundaryState {
@@ -103,6 +108,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   render() {
     if (!this.state.error) return this.props.children
+    if (this.props.fallback !== undefined) return this.props.fallback
     return (
       <CrashScreen
         detail={describe(this.state.error)}

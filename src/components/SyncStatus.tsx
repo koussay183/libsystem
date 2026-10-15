@@ -35,6 +35,7 @@ function Pill({
   label,
   hint,
   loud,
+  short,
 }: {
   palette: 'gray' | 'green' | 'blue' | 'yellow' | 'orange' | 'red'
   variant: 'solid' | 'subtle'
@@ -42,6 +43,8 @@ function Pill({
   label: string
   hint: string
   loud?: boolean
+  /** A loud label's phone form: still words, just fewer of them. */
+  short?: string
 }) {
   return (
     <Badge
@@ -54,9 +57,20 @@ function Pill({
       title={hint}
     >
       {icon}
-      <Text as="span" ms={1} display={loud ? 'inline' : { base: 'none', md: 'inline' }}>
-        {label}
-      </Text>
+      {loud && short ? (
+        <>
+          <Text as="span" ms={1} display={{ base: 'inline', md: 'none' }}>
+            {short}
+          </Text>
+          <Text as="span" ms={1} display={{ base: 'none', md: 'inline' }}>
+            {label}
+          </Text>
+        </>
+      ) : (
+        <Text as="span" ms={1} display={loud ? 'inline' : { base: 'none', md: 'inline' }}>
+          {label}
+        </Text>
+      )}
     </Badge>
   )
 }
@@ -123,6 +137,7 @@ export function SyncStatus() {
         variant="solid"
         icon={<CloudOff size={18} />}
         label={waiting > 0 ? t('sync.offlineWaiting', { count: waiting }) : t('sync.offline')}
+        short={waiting > 0 ? `${t('sync.offline')} · ${waiting}` : undefined}
         hint={t('sync.offlineHint')}
         loud
       />

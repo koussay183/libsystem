@@ -16,11 +16,12 @@
  * installs the app's dependencies and never sees this folder.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
 import { stdin, stdout } from 'node:process'
+import { randomBytes } from 'node:crypto'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
@@ -58,6 +59,25 @@ async function confirm(question) {
   return answer.toLowerCase() === 'yes' || answer.toLowerCase() === 'y'
 }
 
+/**
+ * For the writes that land in the wrong shop if a word is mistyped: the
+ * operator types the target's name back. --yes does not skip it, on purpose.
+ */
+async function confirmTyped(expected, question) {
+  const rl = createInterface({ input: stdin, output: stdout })
+  const answer = (await rl.question(`${c.yellow('?')} ${question}\n  Type ${c.bold(expected)} to go on: `)).trim()
+  rl.close()
+  return answer === expected
+}
+
+/** Passwords: long enough to survive guessing over the public sign-in API. */
+const MIN_PASSWORD = 10
+
+/** 16 characters a shop can type from a WhatsApp message without ambiguity. */
+function generatePassword() {
+  return randomBytes(12).toString('base64url')
+}
+
 // ---------------------------------------------------------------------------
 // Arguments
 // ---------------------------------------------------------------------------
@@ -88,6 +108,11 @@ const BOOLEAN_FLAGS = new Set([
   'clear',
   'delete',
   'cnp',
+  'move',
+  'replace-owner',
+  'allow-cross-shop',
+  'update',
+  'millimes',
 ])
 
 const flags = {}
@@ -223,6 +248,13 @@ function contributableId(v) {
   return k
 }
 
+/** A trimmed string of at most `max` characters, or null for anything else. */
+function shortText(v, max) {
+  if (typeof v !== 'string') return null
+  const t = v.trim().replace(/\s+/g, ' ')
+  return t !== '' && t.length <= max ? t : null
+}
+
 /** Every collection a shop owns. Order matters only for readability. */
 const SHOP_COLLECTIONS = [
   'products',
@@ -262,14 +294,26 @@ const PRODUCT_COUNTERS = [
 // Firebase
 // ---------------------------------------------------------------------------
 
+/**
+ * Where the admin key is read from: --key, or cli/service-account.json.
+ *
+ * NOT the repository root. Only cli/service-account*.json is git-ignored, so a
+ * key saved one folder up goes out with the next `git add -A && git push` — a
+ * key that can read and write every shop and set any claim. Found there, it is
+ * refused with the instruction to move it, rather than quietly used.
+ */
 function credentialsPath() {
   if (flags.key) return flags.key
-  const candidates = [
-    join(HERE, 'service-account.json'),
-    join(ROOT, 'service-account.json'),
-  ]
-  for (const p of candidates) if (existsSync(p)) return p
-  return null
+  const atRoot = join(ROOT, 'service-account.json')
+  if (existsSync(atRoot)) {
+    die(
+      `Refusing the key at ${atRoot}: the repository root is not git-ignored.`,
+      'Move it to cli/service-account.json (ignored), or pass --key <path outside the repo>.\n' +
+        '  If it was ever committed or pushed, delete that key in IAM → Service accounts → Keys.',
+    )
+  }
+  const inCli = join(HERE, 'service-account.json')
+  return existsSync(inCli) ? inCli : null
 }
 
 let _db = null
@@ -459,20 +503,25 @@ commands['help'] = {
     log(c.bold('  First run'))
     log(c.dim('  1. cd cli && npm install'))
     log(c.dim('  2. put the service-account key in cli/service-account.json'))
-    log(c.dim('  3. node lib.mjs shops:create --email x@y.z --password ... --name "Librairie X" --days 365'))
+    log(c.dim('  3. node lib.mjs shops:create --email x@y.z --name "Librairie X" --days 365'))
     log('')
   },
 }
 
 commands['shops:create'] = {
-  blurb: 'Create an account and its shop  --email --password --name [--days 365]',
+  blurb: 'Create an account and its shop  --email --name [--password] [--days 365]',
   async run() {
     const { db, auth } = await connect()
     const email = flags.email
-    const password = flags.password
+    // Generated when omitted: a password typed on the command line stays in the
+    // shell history and the process list.
+    const generated = flags.password === undefined
+    const password = generated ? generatePassword() : String(flags.password)
     const name = flags.name
-    if (!email || !password) die('Need --email and --password.')
-    if (String(password).length < 6) die('Firebase requires a password of at least 6 characters.')
+    if (!email) die('Need --email.')
+    if (password.length < MIN_PASSWORD) {
+      die(`A password needs at least ${MIN_PASSWORD} characters.`, 'Or leave --password off and one is generated.')
+    }
     if (!name) die('Need --name (what the shop is called, printed on its tickets).')
 
     const paidUntil = deadlineFromFlags() ?? Date.now() + 365 * DAY_MS
@@ -521,15 +570,27 @@ commands['shops:create'] = {
     })
     ok(`shop created  ${c.dim(shopRef.id)}`)
 
+    // The ticket header. The app reads it from settings/shop only, so without
+    // this the first tickets said "Librairie" until somebody found Réglages.
+    await shopRef
+      .collection('settings')
+      .doc('shop')
+      .set({ name, footer: 'Merci et à bientôt !', updatedAt: Date.now() }, { merge: true })
+    ok(`ticket header set  ${c.dim(name)}`)
+
     await mergeClaims(user.uid, { shopId: shopRef.id, paidUntil })
     ok(`claims set  shopId=${shopRef.id}  paidUntil=${fmtDate(paidUntil)}`)
 
     log('')
     log(c.bold('  Hand these to the shop:'))
     log(`    email     ${email}`)
-    log(`    password  ${password}`)
+    log(`    password  ${generated ? password : c.dim('(the one you passed)')}`)
     log(`    shop id   ${shopRef.id}`)
     log('')
+    if (generated) {
+      log(c.dim('  Send the password over WhatsApp, then clear this terminal (it is shown once).'))
+      log('')
+    }
   },
 }
 
@@ -606,7 +667,7 @@ commands['plan:set'] = {
       await mergeClaims(user.uid, { paidUntil })
     }
     ok(`${doc?.name ?? shopId}: ${flags.plan ? `plan ${flags.plan}, ` : ''}until ${fmtDate(paidUntil ?? doc?.paidUntil)}`)
-    log(c.dim('  The shop picks this up within the hour, or at once if they reload.'))
+    logPickup()
   },
 }
 
@@ -622,14 +683,27 @@ commands['plan:extend'] = {
     const from = Math.max(Date.now(), doc?.paidUntil ?? 0)
     const paidUntil = from + Math.round(days * DAY_MS)
 
+    // The rules read the CLAIM, so without an account to carry it the document
+    // would say "renewed" while the shop stays blocked.
+    if (!user) die('No auth account attached to this shop — nothing changed.', 'Run shops:repair first.')
+
     if (flags['dry-run']) {
       log(c.dim(`  would move ${shopId} from ${fmtDate(doc?.paidUntil)} to ${fmtDate(paidUntil)}`))
       return
     }
     await db.collection('shops').doc(shopId).set({ paidUntil, updatedAt: Date.now() }, { merge: true })
-    if (user) await mergeClaims(user.uid, { paidUntil })
+    const claims = await mergeClaims(user.uid, { paidUntil })
     ok(`${doc?.name ?? shopId}: until ${fmtDate(paidUntil)}  ${planState(paidUntil)}`)
+    log(c.dim(`  claim now: ${JSON.stringify(claims)}`))
+    logPickup()
   },
+}
+
+/** When the till sees a plan change; see refreshClaims in src/auth/AuthContext.tsx. */
+function logPickup() {
+  log(c.dim('  A lapsed till picks this up within 5 minutes once online, or at once when'))
+  log(c.dim("  they press « J'ai renouvelé — vérifier » on the banner. A reload alone does"))
+  log(c.dim('  not do it. A plan that had not lapsed updates at the next token refresh (≤ 1 h).'))
 }
 
 commands['shops:suspend'] = {
@@ -659,6 +733,10 @@ commands['shops:suspend'] = {
      */
     const revoke = Boolean(flags.revoke)
 
+    // The rules read the claim: with no account to carry it, "suspended" would
+    // be printed over a shop that keeps writing.
+    if (!user) die('No auth account attached to this shop — nothing changed.', 'Run shops:repair first.')
+
     const question = revoke
       ? `Suspend "${doc?.name ?? shopId}" AND revoke its session? Signs the till out at once; ` +
         'if it is offline it cannot sign back in, and anything it queued is lost.'
@@ -685,11 +763,10 @@ commands['shops:suspend'] = {
         },
         { merge: true },
       )
-    if (user) {
-      await mergeClaims(user.uid, { paidUntil })
-      if (revoke) await _auth.revokeRefreshTokens(user.uid)
-    }
+    const claims = await mergeClaims(user.uid, { paidUntil })
+    if (revoke) await _auth.revokeRefreshTokens(user.uid)
     ok(`${doc?.name ?? shopId} suspended — writes stop, reading and backup still work.`)
+    log(c.dim(`  claim now: ${JSON.stringify(claims)}`))
     if (revoke) {
       log(c.dim('  Session revoked: the shop is signed out on its next token refresh.'))
       warn('If that till is offline right now it lands on the login screen when it comes back,')
@@ -741,31 +818,77 @@ commands['shops:resume'] = {
 }
 
 commands['password:set'] = {
-  blurb: 'Set an account password  --email --password',
+  blurb: 'Set an account password  --email [--password]  (generated when omitted)',
   async run() {
     const { auth } = await connect()
-    if (!flags.email || !flags.password) die('Need --email and --password.')
-    if (String(flags.password).length < 6) die('At least 6 characters.')
+    if (!flags.email) die('Need --email.')
+    const generated = flags.password === undefined
+    const password = generated ? generatePassword() : String(flags.password)
+    if (password.length < MIN_PASSWORD) {
+      die(`At least ${MIN_PASSWORD} characters.`, 'Or leave --password off and one is generated.')
+    }
     const user = await auth.getUserByEmail(flags.email).catch(() => die(`No account ${flags.email}.`))
-    await auth.updateUser(user.uid, { password: flags.password })
+    await auth.updateUser(user.uid, { password })
     ok(`password set for ${flags.email}`)
+    if (generated) {
+      log(`    password  ${password}`)
+      log(c.dim('  Send it over WhatsApp, then clear this terminal (it is shown once).'))
+    }
   },
 }
 
 commands['shops:repair'] = {
-  blurb: 'Attach an existing account to a shop  --email --shop <shopId>',
+  blurb: 'Attach an existing account to a shop  --email --shop <shopId> [--move] [--replace-owner] [--dry-run]',
   async run() {
     const { db, auth } = await connect()
     if (!flags.email || !flags.shop) die('Need --email and --shop.')
     const user = await auth.getUserByEmail(flags.email).catch(() => die(`No account ${flags.email}.`))
     const snap = await db.collection('shops').doc(flags.shop).get()
     if (!snap.exists) die(`No shop ${flags.shop}.`)
+
+    // A typo in --shop used to re-point a working till at somebody else's books
+    // in silence. Both ways this can hurt now need to be asked for by name.
+    const current = user.customClaims?.shopId
+    if (current && current !== flags.shop && !flags.move) {
+      die(
+        `${flags.email} already belongs to shop ${current}.`,
+        'Pass --move if it really should leave that shop (its till will then read this one).',
+      )
+    }
+    const owner = snap.data().uid
+    const replacing = Boolean(owner && owner !== user.uid)
+    if (replacing && !flags['replace-owner']) {
+      die(
+        `Shop ${flags.shop} is owned by another account (${owner}).`,
+        'Pass --replace-owner to hand it over; that account loses its claim and is signed out.',
+      )
+    }
+
     const paidUntil = snap.data().paidUntil ?? Date.now() + 30 * DAY_MS
+    const what =
+      `${flags.email} → shop ${flags.shop} (${snap.data().name ?? '—'})` +
+      (current && current !== flags.shop ? `, leaving shop ${current}` : '') +
+      (replacing ? `, replacing owner ${owner}` : '')
+    if (flags['dry-run']) {
+      log(c.dim(`  would attach ${what}`))
+      return
+    }
+    if (!(await confirm(`Attach ${what}?`))) return
+
     await mergeClaims(user.uid, { shopId: flags.shop, paidUntil })
     await db.collection('shops').doc(flags.shop).set(
       { uid: user.uid, email: flags.email, updatedAt: Date.now() },
       { merge: true },
     )
+    if (replacing) {
+      // Two accounts owning one shop is the state this used to leave behind.
+      await auth.setCustomUserClaims(owner, {})
+      await auth.revokeRefreshTokens(owner)
+      warn(`previous owner ${owner}: claim cleared and signed out`)
+    }
+    if (current && current !== flags.shop) {
+      warn(`shop ${current} has no working account now — attach one with shops:repair.`)
+    }
     ok(`${flags.email} → shop ${flags.shop}`)
   },
 }
@@ -912,8 +1035,9 @@ commands['catalog:seed'] = {
       candidates.push({
         code,
         name,
-        unit: p.unit ?? null,
-        category: typeof p.category === 'string' && p.category.trim() !== '' ? p.category.trim() : null,
+        // Same bounds as harvest: this too ends up in front of every shop.
+        unit: shortText(p.unit, 20),
+        category: shortText(p.category, 40),
       })
     }
 
@@ -991,6 +1115,10 @@ async function planPromotion(db, candidates, by) {
         plan.ops.push((batch) =>
           batch.set(ref, {
             name: c.name,
+            // Every browser query orders by nameLower, and Firestore drops a
+            // document that lacks the ordered field: without it a seeded or
+            // harvested entry never appeared on /catalog.
+            nameLower: foldName(c.name),
             unit: c.unit,
             category: c.category ?? null,
             by,
@@ -1351,11 +1479,15 @@ commands['catalog:harvest'] = {
           rejected += 1
           continue
         }
+        // Unit and category came from a browser too, and go in front of every
+        // shop: short plain strings only (a 300 KB category or a map-typed unit
+        // was accepted by the rules and would have been published as is).
+        const category = shortText(d.data().category, 40)
         candidates.push({
           code,
           name,
-          unit: d.data().unit ?? null,
-          category: d.data().category ?? null,
+          unit: shortText(d.data().unit, 20),
+          category: category !== null && contributableName(category) !== null ? category : null,
         })
       }
       offered += candidates.length
@@ -1444,6 +1576,8 @@ commands['catalog:fix'] = {
     await ref.set(
       {
         name: String(name),
+        // Kept in step with the name, or the entry is found only by its old one.
+        nameLower: foldName(String(name)),
         ...(flags.unit ? { unit: String(flags.unit) } : {}),
         fixedAt: Date.now(),
         alts: FieldValue.delete(),
@@ -1569,43 +1703,15 @@ function readEnvFile(path) {
   return out
 }
 
-/**
- * The most recent export in backups/, so --file can usually be left off.
- *
- * By MODIFIED TIME, not by name. The files in there do not share a prefix —
- * legacy-*, live-*, root-*, and one per shop id — so sorting by filename puts
- * "live-2026-08-17" after "legacy-2026-08-20" and would hand back a stale
- * export, or one of a different shape, with nothing on screen to say so. The
- * caller prints whichever file this returns for the same reason.
- */
-function newestBackup() {
-  const dir = join(ROOT, 'backups')
-  if (!existsSync(dir)) return null
-  const files = readdirSync(dir)
-    .filter((f) => f.endsWith('.json'))
-    .map((f) => {
-      const path = join(dir, f)
-      return { path, at: statSync(path).mtimeMs }
-    })
-    .sort((a, b) => a.at - b.at)
-  return files.length ? files[files.length - 1].path : null
-}
-
 commands['pull:legacy'] = {
   blurb: 'Read the OLD project out to a file over REST, no key needed  [--project --api-key]',
   async run() {
     /**
-     * No Admin SDK, and no service-account key for the old project.
-     *
-     * That is not a shortcut, it is the point: the pre-SaaS project still
-     * carries `allow read, write: if true`, so its public web API key — the one
-     * that has been shipping inside the shop's app bundle all along — is
-     * already enough to read every document. Asking for a second private key
-     * to a project we are walking away from would put another credential on
-     * this machine and buy nothing.
-     *
-     * It also means this works when you no longer have console access to that
-     * project, only the config the app was built with.
+     * No Admin SDK, and no service-account key for the old project: it reads
+     * over REST with the web config the old app was built with (.env.legacy,
+     * kept out of git). Asking for a second private key to a project we are
+     * walking away from would put another credential on this machine and buy
+     * nothing, and it works without console access to that project.
      */
     /**
      * bail() rather than die(), for this command only.
@@ -1718,7 +1824,7 @@ commands['pull:legacy'] = {
 }
 
 commands['import:file'] = {
-  blurb: 'Write a pulled file into a shop in THIS project  --shop <shopId> [--file <path>]',
+  blurb: 'Write a pulled file into a shop in THIS project  --shop <shopId> --file <path>',
   async run() {
     const { db } = await connect()
     const shopId = flags.shop ?? positional[0]
@@ -1726,8 +1832,10 @@ commands['import:file'] = {
     const shopSnap = await db.collection('shops').doc(shopId).get()
     if (!shopSnap.exists) die(`No shop ${shopId} in this project. Create it first with shops:create.`)
 
-    const file = flags.file ?? newestBackup()
-    if (!file) die('No --file given and nothing in backups/.', 'Run pull:legacy first.')
+    // Never guessed. "The newest file in backups/" was, as often as not, the
+    // export of ANOTHER shop taken a minute earlier with `backup`.
+    const file = typeof flags.file === 'string' ? flags.file : null
+    if (!file) die('Need --file <path>.', 'Run pull:legacy first, then pass the file it wrote.')
     if (!existsSync(file)) die(`No such file: ${file}`)
 
     let parsed
@@ -1739,6 +1847,26 @@ commands['import:file'] = {
     const source = parsed.collections ?? parsed
     if (typeof source !== 'object' || source === null || Array.isArray(source)) {
       die(`${file} does not look like a lib-manager export.`)
+    }
+
+    // Whose data is this? A shop backup says so; pull:legacy and root exports
+    // are the migration sources this command exists for. Anything else needs
+    // the operator to say, in so many words, that crossing shops is the intent.
+    const fromShop = typeof parsed.shopId === 'string' && parsed.shopId !== '' ? parsed.shopId : null
+    const migrationSource = parsed.source === 'legacy-rest' || parsed.source === 'root'
+    if (!flags['allow-cross-shop']) {
+      if (fromShop && fromShop !== shopId) {
+        die(
+          `${file} is an export of shop ${fromShop}, not ${shopId}.`,
+          'Pass --allow-cross-shop only if copying one shop into another is really the intent.',
+        )
+      }
+      if (!fromShop && !migrationSource) {
+        die(
+          `${file} does not say which shop it came from.`,
+          'Only pull:legacy / root exports and backups of this same shop import without --allow-cross-shop.',
+        )
+      }
     }
 
     const dry = !!flags['dry-run']
@@ -1828,7 +1956,11 @@ commands['import:file'] = {
       warn('Dry run. Nothing was written.')
       return
     }
-    if (!(await confirm(`Write ${copied} documents into shops/${shopId}?`))) return
+    const targetName = String(shopSnap.data().name ?? shopId)
+    if (!(await confirmTyped(targetName, `Write ${copied} documents into shops/${shopId}?`))) {
+      warn('Name did not match — nothing written.')
+      return
+    }
 
     const written = await commitChunked(db, ops, 'writing')
     ok(`${written} documents written into shops/${shopId}`)
@@ -2020,6 +2152,256 @@ commands['stats'] = {
     log('')
     log(c.dim('  Free tier: 50k reads/day, 20k writes/day, 1 GiB stored.'))
     log('')
+  },
+}
+
+// ---------------------------------------------------------------------------
+// Loading a shop's existing catalogue from a spreadsheet
+// ---------------------------------------------------------------------------
+
+/**
+ * Splits CSV text into rows, honouring quotes. The delimiter is whatever the
+ * header uses most of — ';' from French-locale Excel, ',' elsewhere, or tab.
+ */
+function parseCsv(text) {
+  const clean = text.replace(/^﻿/, '')
+  const firstLine = clean.split(/\r?\n/, 1)[0] ?? ''
+  const counts = { ';': 0, ',': 0, '\t': 0 }
+  for (const ch of firstLine) if (ch in counts) counts[ch] += 1
+  const sep = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]
+  const rows = []
+  let row = []
+  let cell = ''
+  let quoted = false
+  for (let i = 0; i < clean.length; i += 1) {
+    const ch = clean[i]
+    if (quoted) {
+      if (ch === '"' && clean[i + 1] === '"') {
+        cell += '"'
+        i += 1
+      } else if (ch === '"') quoted = false
+      else cell += ch
+    } else if (ch === '"') quoted = true
+    else if (ch === sep) {
+      row.push(cell)
+      cell = ''
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && clean[i + 1] === '\n') i += 1
+      row.push(cell)
+      if (row.some((c) => c.trim() !== '')) rows.push(row)
+      row = []
+      cell = ''
+    } else cell += ch
+  }
+  row.push(cell)
+  if (row.some((c) => c.trim() !== '')) rows.push(row)
+  return { sep, rows }
+}
+
+/** Header words as people write them, folded, mapped to product fields. */
+const IMPORT_COLUMNS = {
+  barcode: ['codebarres', 'codebarre', 'code', 'ean', 'ean13', 'barcode', 'gtin', 'cb'],
+  name: ['designation', 'nom', 'name', 'article', 'produit', 'libelle'],
+  category: ['categorie', 'category', 'rayon', 'famille'],
+  costPrice: ['prixdachat', 'prixachat', 'prixdachatttc', 'achat', 'cout', 'cost', 'costprice', 'pa'],
+  salePrice: ['prixdevente', 'prixvente', 'prixdeventettc', 'vente', 'prix', 'pv', 'saleprice', 'price'],
+  vatRate: ['tva', 'vat', 'tauxtva'],
+  quantity: ['quantite', 'qte', 'qty', 'stock', 'quantity'],
+  supplier: ['fournisseur', 'supplier'],
+  lowStockThreshold: ['seuil', 'seuilalerte', 'alerte', 'stockmin', 'min'],
+  unit: ['unite', 'unit'],
+}
+
+const foldHeader = (s) =>
+  String(s ?? '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+
+/** "12,500" / "12.5" / "12 500 DT" in dinars -> integer millimes, or null. */
+function parseDinars(raw, millimes) {
+  const s = String(raw ?? '')
+    .replace(/[\s  ]/g, '')
+    .replace(/(dt|tnd|mill)$/i, '')
+    .replace(',', '.')
+  if (s === '') return undefined
+  if (millimes) return /^\d+$/.test(s) ? Number(s) : null
+  if (!/^\d+(\.\d+)?$/.test(s)) return null
+  return Math.round(Number(s) * 1000)
+}
+
+/** EAN-13 / EAN-8 check digit; other lengths are not judged. */
+function eanOk(code) {
+  if (!/^\d+$/.test(code) || (code.length !== 13 && code.length !== 8)) return true
+  const digits = [...code].map(Number)
+  const check = digits.pop()
+  const sum = digits
+    .reverse()
+    .reduce((n, d, i) => n + d * (i % 2 === 0 ? 3 : 1), 0)
+  return (10 - (sum % 10)) % 10 === check
+}
+
+commands['import:products'] = {
+  blurb: 'Load a stock spreadsheet (CSV) into a shop  --shop <id> --file x.csv [--update] [--millimes] [--dry-run]',
+  async run() {
+    /**
+     * The concierge half of "On charge votre stock". A new shop arrives with an
+     * Excel of a few thousand articles; typing it in by hand rules out "ready
+     * tomorrow". Save it as CSV (either separator works), check the preview,
+     * then write. Existing barcodes are skipped unless --update, which
+     * refreshes their name, prices and category but never their quantity.
+     */
+    const { db } = await connect()
+    const shopId = flags.shop ?? positional[0]
+    if (!shopId) die('Need --shop <shopId>.')
+    const shopSnap = await db.collection('shops').doc(shopId).get()
+    if (!shopSnap.exists) die(`No shop ${shopId}.`)
+    const file = typeof flags.file === 'string' ? flags.file : null
+    if (!file) die('Need --file <path to a .csv>.', 'In Excel: Fichier → Enregistrer sous → CSV (séparateur : point-virgule).')
+    if (!existsSync(file)) die(`No such file: ${file}`)
+
+    const { sep, rows } = parseCsv(readFileSync(file, 'utf8'))
+    if (rows.length < 2) die('The file has a header and no rows.')
+    const header = rows[0].map(foldHeader)
+    const col = {}
+    for (const [field, aliases] of Object.entries(IMPORT_COLUMNS)) {
+      const at = header.findIndex((h) => aliases.includes(h))
+      if (at >= 0) col[field] = at
+    }
+    log('')
+    log(c.bold(`  ${file}`) + c.dim(`  (separator "${sep === '\t' ? 'tab' : sep}", ${rows.length - 1} rows)`))
+    log(c.dim(`  columns: ${Object.entries(col).map(([f, i]) => `${f}=${rows[0][i]}`).join(', ')}`))
+    if (col.name === undefined || col.salePrice === undefined) {
+      die('Need at least a name column (Désignation) and a sale price column (Prix de vente).')
+    }
+
+    const existing = new Map()
+    for (const d of (await db.collection('shops').doc(shopId).collection('products').get()).docs) {
+      const code = d.data().barcode
+      if (code) existing.set(String(code), d.id)
+    }
+    const knownCategories = new Set(
+      (await db.collection('shops').doc(shopId).collection('categories').get()).docs.map((d) =>
+        String(d.data().name ?? '').trim().toLowerCase(),
+      ),
+    )
+    const knownSuppliers = new Set(
+      (await db.collection('shops').doc(shopId).collection('suppliers').get()).docs.map((d) =>
+        String(d.data().name ?? '').trim().toLowerCase(),
+      ),
+    )
+
+    const millimes = Boolean(flags.millimes)
+    const cell = (r, field) => (col[field] === undefined ? '' : String(r[col[field]] ?? '').trim())
+    const errors = []
+    const warnings = []
+    const creates = []
+    const updates = []
+    let skippedExisting = 0
+    const seen = new Set()
+    const newCategories = new Map()
+    const newSuppliers = new Map()
+
+    rows.slice(1).forEach((r, i) => {
+      const line = i + 2
+      const name = cell(r, 'name').replace(/\s+/g, ' ')
+      if (!name) return errors.push(`line ${line}: no name`)
+      const barcode = cell(r, 'barcode').replace(/\s/g, '') || null
+      const salePrice = parseDinars(cell(r, 'salePrice'), millimes)
+      if (salePrice === null || salePrice === undefined) {
+        return errors.push(`line ${line} (${name}): sale price "${cell(r, 'salePrice')}" unreadable`)
+      }
+      const costRaw = parseDinars(cell(r, 'costPrice'), millimes)
+      if (costRaw === null) return errors.push(`line ${line} (${name}): purchase price "${cell(r, 'costPrice')}" unreadable`)
+      const qtyRaw = cell(r, 'quantity').replace(/\s/g, '')
+      if (qtyRaw !== '' && !/^\d+$/.test(qtyRaw)) {
+        return errors.push(`line ${line} (${name}): quantity "${qtyRaw}" is not a whole number`)
+      }
+      const lowRaw = cell(r, 'lowStockThreshold').replace(/\s/g, '')
+      const vatRaw = cell(r, 'vatRate').replace(/[%\s]/g, '').replace(',', '.')
+      const vat = vatRaw === '' ? undefined : Number(vatRaw)
+      if (barcode) {
+        if (seen.has(barcode)) return errors.push(`line ${line} (${name}): barcode ${barcode} already earlier in the file`)
+        seen.add(barcode)
+        if (!eanOk(barcode)) warnings.push(`line ${line} (${name}): ${barcode} fails the EAN check digit`)
+      }
+      if (costRaw === undefined) warnings.push(`line ${line} (${name}): no purchase price — profit will read as missing`)
+      if (vat !== undefined && ![0, 7, 13, 19].includes(vat)) {
+        warnings.push(`line ${line} (${name}): VAT "${vatRaw}" ignored`)
+      }
+      const category = cell(r, 'category').replace(/\s+/g, ' ') || undefined
+      const supplier = cell(r, 'supplier').replace(/\s+/g, ' ') || undefined
+      if (category && !knownCategories.has(category.toLowerCase())) newCategories.set(category.toLowerCase(), category)
+      if (supplier && !knownSuppliers.has(supplier.toLowerCase())) newSuppliers.set(supplier.toLowerCase(), supplier)
+
+      const fields = {
+        name,
+        salePrice,
+        ...(costRaw !== undefined ? { costPrice: costRaw } : {}),
+        ...(vat !== undefined && [0, 7, 13, 19].includes(vat) ? { vatRate: vat } : {}),
+        ...(category ? { category } : {}),
+        ...(supplier ? { supplier } : {}),
+        ...(cell(r, 'unit') ? { unit: cell(r, 'unit') } : {}),
+      }
+      const id = barcode ? existing.get(barcode) : undefined
+      if (id) {
+        if (flags.update) updates.push({ id, fields })
+        else skippedExisting += 1
+        return
+      }
+      creates.push({
+        barcode,
+        costPrice: 0,
+        quantity: qtyRaw === '' ? 0 : Number(qtyRaw),
+        lowStockThreshold: /^\d+$/.test(lowRaw) ? Number(lowRaw) : 0,
+        ...fields,
+      })
+    })
+
+    log('')
+    log(`  ${c.bold(String(creates.length))} new articles`)
+    log(`  ${updates.length} existing articles to update${flags.update ? '' : c.dim(' (pass --update to refresh prices)')}`)
+    if (skippedExisting) log(`  ${skippedExisting} already in stock (same barcode) — skipped`)
+    if (newCategories.size) log(`  ${newCategories.size} new categories: ${[...newCategories.values()].slice(0, 8).join(', ')}`)
+    if (newSuppliers.size) log(`  ${newSuppliers.size} new suppliers: ${[...newSuppliers.values()].slice(0, 8).join(', ')}`)
+    for (const [label, list, paint] of [['refused', errors, c.red], ['warnings', warnings, c.yellow]]) {
+      if (!list.length) continue
+      log('')
+      log(paint(`  ${list.length} ${label}:`))
+      for (const m of list.slice(0, 15)) log(c.dim(`    ${m}`))
+      if (list.length > 15) log(c.dim(`    … and ${list.length - 15} more`))
+    }
+    log('')
+    if (flags['dry-run']) {
+      warn('Dry run. Nothing was written.')
+      return
+    }
+    if (creates.length + updates.length === 0) die('Nothing to write.')
+    const targetName = String(shopSnap.data().name ?? shopId)
+    if (!(await confirmTyped(targetName, `Write ${creates.length} new and ${updates.length} updated articles into shops/${shopId}?`))) {
+      warn('Name did not match — nothing written.')
+      return
+    }
+
+    const shop = db.collection('shops').doc(shopId)
+    const now = Date.now()
+    const ops = [
+      ...[...newCategories.values()].map((name) => (batch) =>
+        batch.set(shop.collection('categories').doc(), { name, createdAt: now }),
+      ),
+      ...[...newSuppliers.values()].map((name) => (batch) =>
+        batch.set(shop.collection('suppliers').doc(), { name, createdAt: now, updatedAt: now }),
+      ),
+      ...creates.map((p) => (batch) =>
+        batch.set(shop.collection('products').doc(), { ...p, createdAt: now, updatedAt: now }),
+      ),
+      ...updates.map(({ id, fields }) => (batch) =>
+        batch.set(shop.collection('products').doc(id), { ...fields, updatedAt: now }, { merge: true }),
+      ),
+    ]
+    const written = await commitChunked(db, ops, 'writing')
+    ok(`${written} documents written into shops/${shopId}`)
   },
 }
 
