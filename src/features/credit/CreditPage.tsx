@@ -1,5 +1,4 @@
 import { useMemo, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
@@ -12,8 +11,6 @@ import {
   Flex,
   Heading,
   HStack,
-  Input,
-  InputGroup,
   NativeSelect,
   SimpleGrid,
   Spinner,
@@ -23,7 +20,6 @@ import {
 } from '@chakra-ui/react'
 import {
   Plus,
-  Search,
   Users,
   ChevronRight,
   HandCoins,
@@ -35,6 +31,9 @@ import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { fold } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { SearchInput } from '@/components/SearchInput'
+import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { CustomerForm } from './CustomerForm'
 import { daysSince, debtStartedAt, groupByCustomer, needsReminder } from './ledger'
@@ -57,10 +56,16 @@ export function CreditPage() {
   const { entries, error: entriesError } = useAllCreditEntries()
 
   const [search, setSearch] = useState('')
-  const [sort, setSort] = useState<SortKey>('debt')
-  const [show, setShow] = useState<Show>('all')
+  const [sort, setSort] = useSessionState<SortKey>('credit.sort', 'debt', oneOf(['debt', 'name', 'oldest']))
+  const [show, setShow] = useSessionState<Show>(
+    'credit.show',
+    'all',
+    oneOf(['all', 'debtors', 'reminder', 'settled', 'advance']),
+  )
   const listTop = useRef<HTMLDivElement>(null)
   const [formOpen, setFormOpen] = useState(false)
+  /** The form was opened from "nobody found", so the search seeds it. */
+  const [prefill, setPrefill] = useState(false)
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
@@ -125,12 +130,24 @@ export function CreditPage() {
     return sorted
   }, [rows, search, show, sort])
 
-  const paged = usePaged(visible, `${search}|${show}|${sort}`)
+  const paged = usePaged(visible, `${search}|${show}|${sort}`, { persist: 'credit' })
+
+  const SHOW_LABEL: Record<Show, string> = {
+    all: t('common.all'),
+    debtors: t('filters.debtorsOnly'),
+    reminder: t('filters.reminderOnly'),
+    settled: t('filters.settledOnly'),
+    advance: t('filters.advanceOnly'),
+  }
+  const activeFilters =
+    show === 'all' ? [] : [{ key: 'show', label: SHOW_LABEL[show], onRemove: () => setShow('all') }]
+  const resetFilters = () => {
+    setSearch('')
+    setShow('all')
+  }
 
   const totalOwed = customers.reduce((s, c) => s + Math.max(0, c.balance), 0)
   const withDebt = customers.filter((c) => c.balance > 0).length
-
-  const onSearchSubmit = (e: FormEvent<HTMLFormElement>) => e.preventDefault()
 
   return (
     <Box>
@@ -208,31 +225,22 @@ export function CreditPage() {
       </SimpleGrid>
 
       {/* ---------------- Search, sort, filter ---------------- */}
-      <form onSubmit={onSearchSubmit}>
-        <Box mb={3}>
-          <InputGroup
-            startElement={
-              <Box color="fg.muted">
-                <Search size={22} />
-              </Box>
-            }
-          >
-            <Input
-              size="lg"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('customer.searchPlaceholder')}
-            />
-          </InputGroup>
-        </Box>
-      </form>
+      <Box mb={3}>
+        <SearchInput
+          shortcut
+          value={search}
+          onChange={setSearch}
+          count={search.trim() !== '' ? visible.length : undefined}
+          placeholder={t('customer.searchPlaceholder')}
+        />
+      </Box>
 
       <Flex wrap="wrap" align="center" gap={4} mb={4} ref={listTop}>
         <NativeSelect.Root size="lg" width="auto">
           <NativeSelect.Field
             value={sort}
             onChange={(e) => setSort(e.currentTarget.value as SortKey)}
-            aria-label={t('common.filter')}
+            aria-label={t('filters.sort')}
           >
             <option value="debt">{t('credit.sortByDebt')}</option>
             <option value="oldest">{t('credit.sortByOldest')}</option>
@@ -256,6 +264,7 @@ export function CreditPage() {
           <NativeSelect.Indicator />
         </NativeSelect.Root>
       </Flex>
+      <ActiveFilters filters={activeFilters} onReset={resetFilters} />
 
       {entriesError && (
         <Alert.Root status="error" mb={3}>
@@ -301,11 +310,21 @@ export function CreditPage() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : visible.length === 0 ? (
-        <Card.Root>
-          <Card.Body>
-            <Text color="fg.muted">{t('stock.noResults')}</Text>
-          </Card.Body>
-        </Card.Root>
+        <NoResults search={search} filtered={show !== 'all'} onReset={resetFilters}>
+          {search.trim() !== '' && (
+            <Button
+              size="lg"
+              colorPalette="brand"
+              onClick={() => {
+                setPrefill(true)
+                setFormOpen(true)
+              }}
+            >
+              <Plus size={18} />
+              {t('customer.add')}
+            </Button>
+          )}
+        </NoResults>
       ) : (
         <Stack gap={3}>
           {paged.pageItems.map(({ customer: c, ageDays, relance }) => {
@@ -421,8 +440,21 @@ export function CreditPage() {
         <CustomerForm
           open
           withOpeningDebt
-          onClose={() => setFormOpen(false)}
+          // What found nobody in the search becomes the new client's name or
+          // number, so it is not typed twice.
+          initialName={prefill && !/\d/.test(search) ? search.trim() : undefined}
+          initialPhone={prefill && /\d/.test(search) ? search.trim() : undefined}
+          onClose={() => {
+            setFormOpen(false)
+            setPrefill(false)
+          }}
+          onPickExisting={(id) => {
+            setFormOpen(false)
+            setPrefill(false)
+            navigate(`/credit/${id}`)
+          }}
           onCreated={(id) => {
+            setPrefill(false)
             setShow('all')
             setSearch('')
             setFormOpen(false)

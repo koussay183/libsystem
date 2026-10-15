@@ -9,8 +9,6 @@ import {
   Text,
   Button,
   IconButton,
-  Input,
-  InputGroup,
   NativeSelect,
   Badge,
   Card,
@@ -23,7 +21,6 @@ import {
 } from '@chakra-ui/react'
 import {
   Plus,
-  Search,
   Package,
   Pencil,
   Trash2,
@@ -42,6 +39,9 @@ import { buildQuery, matchesQuery, pruneFoldCache } from '@/lib/textIndex'
 import { useAlive } from '@/lib/useAlive'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { SearchInput } from '@/components/SearchInput'
+import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts, removeProduct } from './useProducts'
 import { groupByFamily } from './naming'
 import type { Family } from './naming'
@@ -86,10 +86,19 @@ export function StockPage() {
   const { products, loading, error } = useProducts()
 
   const [search, setSearch] = useState('')
-  const [view, setView] = useState<View>('grouped')
-  const [category, setCategory] = useState('')
-  const [stockState, setStockState] = useState<StockState>('all')
-  const [sort, setSort] = useState<SortKey>('name')
+  // Kept for the tab: back from a sale, the list is as he left it.
+  const [view, setView] = useSessionState<View>('stock.view', 'grouped', oneOf(['grouped', 'flat']))
+  const [category, setCategory] = useSessionState('stock.category', '')
+  const [stockState, setStockState] = useSessionState<StockState>(
+    'stock.state',
+    'all',
+    oneOf(['all', 'low', 'out', 'in']),
+  )
+  const [sort, setSort] = useSessionState<SortKey>(
+    'stock.sort',
+    'name',
+    oneOf(['name', 'qtyAsc', 'qtyDesc', 'priceDesc', 'recent']),
+  )
   const listTop = useRef<HTMLDivElement>(null)
   const [expanded, setExpanded] = useState<string[]>([])
   const [formOpen, setFormOpen] = useState(false)
@@ -198,8 +207,8 @@ export function StockPage() {
   }, [filtered, sort])
 
   const pageKey = `${q}|${view}|${category}|${stockState}|${sort}`
-  const flatPage = usePaged(filtered, pageKey, { pageSize: STOCK_PAGE })
-  const groupPage = usePaged(entries, pageKey, { pageSize: STOCK_PAGE })
+  const flatPage = usePaged(filtered, pageKey, { pageSize: STOCK_PAGE, persist: 'stock.flat' })
+  const groupPage = usePaged(entries, pageKey, { pageSize: STOCK_PAGE, persist: 'stock.grouped' })
   const paged = view === 'flat' ? flatPage : groupPage
 
   /** Every category an article is filed under, for the filter. */
@@ -213,6 +222,34 @@ export function StockPage() {
     return { names: [...names].sort((a, b) => a.localeCompare(b)), none }
   }, [products])
   const narrowed = category !== '' || stockState !== 'all'
+  const resetFilters = () => {
+    setCategory('')
+    setStockState('all')
+    setSearch('')
+  }
+  const stateLabel: Record<StockState, string> = {
+    all: t('filters.statusAll'),
+    low: t('filters.statusLow'),
+    out: t('filters.statusOut'),
+    in: t('filters.statusIn'),
+  }
+  const activeFilters = [
+    ...(category !== ''
+      ? [
+          {
+            key: 'category',
+            label: t('smart.filterChip', {
+              name: t('filters.category'),
+              value: category === NO_CATEGORY ? t('filters.categoryNone') : category,
+            }),
+            onRemove: () => setCategory(''),
+          },
+        ]
+      : []),
+    ...(stockState !== 'all'
+      ? [{ key: 'state', label: stateLabel[stockState], onRemove: () => setStockState('all') }]
+      : []),
+  ]
 
   // Counted exactly the way the per-row badge decides, so the tile and the
   // rows it summarises can never disagree. Without the threshold check every
@@ -505,21 +542,14 @@ export function StockPage() {
       {/* ---------------- Search / scan + view toggle ---------------- */}
       <Flex gap={3} mb={4} align="center" wrap="wrap">
         <Box as="form" onSubmit={onSearchSubmit} flex="1" minW="16rem">
-          <InputGroup
-            startElement={
-              <Box color="gray.400">
-                <Search size={22} />
-              </Box>
-            }
-          >
-            <Input
-              size="lg"
-              autoFocus
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('stock.searchPlaceholder')}
-            />
-          </InputGroup>
+          <SearchInput
+            autoFocus
+            shortcut
+            value={search}
+            onChange={setSearch}
+            count={q !== '' ? filtered.length : undefined}
+            placeholder={t('stock.searchPlaceholder')}
+          />
         </Box>
         <SegmentGroup.Root
           size="lg"
@@ -588,19 +618,8 @@ export function StockPage() {
           </NativeSelect.Field>
           <NativeSelect.Indicator />
         </NativeSelect.Root>
-        {narrowed && (
-          <Button
-            size="lg"
-            variant="ghost"
-            onClick={() => {
-              setCategory('')
-              setStockState('all')
-            }}
-          >
-            {t('filters.clear')}
-          </Button>
-        )}
       </Flex>
+      <ActiveFilters filters={activeFilters} onReset={resetFilters} />
 
       {/* ---------------- States ---------------- */}
       {loading ? (
@@ -642,11 +661,7 @@ export function StockPage() {
       ) : filtered.length === 0 && narrowed ? (
         // Nothing in this category / state — not a reason to offer creating
         // an article named after the search.
-        <Card.Root>
-          <Card.Body>
-            <Text color="fg.muted">{t('stock.noResults')}</Text>
-          </Card.Body>
-        </Card.Root>
+        <NoResults search={q} filtered onReset={resetFilters} />
       ) : filtered.length === 0 ? (
         /* A scanned code pre-fills the barcode; typed words pre-fill the name.
            Putting "cahier bleu" in the barcode field poisons the till index. */

@@ -31,6 +31,7 @@ import {
   Separator,
   SimpleGrid,
   IconButton,
+  SegmentGroup,
   Spinner,
   Stack,
   Table,
@@ -45,6 +46,7 @@ import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { NoResults } from '@/components/ActiveFilters'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import {
   useCustomer,
@@ -276,7 +278,14 @@ export function CustomerDetailPage() {
   )
   // The screen shows a page of the carnet at a time, newest first; the running
   // balance is still worked out over every line, and the printout keeps them all.
-  const ledgerPage = usePaged(rows, id ?? '')
+  // "Only his payments" is the question asked when a client disputes what he
+  // has paid; the running balance stays the one worked out over every line.
+  const [entryKind, setEntryKind] = useState<'all' | 'debit' | 'payment'>('all')
+  const shownRows = useMemo(
+    () => (entryKind === 'all' ? rows : rows.filter((r) => r.entry.type === entryKind)),
+    [rows, entryKind],
+  )
+  const ledgerPage = usePaged(shownRows, `${id ?? ''}|${entryKind}`)
   const ledgerTop = useRef<HTMLDivElement>(null)
 
   if (loading) {
@@ -487,9 +496,36 @@ export function CustomerDetailPage() {
       </SimpleGrid>
 
       {/* ---------------- The carnet itself ---------------- */}
-      <Heading size="xl" mb={3}>
-        {t('credit.carnet')}
-      </Heading>
+      <Flex align="center" gap={3} mb={3} wrap="wrap">
+        <Heading size="xl">{t('credit.carnet')}</Heading>
+        {rows.length > 0 && (
+          <SegmentGroup.Root
+            size="md"
+            colorPalette="brand"
+            ms="auto"
+            value={entryKind}
+            onValueChange={(e: { value: string | null }) =>
+              setEntryKind(e.value === 'debit' || e.value === 'payment' ? e.value : 'all')
+            }
+          >
+            <SegmentGroup.Indicator />
+            {(['all', 'debit', 'payment'] as const).map((k) => (
+              <SegmentGroup.Item key={k} value={k}>
+                <SegmentGroup.ItemText>
+                  {t(
+                    k === 'all'
+                      ? 'filters.entriesAll'
+                      : k === 'debit'
+                        ? 'filters.entriesDebit'
+                        : 'filters.entriesPayment',
+                  )}
+                </SegmentGroup.ItemText>
+                <SegmentGroup.ItemHiddenInput />
+              </SegmentGroup.Item>
+            ))}
+          </SegmentGroup.Root>
+        )}
+      </Flex>
 
       {ledgerError && (
         <Alert.Root status="error" mb={3}>
@@ -514,6 +550,8 @@ export function CustomerDetailPage() {
             <EmptyState.Description>{t('credit.subtitle')}</EmptyState.Description>
           </EmptyState.Content>
         </EmptyState.Root>
+      ) : shownRows.length === 0 ? (
+        <NoResults filtered onReset={() => setEntryKind('all')} />
       ) : (
         <Card.Root ref={ledgerTop}>
           <Card.Body p={0}>

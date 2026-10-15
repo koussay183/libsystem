@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { readSession, writeSession } from './useSessionState'
 
 /** Rows on one page of a long list, everywhere in the app. */
 export const PAGE_SIZE = 25
@@ -22,10 +23,26 @@ export const PAGE_SIZE = 25
 export function usePaged<T>(
   items: readonly T[],
   resetKey: string,
-  opts: { total?: number | null; pageSize?: number } = {},
+  opts: {
+    total?: number | null
+    pageSize?: number
+    /**
+     * Remembers the page for this tab under this name, so coming back to the
+     * list lands where the owner left it — as long as the filters are the
+     * same ones (the stored page belongs to its resetKey).
+     */
+    persist?: string
+  } = {},
 ) {
   const pageSize = opts.pageSize ?? PAGE_SIZE
-  const [state, setState] = useState({ key: resetKey, page: 1 })
+  const persist = opts.persist
+  const [state, setState] = useState(() => {
+    if (persist) {
+      const saved = readSession(`page.${persist}`, { key: '', page: 1 })
+      if (saved.key === resetKey && typeof saved.page === 'number') return saved
+    }
+    return { key: resetKey, page: 1 }
+  })
   const total = Math.max(items.length, opts.total ?? 0)
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const wanted = state.key === resetKey ? state.page : 1
@@ -41,6 +58,9 @@ export function usePaged<T>(
     start,
     end: Math.min(start + pageSize, total),
     pageItems: items.slice(start, start + pageSize),
-    setPage: (next: number) => setState({ key: resetKey, page: next }),
+    setPage: (next: number) => {
+      setState({ key: resetKey, page: next })
+      if (persist) writeSession(`page.${persist}`, { key: resetKey, page: next })
+    },
   }
 }

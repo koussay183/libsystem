@@ -23,8 +23,8 @@ import {
   parseMoney,
   toInput,
   moneySymbolKey,
-  moneyPlaceholder,
 } from '@/lib/money'
+import { MoneyInput } from '@/components/MoneyInput'
 import { addCreditEntry, updateCreditEntry } from '@/features/customers/useCustomers'
 import type { CreditEntry } from '@/types/models'
 
@@ -203,7 +203,7 @@ export function CreditEntryForm({
             </Dialog.Header>
 
             <Dialog.Body>
-              <form id="credit-entry-form" onSubmit={submit}>
+              <form id="credit-entry-form" noValidate onSubmit={submit}>
                 <Stack gap={4}>
                   {/* What he owes right now, so the owner never types blind. */}
                   <HStack justify="space-between">
@@ -243,18 +243,16 @@ export function CreditEntryForm({
 
                   <Field.Root required invalid={!!error}>
                     <Field.Label>{`${t('credit.amount')} (${symbol})`}</Field.Label>
-                    <Input
+                    <MoneyInput
                       size="xl"
                       autoFocus
                       value={amount}
-                      onChange={(e) => {
-                        setAmount(e.target.value)
+                      onChange={(v) => {
+                        setAmount(v)
                         setError('')
                         setOverpayAsked(false)
                         setSettling(false)
                       }}
-                      inputMode="decimal"
-                      placeholder={moneyPlaceholder()}
                       fontSize="2xl"
                       fontWeight="bold"
                       textAlign="end"

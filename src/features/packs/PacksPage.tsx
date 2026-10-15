@@ -15,7 +15,6 @@ import {
   HStack,
   IconButton,
   Input,
-  InputGroup,
   NativeSelect,
   Portal,
   Spinner,
@@ -24,12 +23,16 @@ import {
   Table,
   Text,
 } from '@chakra-ui/react'
-import { Barcode, Boxes, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
-import { formatMoney, fromMinor, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import { Barcode, Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
+import { formatMoney, fromMinor, parseMoney, parseQuantity, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { fold } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { SearchInput } from '@/components/SearchInput'
+import { MoneyInput } from '@/components/MoneyInput'
+import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts } from '@/features/stock/useProducts'
 import { ProductScanField } from '@/components/ProductScanField'
 import { codeOf, loose, generateInStoreCode } from '@/features/stock/barcode'
@@ -59,7 +62,11 @@ export function PacksPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [actionError, setActionError] = useState('')
   const [search, setSearch] = useState('')
-  const [show, setShow] = useState<'all' | 'active' | 'inactive'>('all')
+  const [show, setShow] = useSessionState<'all' | 'active' | 'inactive'>(
+    'packs.show',
+    'all',
+    oneOf(['all', 'active', 'inactive']),
+  )
   const listTop = useRef<HTMLDivElement>(null)
 
   const symbol = t(moneySymbolKey())
@@ -71,7 +78,21 @@ export function PacksPage() {
       (show === 'all' || (show === 'active') === (p.active !== false)) &&
       (q === '' || fold(p.name).includes(q) || (p.barcode ?? '').includes(search.trim())),
   )
-  const paged = usePaged(visible, `${q}|${show}`)
+  const paged = usePaged(visible, `${q}|${show}`, { persist: 'packs' })
+  const resetFilters = () => {
+    setSearch('')
+    setShow('all')
+  }
+  const activeFilters =
+    show === 'all'
+      ? []
+      : [
+          {
+            key: 'show',
+            label: t(show === 'active' ? 'packs.filterActive' : 'packs.filterInactive'),
+            onRemove: () => setShow('all'),
+          },
+        ]
 
   const openNew = () => {
     setEditing(null)
@@ -184,14 +205,15 @@ export function PacksPage() {
       ) : (
         <>
         <Flex gap={3} mb={4} wrap="wrap" ref={listTop}>
-          <InputGroup flex="2" minW="14rem" startElement={<Search size={20} />}>
-            <Input
-              size="lg"
+          <Box flex="2" minW="14rem">
+            <SearchInput
+              shortcut
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={setSearch}
+              count={q !== '' ? visible.length : undefined}
               placeholder={t('common.search')}
             />
-          </InputGroup>
+          </Box>
           <NativeSelect.Root size="lg" flex="1" minW="11rem">
             <NativeSelect.Field
               value={show}
@@ -205,6 +227,10 @@ export function PacksPage() {
             <NativeSelect.Indicator />
           </NativeSelect.Root>
         </Flex>
+        <ActiveFilters filters={activeFilters} onReset={resetFilters} />
+        {visible.length === 0 ? (
+          <NoResults search={search} filtered={show !== 'all'} onReset={resetFilters} />
+        ) : (
         <Card.Root>
           <Card.Body p={0}>
             <Box overflowX="auto">
@@ -237,13 +263,6 @@ export function PacksPage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {paged.pageItems.length === 0 && (
-                    <Table.Row>
-                      <Table.Cell colSpan={6}>
-                        <Text color="fg.muted">{t('stock.noResults')}</Text>
-                      </Table.Cell>
-                    </Table.Row>
-                  )}
                   {paged.pageItems.map((pack) => {
                     const info = resolvePack(pack, products)
                     const broken = !productsLoading && info.missing.length > 0
@@ -341,6 +360,7 @@ export function PacksPage() {
             </Box>
           </Card.Body>
         </Card.Root>
+        )}
         <Pager
           page={paged.page}
           pageCount={paged.pageCount}
@@ -616,15 +636,13 @@ function PackForm({
                   <HStack gap={4} align="flex-start">
                     <Field.Root required>
                       <Field.Label>{`${t('packs.price')} (${symbol})`}</Field.Label>
-                      <Input
+                      <MoneyInput
                         size="lg"
                         value={price}
-                        onChange={(e) => {
-                          setPrice(e.target.value)
+                        onChange={(v) => {
+                          setPrice(v)
                           setDearOk(false)
                         }}
-                        inputMode="decimal"
-                        placeholder={moneyPlaceholder()}
                       />
                       <Field.HelperText>{t('packs.priceHint')}</Field.HelperText>
                     </Field.Root>
