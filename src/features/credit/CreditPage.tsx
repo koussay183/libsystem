@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -38,6 +38,7 @@ import { Pager } from '@/components/Pager'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { CustomerForm } from './CustomerForm'
 import { daysSince, debtStartedAt, groupByCustomer, needsReminder } from './ledger'
+import type { Customer } from '@/types/models'
 
 type SortKey = 'debt' | 'name' | 'oldest'
 type Show = 'all' | 'debtors' | 'reminder' | 'settled' | 'advance'
@@ -77,31 +78,21 @@ export function CreditPage() {
         startedAt,
         ageDays: startedAt === null ? null : daysSince(startedAt),
         relance: needsReminder(own, c.balance),
+        // Folded once per snapshot, not once per letter typed.
+        name: fold(c.name),
+        phone: digits(c.phone),
+        cin: digits(c.cin),
       }
     })
   }, [customers, byCustomer])
 
-  const visible = useMemo(() => {
-    // Folded like every other search in the app: "hedi" finds "Hédi", and
-    // "احمد" finds "أحمد". A plain lowercase missed both.
-    const q = fold(search)
-    const qDigits = digits(search)
-    let list = rows
-    if (q !== '') {
-      list = list.filter(
-        (r) =>
-          fold(r.customer.name).includes(q) ||
-          (qDigits !== '' &&
-            (digits(r.customer.phone).includes(qDigits) ||
-              digits(r.customer.cin).includes(qDigits))),
-      )
-    }
-    if (show === 'debtors') list = list.filter((r) => r.customer.balance > 0)
-    else if (show === 'reminder') list = list.filter((r) => r.relance)
-    else if (show === 'settled') list = list.filter((r) => r.customer.balance === 0)
-    else if (show === 'advance') list = list.filter((r) => r.customer.balance < 0)
-
-    const sorted = [...list]
+  /**
+   * Sorted before filtering, so typing in the box never re-sorts the carnet:
+   * the filter keeps the order, and localeCompare over every client per letter
+   * was the slow part on a shop PC.
+   */
+  const sorted = useMemo(() => {
+    const sorted = [...rows]
     if (sort === 'name') {
       sorted.sort((a, b) => a.customer.name.localeCompare(b.customer.name))
     } else if (sort === 'debt') {
@@ -123,12 +114,43 @@ export function CreditPage() {
       })
     }
     return sorted
-  }, [rows, search, show, sort])
+  }, [rows, sort])
 
-  const paged = usePaged(visible, `${search}|${show}|${sort}`)
+  // The list follows the box at low priority, so typing never waits for it.
+  const applied = useDeferredValue(search)
 
-  const totalOwed = customers.reduce((s, c) => s + Math.max(0, c.balance), 0)
-  const withDebt = customers.filter((c) => c.balance > 0).length
+  const visible = useMemo(() => {
+    // Folded like every other search in the app: "hedi" finds "Hédi", and
+    // "احمد" finds "أحمد". A plain lowercase missed both.
+    const q = fold(applied)
+    const qDigits = digits(applied)
+    let list = sorted
+    if (q !== '') {
+      list = list.filter(
+        (r) =>
+          r.name.includes(q) ||
+          (qDigits !== '' && (r.phone.includes(qDigits) || r.cin.includes(qDigits))),
+      )
+    }
+    if (show === 'debtors') list = list.filter((r) => r.customer.balance > 0)
+    else if (show === 'reminder') list = list.filter((r) => r.relance)
+    else if (show === 'settled') list = list.filter((r) => r.customer.balance === 0)
+    else if (show === 'advance') list = list.filter((r) => r.customer.balance < 0)
+    return list
+  }, [sorted, applied, show])
+
+  const paged = usePaged(visible, `${applied}|${show}|${sort}`)
+
+  const { totalOwed, withDebt } = useMemo(() => {
+    let totalOwed = 0
+    let withDebt = 0
+    for (const c of customers) {
+      totalOwed += Math.max(0, c.balance)
+      if (c.balance > 0) withDebt += 1
+    }
+    return { totalOwed, withDebt }
+  }, [customers])
+  const openCustomer = useCallback((id: string) => navigate(`/credit/${id}`), [navigate])
 
   const onSearchSubmit = (e: FormEvent<HTMLFormElement>) => e.preventDefault()
 
@@ -307,94 +329,7 @@ export function CreditPage() {
           </Card.Body>
         </Card.Root>
       ) : (
-        <Stack gap={3}>
-          {paged.pageItems.map(({ customer: c, ageDays, relance }) => {
-            const owes = c.balance > 0
-            return (
-              <Card.Root
-                key={c.id}
-                cursor="pointer"
-                transition="background-color 0.15s"
-                _hover={{ bg: 'bg.muted' }}
-                onClick={() => navigate(`/credit/${c.id}`)}
-              >
-                <Card.Body>
-                  <Flex align="center" gap={3} wrap="wrap">
-                    <Box minW="0" flex="1">
-                      <Text fontSize="xl" fontWeight="semibold" truncate>
-                        {c.name}
-                      </Text>
-                      {(c.phone || c.cin) && (
-                        <Text fontSize="sm" color="fg.muted">
-                          {[c.phone, c.cin && `${t('customer.cinShort')} ${c.cin}`]
-                            .filter(Boolean)
-                            .join(' · ')}
-                        </Text>
-                      )}
-                      <Flex wrap="wrap" gap={2} mt={2}>
-                        {owes && ageDays !== null && (
-                          <Badge colorPalette="orange" size="md">
-                            <CalendarClock size={14} />
-                            {t('credit.daysOld', { count: ageDays })}
-                          </Badge>
-                        )}
-                        {relance && (
-                          <Badge
-                            colorPalette="red"
-                            size="md"
-                            title={t('credit.reminderHint')}
-                          >
-                            <AlertTriangle size={14} />
-                            {t('credit.reminder')}
-                          </Badge>
-                        )}
-                      </Flex>
-                    </Box>
-
-                    <Box textAlign="end" flexShrink={0}>
-                      {owes ? (
-                        <Text
-                          fontSize="2xl"
-                          fontWeight="bold"
-                          color="red.600"
-                          whiteSpace="nowrap"
-                        >
-                          {money(c.balance)}
-                        </Text>
-                      ) : c.balance < 0 ? (
-                        <Badge colorPalette="green" size="lg">
-                          {t('credit.creditor', { amount: money(-c.balance) })}
-                        </Badge>
-                      ) : (
-                        <Badge colorPalette="green" size="lg">
-                          {t('credit.settled')}
-                        </Badge>
-                      )}
-                    </Box>
-
-                    <Button
-                      asChild
-                      size="lg"
-                      variant="ghost"
-                      aria-label={t('common.open')}
-                      title={t('common.open')}
-                      flexShrink={0}
-                    >
-                      <Link
-                        to={`/credit/${c.id}`}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <Box _rtl={{ transform: 'rotate(180deg)' }} display="inline-flex">
-                          <ChevronRight size={22} />
-                        </Box>
-                      </Link>
-                    </Button>
-                  </Flex>
-                </Card.Body>
-              </Card.Root>
-            )
-          })}
-        </Stack>
+        <CustomerCards rows={paged.pageItems} symbol={symbol} onOpen={openCustomer} />
       )}
 
       {!loading && (
@@ -433,3 +368,101 @@ export function CreditPage() {
     </Box>
   )
 }
+
+interface CustomerRow {
+  customer: Customer
+  ageDays: number | null
+  relance: boolean
+}
+
+/** One page of clients, memoized so typing in the search box does not redraw it. */
+const CustomerCards = memo(function CustomerCards({
+  rows,
+  symbol,
+  onOpen,
+}: {
+  rows: readonly CustomerRow[]
+  symbol: string
+  onOpen: (id: string) => void
+}) {
+  const { t } = useTranslation()
+  const money = (m: number) => formatMoney(m, { symbol })
+  return (
+    <Stack gap={3}>
+      {rows.map(({ customer: c, ageDays, relance }) => {
+        const owes = c.balance > 0
+        return (
+          <Card.Root
+            key={c.id}
+            cursor="pointer"
+            transition="background-color 0.15s"
+            _hover={{ bg: 'bg.muted' }}
+            onClick={() => onOpen(c.id)}
+          >
+            <Card.Body>
+              <Flex align="center" gap={3} wrap="wrap">
+                <Box minW="0" flex="1">
+                  <Text fontSize="xl" fontWeight="semibold" truncate>
+                    {c.name}
+                  </Text>
+                  {(c.phone || c.cin) && (
+                    <Text fontSize="sm" color="fg.muted">
+                      {[c.phone, c.cin && `${t('customer.cinShort')} ${c.cin}`]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </Text>
+                  )}
+                  <Flex wrap="wrap" gap={2} mt={2}>
+                    {owes && ageDays !== null && (
+                      <Badge colorPalette="orange" size="md">
+                        <CalendarClock size={14} />
+                        {t('credit.daysOld', { count: ageDays })}
+                      </Badge>
+                    )}
+                    {relance && (
+                      <Badge colorPalette="red" size="md" title={t('credit.reminderHint')}>
+                        <AlertTriangle size={14} />
+                        {t('credit.reminder')}
+                      </Badge>
+                    )}
+                  </Flex>
+                </Box>
+
+                <Box textAlign="end" flexShrink={0}>
+                  {owes ? (
+                    <Text fontSize="2xl" fontWeight="bold" color="red.600" whiteSpace="nowrap">
+                      {money(c.balance)}
+                    </Text>
+                  ) : c.balance < 0 ? (
+                    <Badge colorPalette="green" size="lg">
+                      {t('credit.creditor', { amount: money(-c.balance) })}
+                    </Badge>
+                  ) : (
+                    <Badge colorPalette="green" size="lg">
+                      {t('credit.settled')}
+                    </Badge>
+                  )}
+                </Box>
+
+                <Button
+                  asChild
+                  size="lg"
+                  variant="ghost"
+                  aria-label={t('common.open')}
+                  title={t('common.open')}
+                  flexShrink={0}
+                >
+                  <Link to={`/credit/${c.id}`} onClick={(e) => e.stopPropagation()}>
+                    <Box _rtl={{ transform: 'rotate(180deg)' }} display="inline-flex">
+                      <ChevronRight size={22} />
+                    </Box>
+                  </Link>
+                </Button>
+              </Flex>
+            </Card.Body>
+          </Card.Root>
+        )
+      })}
+    </Stack>
+  )
+})

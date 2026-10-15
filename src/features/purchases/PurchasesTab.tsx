@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -81,19 +81,34 @@ export function PurchasesTab() {
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [purchases])
 
-  const q = fold(search)
+  // The table follows the box at low priority, so typing never waits for it.
+  const q = fold(useDeferredValue(search))
   const span = spanOf(period, custom)
-  const filtered = purchases.filter((p) => {
-    if (!inSpan(p.date, span)) return false
-    if (status !== ALL && purchaseStatus(p) !== status) return false
-    if (supplier !== ALL && (p.supplier ?? '') !== supplier) return false
-    if (q === '') return true
-    return (
-      fold(p.supplier ?? '').includes(q) ||
-      fold(p.reference ?? '').includes(q) ||
-      fold(p.note ?? '').includes(q)
-    )
-  })
+
+  /** Supplier, reference and note, folded once per snapshot rather than per letter. */
+  const haystack = useMemo(
+    () =>
+      new Map(
+        purchases.map((p) => [
+          p.id,
+          [fold(p.supplier ?? ''), fold(p.reference ?? ''), fold(p.note ?? '')],
+        ]),
+      ),
+    [purchases],
+  )
+
+  const filtered = useMemo(
+    () =>
+      purchases.filter((p) => {
+        if (!inSpan(p.date, span)) return false
+        if (status !== ALL && purchaseStatus(p) !== status) return false
+        if (supplier !== ALL && (p.supplier ?? '') !== supplier) return false
+        if (q === '') return true
+        return (haystack.get(p.id) ?? []).some((field) => field.includes(q))
+      }),
+    // `span` is rebuilt each render; its two bounds are what it means.
+    [purchases, span.from, span.to, status, supplier, q, haystack],
+  )
   const narrowed = q !== '' || supplier !== ALL || status !== ALL || period !== 'all'
   const paged = usePaged(
     filtered,
@@ -101,6 +116,7 @@ export function PurchasesTab() {
   )
   const filteredTotal = filtered.reduce((s, p) => s + p.total, 0)
   const filteredOwed = filtered.reduce((s, p) => s + purchaseOwed(p), 0)
+  const onSettle = useCallback((id: string) => setSettlingId(id), [])
   const resetFilters = () => {
     setSearch('')
     setSupplier(ALL)
@@ -121,15 +137,18 @@ export function PurchasesTab() {
    * shop is selected — but a write the server refuses is reported by the sync
    * badge in the header, not here.
    */
-  const onDelete = async (p: Purchase) => {
-    if (!window.confirm(t('purchases.deleteConfirm'))) return
-    setActionError('')
-    try {
-      await removePurchase(p)
-    } catch (e) {
-      setActionError(e instanceof Error ? e.message : t('common.error'))
-    }
-  }
+  const onDelete = useCallback(
+    async (p: Purchase) => {
+      if (!window.confirm(t('purchases.deleteConfirm'))) return
+      setActionError('')
+      try {
+        await removePurchase(p)
+      } catch (e) {
+        setActionError(e instanceof Error ? e.message : t('common.error'))
+      }
+    },
+    [t],
+  )
 
   return (
     <Box>
@@ -330,74 +349,12 @@ export function PurchasesTab() {
               </Table.Row>
             </Table.Header>
             <Table.Body>
-              {paged.pageItems.map((p) => {
-                const owed = purchaseOwed(p)
-                const status = purchaseStatus(p)
-                const style = STATUS_STYLE[status]
-                const itemCount = (p.items ?? []).reduce((n, i) => n + i.qty, 0)
-                return (
-                  <Table.Row key={p.id}>
-                    <Table.Cell whiteSpace="nowrap">{formatDate(p.date)}</Table.Cell>
-                    <Table.Cell>
-                      <Text fontWeight="semibold">{p.supplier || t('common.none')}</Text>
-                      <Text fontSize="sm" color="fg.muted">
-                        {itemCount} {t('purchases.items')}
-                      </Text>
-                    </Table.Cell>
-                    <Table.Cell display={{ base: 'none', lg: 'table-cell' }}>
-                      <Text>{p.reference || '—'}</Text>
-                      {p.note && (
-                        <Text fontSize="sm" color="fg.muted" truncate maxW="14rem">
-                          {p.note}
-                        </Text>
-                      )}
-                    </Table.Cell>
-                    <Table.Cell textAlign="end" whiteSpace="nowrap" fontWeight="bold">
-                      {money(p.total)}
-                    </Table.Cell>
-                    <Table.Cell textAlign="end" whiteSpace="nowrap" display={{ base: 'none', md: 'table-cell' }}>
-                      {money(p.paid ?? 0)}
-                    </Table.Cell>
-                    <Table.Cell
-                      textAlign="end"
-                      whiteSpace="nowrap"
-                      fontWeight="bold"
-                      color={owed > 0 ? 'red.600' : 'fg.muted'}
-                    >
-                      {money(owed)}
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge colorPalette={style.palette} size="lg">
-                        {t(style.key)}
-                      </Badge>
-                    </Table.Cell>
-                    <Table.Cell textAlign="end">
-                      <Flex gap={1} justify="flex-end">
-                        {owed > 0 && (
-                          <Button
-                            size="lg"
-                            colorPalette="brand"
-                            onClick={() => setSettlingId(p.id)}
-                          >
-                            <Wallet size={20} />
-                            {t('purchases.settle')}
-                          </Button>
-                        )}
-                        <IconButton
-                          aria-label={t('common.delete')}
-                          title={t('common.delete')}
-                          size="lg"
-                          variant="outline"
-                          colorPalette="red"
-                          onClick={() => onDelete(p)}
-                        >
-                          <Trash2 size={20} />
-                        </IconButton>
-                      </Flex>
-                    </Table.Cell>
-                  </Table.Row>
-                )
-              })}
+              <PurchaseRows
+                purchases={paged.pageItems}
+                symbol={symbol}
+                onSettle={onSettle}
+                onDelete={onDelete}
+              />
             </Table.Body>
           </Table.Root>
         </Box>
@@ -422,3 +379,90 @@ export function PurchasesTab() {
     </Box>
   )
 }
+
+/** One page of invoices, memoized so typing in the search box does not redraw it. */
+const PurchaseRows = memo(function PurchaseRows({
+  purchases,
+  symbol,
+  onSettle,
+  onDelete,
+}: {
+  purchases: readonly Purchase[]
+  symbol: string
+  onSettle: (id: string) => void
+  onDelete: (p: Purchase) => void
+}) {
+  const { t } = useTranslation()
+  const money = (m: number) => formatMoney(m, { symbol })
+  return (
+    <>
+      {purchases.map((p) => {
+        const owed = purchaseOwed(p)
+        const style = STATUS_STYLE[purchaseStatus(p)]
+        const itemCount = (p.items ?? []).reduce((n, i) => n + i.qty, 0)
+        return (
+          <Table.Row key={p.id}>
+            <Table.Cell whiteSpace="nowrap">{formatDate(p.date)}</Table.Cell>
+            <Table.Cell>
+              <Text fontWeight="semibold">{p.supplier || t('common.none')}</Text>
+              <Text fontSize="sm" color="fg.muted">
+                {itemCount} {t('purchases.items')}
+              </Text>
+            </Table.Cell>
+            <Table.Cell display={{ base: 'none', lg: 'table-cell' }}>
+              <Text>{p.reference || '—'}</Text>
+              {p.note && (
+                <Text fontSize="sm" color="fg.muted" truncate maxW="14rem">
+                  {p.note}
+                </Text>
+              )}
+            </Table.Cell>
+            <Table.Cell textAlign="end" whiteSpace="nowrap" fontWeight="bold">
+              {money(p.total)}
+            </Table.Cell>
+            <Table.Cell
+              textAlign="end"
+              whiteSpace="nowrap"
+              display={{ base: 'none', md: 'table-cell' }}
+            >
+              {money(p.paid ?? 0)}
+            </Table.Cell>
+            <Table.Cell
+              textAlign="end"
+              whiteSpace="nowrap"
+              fontWeight="bold"
+              color={owed > 0 ? 'red.600' : 'fg.muted'}
+            >
+              {money(owed)}
+            </Table.Cell>
+            <Table.Cell>
+              <Badge colorPalette={style.palette} size="lg">
+                {t(style.key)}
+              </Badge>
+            </Table.Cell>
+            <Table.Cell textAlign="end">
+              <Flex gap={1} justify="flex-end">
+                {owed > 0 && (
+                  <Button size="lg" colorPalette="brand" onClick={() => onSettle(p.id)}>
+                    <Wallet size={20} />
+                    {t('purchases.settle')}
+                  </Button>
+                )}
+                <IconButton
+                  aria-label={t('common.delete')}
+                  title={t('common.delete')}
+                  size="lg"
+                  variant="outline"
+                  colorPalette="red"
+                  onClick={() => onDelete(p)}
+                >
+                  <Trash2 size={20} />
+                </IconButton>
+              </Flex>
+            </Table.Cell>
+          </Table.Row>
+        )
+      })}
+    </>
+  )
+})
