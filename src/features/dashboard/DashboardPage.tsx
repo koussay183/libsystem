@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { lazy, Suspense, useState, useMemo, useEffect } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -41,16 +41,6 @@ import {
   Wallet,
   Wrench,
 } from 'lucide-react'
-import {
-  ResponsiveContainer,
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-} from 'recharts'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate, formatPercent } from '@/lib/format'
 import { useSalesSince, useDayStart } from '@/features/sales/useSales'
@@ -64,12 +54,19 @@ import type { FixKind } from './useDashboardStats'
 import { PERIODS, axisInterval, salesCapFor, previousRange } from './periods'
 import type { Period } from './periods'
 
-/** Chart colours, matching the app's brand and "sortie" orange. */
-const IN_COLOUR = '#287a76'
-const OUT_COLOUR = '#d97706'
-const GRID_COLOUR = '#e7e5e4'
+/**
+ * The chart comes in after the figures: recharts is the biggest file in the
+ * build, and parsing it on a shop PC used to hold back the whole page.
+ */
+const loadChart = () => import('./DashboardChart')
+const DashboardChart = lazy(loadChart)
 
-/** A titled block with an optional one-line explanation underneath. */
+/**
+ * A titled block with an optional one-line explanation underneath.
+ *
+ * `content-visibility: auto` lets the browser skip layout and paint for the
+ * sections below the fold until they are scrolled to.
+ */
 function Section({
   icon,
   title,
@@ -82,7 +79,7 @@ function Section({
   children: ReactNode
 }) {
   return (
-    <Box mb={8}>
+    <Box mb={8} css={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 480px' }}>
       <Flex align="center" gap={2}>
         <Box color="brand.fg" flexShrink={0}>
           {icon}
@@ -120,6 +117,11 @@ export function DashboardPage() {
    * then. The guard keeps this from firing on mount, where `dayStart` is
    * necessarily already behind `now`.
    */
+  // Fetched while the figures load, so the chart is not a second wait after them.
+  useEffect(() => {
+    void loadChart().catch(() => {})
+  }, [])
+
   const dayStart = useDayStart()
   useEffect(() => {
     setView((v) => (v.now >= dayStart ? v : { ...v, now: Date.now() }))
@@ -362,40 +364,18 @@ export function DashboardPage() {
               <Heading size="md" mb={4}>
                 {t('dashboard.in')} / {t('dashboard.out')}
               </Heading>
-              {/* dir="ltr": the chart axis always reads left-to-right, even in AR. */}
-              <Box dir="ltr">
-                <ResponsiveContainer width="100%" height={280}>
-                  <BarChart
+              {/* dir="ltr": the chart axis always reads left-to-right, even in AR.
+                  The fixed height keeps the page from jumping when it arrives. */}
+              <Box dir="ltr" h="280px">
+                <Suspense fallback={null}>
+                  <DashboardChart
                     data={stats.chart}
-                    margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={GRID_COLOUR} />
-                    <XAxis
-                      dataKey="label"
-                      tick={{ fontSize: 12 }}
-                      interval={axisInterval(period)}
-                    />
-                    <YAxis tick={{ fontSize: 12 }} width={44} />
-                    <Tooltip
-                      formatter={(value) =>
-                        `${Number(value).toLocaleString('fr-TN')} ${symbol}`
-                      }
-                    />
-                    <Legend />
-                    <Bar
-                      dataKey="in"
-                      name={t('dashboard.in')}
-                      fill={IN_COLOUR}
-                      radius={[4, 4, 0, 0]}
-                    />
-                    <Bar
-                      dataKey="out"
-                      name={t('dashboard.out')}
-                      fill={OUT_COLOUR}
-                      radius={[4, 4, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
+                    interval={axisInterval(period)}
+                    symbol={symbol}
+                    inLabel={t('dashboard.in')}
+                    outLabel={t('dashboard.out')}
+                  />
+                </Suspense>
               </Box>
             </Card.Body>
           </Card.Root>

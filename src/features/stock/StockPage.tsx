@@ -1,4 +1,13 @@
-import { Fragment, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -236,150 +245,68 @@ export function StockPage() {
     [products],
   )
 
-  const status = (p: Product): { tone: StatusTone; label: string } => {
-    if (p.quantity <= 0) return { tone: 'danger', label: t('stock.outOfStock') }
-    if (p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold)
-      return { tone: 'warning', label: t('stock.lowStockBadge') }
-    return { tone: 'success', label: t('stock.inStock') }
-  }
+  const toggleFamily = useCallback(
+    (family: string) =>
+      setExpanded((current) =>
+        current.includes(family)
+          ? current.filter((f) => f !== family)
+          : [...current, family],
+      ),
+    [],
+  )
 
-  const toggleFamily = (family: string) =>
-    setExpanded((current) =>
-      current.includes(family)
-        ? current.filter((f) => f !== family)
-        : [...current, family],
-    )
-
-  const openForm = (options: {
-    product?: Product | null
-    template?: Product | null
-    barcode?: string
-    name?: string
-    quick?: boolean
-  }) => {
-    setEditing(options.product ?? null)
-    setTemplate(options.template ?? null)
-    setScanBarcode(options.barcode)
-    setScanName(options.name)
-    setQuick(options.quick ?? false)
-    setNotice('')
-    setFormOpen(true)
-  }
+  // Stable (setters only), so the memoized rows below are not redrawn for it.
+  const openForm = useCallback(
+    (options: {
+      product?: Product | null
+      template?: Product | null
+      barcode?: string
+      name?: string
+      quick?: boolean
+    }) => {
+      setEditing(options.product ?? null)
+      setTemplate(options.template ?? null)
+      setScanBarcode(options.barcode)
+      setScanName(options.name)
+      setQuick(options.quick ?? false)
+      setNotice('')
+      setFormOpen(true)
+    },
+    [],
+  )
 
   const openAdd = () => openForm({})
   const openQuickAdd = () => openForm({ quick: true })
-  const openEdit = (p: Product) => openForm({ product: p })
+  const openEdit = useCallback((p: Product) => openForm({ product: p }), [openForm])
   /** The fastest way to add a sibling kind: same everything, empty barcode. */
-  const openDuplicate = (p: Product) => openForm({ template: p })
+  const openDuplicate = useCallback((p: Product) => openForm({ template: p }), [openForm])
   const openVariants = () => {
     setNotice('')
     setVariantsOpen(true)
   }
 
-  const onDelete = async (p: Product) => {
-    if (!window.confirm(t('stock.deleteConfirm'))) return
-    setActionError('')
-    try {
-      // removeProduct queues the deletion rather than awaiting the acknowledgement,
-      // so this resolves at once and the row leaves the table from the local cache
-      // even with the line down. The catch is therefore only for a synchronous
-      // failure such as shopPath() throwing with no shop id: a deletion the server
-      // later refuses is rolled back by Firestore and announced by the header sync
-      // badge, which is the only thing on screen that knows about the server.
-      await removeProduct(p.id)
-    } catch (err) {
-      if (alive.current) {
-        setActionError(err instanceof Error ? err.message : t('common.error'))
+  const onDelete = useCallback(
+    async (p: Product) => {
+      if (!window.confirm(t('stock.deleteConfirm'))) return
+      setActionError('')
+      try {
+        // removeProduct queues the deletion rather than awaiting the acknowledgement,
+        // so this resolves at once and the row leaves the table from the local cache
+        // even with the line down. The catch is therefore only for a synchronous
+        // failure such as shopPath() throwing with no shop id: a deletion the server
+        // later refuses is rolled back by Firestore and announced by the header sync
+        // badge, which is the only thing on screen that knows about the server.
+        await removeProduct(p.id)
+      } catch (err) {
+        if (alive.current) {
+          setActionError(err instanceof Error ? err.message : t('common.error'))
+        }
       }
-    }
-  }
+    },
+    [t, alive],
+  )
   // Typed structurally so it fits both a native <form> and Chakra's `Box as="form"`.
   const onSearchSubmit = (e: { preventDefault: () => void }) => e.preventDefault()
-
-  /** One product line — used flat, and indented under its family. */
-  const productRow = (p: Product, nested: boolean) => {
-    const s = status(p)
-    return (
-      <Table.Row key={p.id}>
-        <Table.Cell ps={nested ? 12 : undefined}>
-          <Flex align="center" gap={2} wrap="wrap">
-            <Text fontSize="lg" fontWeight={nested ? 'medium' : 'semibold'}>
-              {nested ? p.variant || p.name : p.name}
-            </Text>
-            <Badge colorPalette={TONE_PALETTE[s.tone]} size="sm">
-              {s.label}
-            </Badge>
-          </Flex>
-        </Table.Cell>
-        <Table.Cell
-          fontFamily="mono"
-          color="fg.muted"
-          display={{ base: 'none', lg: 'table-cell' }}
-        >
-          <Flex align="center" gap={2} wrap="wrap">
-            <Text as="span">{p.barcode}</Text>
-            {p.barcode && shared.has(loose(codeOf(p.barcode))) && (
-              <Badge colorPalette="purple" variant="subtle" size="sm">
-                {t('stock.sharedCode')}
-              </Badge>
-            )}
-          </Flex>
-        </Table.Cell>
-        <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
-          {p.category}
-        </Table.Cell>
-        <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
-          {formatMoney(p.salePrice, { symbol })}
-        </Table.Cell>
-        <Table.Cell textAlign="end" whiteSpace="nowrap">
-          {p.quantity} {p.unit || t('stock.units')}
-        </Table.Cell>
-        <Table.Cell>
-          <HStack justify="flex-end" gap={1}>
-            <IconButton
-              aria-label={t('stock.restock')}
-              title={t('stock.restock')}
-              size="md"
-              variant="outline"
-              colorPalette="brand"
-              onClick={() => setAdjusting(p)}
-            >
-              <PackagePlus size={18} />
-            </IconButton>
-            <IconButton
-              aria-label={t('stock.duplicate')}
-              title={t('stock.duplicate')}
-              size="md"
-              variant="outline"
-              display={{ base: 'none', md: 'inline-flex' }}
-              onClick={() => openDuplicate(p)}
-            >
-              <Copy size={18} />
-            </IconButton>
-            <IconButton
-              aria-label={t('common.edit')}
-              title={t('common.edit')}
-              size="md"
-              variant="outline"
-              onClick={() => openEdit(p)}
-            >
-              <Pencil size={18} />
-            </IconButton>
-            <IconButton
-              aria-label={t('common.delete')}
-              title={t('common.delete')}
-              size="md"
-              variant="ghost"
-              colorPalette="red"
-              onClick={() => onDelete(p)}
-            >
-              <Trash2 size={18} />
-            </IconButton>
-          </HStack>
-        </Table.Cell>
-      </Table.Row>
-    )
-  }
 
   return (
     <Box>
@@ -699,82 +626,20 @@ export function StockPage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {view === 'flat'
-                    ? flatPage.pageItems.map((p) => productRow(p, false))
-                    : groupPage.pageItems.map((entry) => {
-                        if (entry.product) return productRow(entry.product, false)
-                        const group = entry.family
-                          // While searching, every family is open: the match is
-                          // usually a variant, and a collapsed family showed
-                          // nothing but the family name — which is exactly how
-                          // "I searched and my product is not there" happens.
-                          const isOpen = q !== '' || expanded.includes(group.family)
-                          const prices = group.items.map((p) => p.salePrice)
-                          const min = Math.min(...prices)
-                          const max = Math.max(...prices)
-                          const categories = [
-                            ...new Set(group.items.map((p) => p.category ?? '')),
-                          ]
-                          return (
-                            <Fragment key={`family-${group.family}`}>
-                              <Table.Row
-                                bg="bg.subtle"
-                                cursor="pointer"
-                                onClick={() => toggleFamily(group.family)}
-                              >
-                                <Table.Cell>
-                                  <Flex align="center" gap={2} wrap="wrap">
-                                    <IconButton
-                                      aria-label={t('stock.variants')}
-                                      size="sm"
-                                      variant="ghost"
-                                      onClick={(e) => {
-                                        e.stopPropagation()
-                                        toggleFamily(group.family)
-                                      }}
-                                    >
-                                      {isOpen ? (
-                                        <ChevronDown size={20} />
-                                      ) : (
-                                        <ChevronRight size={20} />
-                                      )}
-                                    </IconButton>
-                                    <Layers size={18} />
-                                    <Text fontSize="lg" fontWeight="bold">
-                                      {group.family}
-                                    </Text>
-                                    <Badge colorPalette="brand" size="sm">
-                                      {t('stock.variantsCount', {
-                                        count: group.items.length,
-                                      })}
-                                    </Badge>
-                                  </Flex>
-                                </Table.Cell>
-                                <Table.Cell display={{ base: 'none', lg: 'table-cell' }} />
-                                <Table.Cell
-                                  color="fg.muted"
-                                  display={{ base: 'none', xl: 'table-cell' }}
-                                >
-                                  {categories.length === 1 ? categories[0] : ''}
-                                </Table.Cell>
-                                <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
-                                  {min === max
-                                    ? formatMoney(min, { symbol })
-                                    : `${formatMoney(min, { symbol })} – ${formatMoney(max, { symbol })}`}
-                                </Table.Cell>
-                                <Table.Cell
-                                  textAlign="end"
-                                  whiteSpace="nowrap"
-                                  fontWeight="bold"
-                                >
-                                  {group.totalQuantity} {t('stock.units')}
-                                </Table.Cell>
-                                <Table.Cell />
-                              </Table.Row>
-                              {isOpen && group.items.map((p) => productRow(p, true))}
-                            </Fragment>
-                          )
-                      })}
+                  <StockRows
+                    view={view}
+                    flat={flatPage.pageItems}
+                    grouped={groupPage.pageItems}
+                    searching={q !== ''}
+                    expanded={expanded}
+                    shared={shared}
+                    symbol={symbol}
+                    onRestock={setAdjusting}
+                    onDuplicate={openDuplicate}
+                    onEdit={openEdit}
+                    onDelete={onDelete}
+                    onToggle={toggleFamily}
+                  />
                 </Table.Body>
               </Table.Root>
             </Box>
@@ -824,3 +689,197 @@ export function StockPage() {
     </Box>
   )
 }
+
+interface StockRowsProps {
+  view: View
+  flat: readonly Product[]
+  grouped: readonly Entry[]
+  /** While searching, every family is open. */
+  searching: boolean
+  expanded: string[]
+  shared: Set<string>
+  symbol: string
+  onRestock: (p: Product) => void
+  onDuplicate: (p: Product) => void
+  onEdit: (p: Product) => void
+  onDelete: (p: Product) => void
+  onToggle: (family: string) => void
+}
+
+/**
+ * The rows of one page, memoized.
+ *
+ * useDeferredValue only helps if the urgent render skips the table. Drawn
+ * inline, every keystroke redrew 50 rows of badges and four icon buttons each
+ * before the deferred pass even started — on a Celeron that was the lag.
+ * Every prop here only changes with the deferred term, a filter or the data.
+ */
+const StockRows = memo(function StockRows({
+  view,
+  flat,
+  grouped,
+  searching,
+  expanded,
+  shared,
+  symbol,
+  onRestock,
+  onDuplicate,
+  onEdit,
+  onDelete,
+  onToggle,
+}: StockRowsProps) {
+  const { t } = useTranslation()
+
+  const status = (p: Product): { tone: StatusTone; label: string } => {
+    if (p.quantity <= 0) return { tone: 'danger', label: t('stock.outOfStock') }
+    if (p.lowStockThreshold > 0 && p.quantity <= p.lowStockThreshold)
+      return { tone: 'warning', label: t('stock.lowStockBadge') }
+    return { tone: 'success', label: t('stock.inStock') }
+  }
+
+  /** One product line — used flat, and indented under its family. */
+  const productRow = (p: Product, nested: boolean) => {
+    const s = status(p)
+    return (
+      <Table.Row key={p.id}>
+        <Table.Cell ps={nested ? 12 : undefined}>
+          <Flex align="center" gap={2} wrap="wrap">
+            <Text fontSize="lg" fontWeight={nested ? 'medium' : 'semibold'}>
+              {nested ? p.variant || p.name : p.name}
+            </Text>
+            <Badge colorPalette={TONE_PALETTE[s.tone]} size="sm">
+              {s.label}
+            </Badge>
+          </Flex>
+        </Table.Cell>
+        <Table.Cell
+          fontFamily="mono"
+          color="fg.muted"
+          display={{ base: 'none', lg: 'table-cell' }}
+        >
+          <Flex align="center" gap={2} wrap="wrap">
+            <Text as="span">{p.barcode}</Text>
+            {p.barcode && shared.has(loose(codeOf(p.barcode))) && (
+              <Badge colorPalette="purple" variant="subtle" size="sm">
+                {t('stock.sharedCode')}
+              </Badge>
+            )}
+          </Flex>
+        </Table.Cell>
+        <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
+          {p.category}
+        </Table.Cell>
+        <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
+          {formatMoney(p.salePrice, { symbol })}
+        </Table.Cell>
+        <Table.Cell textAlign="end" whiteSpace="nowrap">
+          {p.quantity} {p.unit || t('stock.units')}
+        </Table.Cell>
+        <Table.Cell>
+          <HStack justify="flex-end" gap={1}>
+            <IconButton
+              aria-label={t('stock.restock')}
+              title={t('stock.restock')}
+              size="md"
+              variant="outline"
+              colorPalette="brand"
+              onClick={() => onRestock(p)}
+            >
+              <PackagePlus size={18} />
+            </IconButton>
+            <IconButton
+              aria-label={t('stock.duplicate')}
+              title={t('stock.duplicate')}
+              size="md"
+              variant="outline"
+              display={{ base: 'none', md: 'inline-flex' }}
+              onClick={() => onDuplicate(p)}
+            >
+              <Copy size={18} />
+            </IconButton>
+            <IconButton
+              aria-label={t('common.edit')}
+              title={t('common.edit')}
+              size="md"
+              variant="outline"
+              onClick={() => onEdit(p)}
+            >
+              <Pencil size={18} />
+            </IconButton>
+            <IconButton
+              aria-label={t('common.delete')}
+              title={t('common.delete')}
+              size="md"
+              variant="ghost"
+              colorPalette="red"
+              onClick={() => onDelete(p)}
+            >
+              <Trash2 size={18} />
+            </IconButton>
+          </HStack>
+        </Table.Cell>
+      </Table.Row>
+    )
+  }
+
+  if (view === 'flat') return <>{flat.map((p) => productRow(p, false))}</>
+
+  return (
+    <>
+      {grouped.map((entry) => {
+        if (entry.product) return productRow(entry.product, false)
+        const group = entry.family
+        // While searching, every family is open: the match is usually a
+        // variant, and a collapsed family showed nothing but the family name —
+        // which is exactly how "I searched and my product is not there" happens.
+        const isOpen = searching || expanded.includes(group.family)
+        const prices = group.items.map((p) => p.salePrice)
+        const min = Math.min(...prices)
+        const max = Math.max(...prices)
+        const categories = [...new Set(group.items.map((p) => p.category ?? ''))]
+        return (
+          <Fragment key={`family-${group.family}`}>
+            <Table.Row bg="bg.subtle" cursor="pointer" onClick={() => onToggle(group.family)}>
+              <Table.Cell>
+                <Flex align="center" gap={2} wrap="wrap">
+                  <IconButton
+                    aria-label={t('stock.variants')}
+                    size="sm"
+                    variant="ghost"
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onToggle(group.family)
+                    }}
+                  >
+                    {isOpen ? <ChevronDown size={20} /> : <ChevronRight size={20} />}
+                  </IconButton>
+                  <Layers size={18} />
+                  <Text fontSize="lg" fontWeight="bold">
+                    {group.family}
+                  </Text>
+                  <Badge colorPalette="brand" size="sm">
+                    {t('stock.variantsCount', { count: group.items.length })}
+                  </Badge>
+                </Flex>
+              </Table.Cell>
+              <Table.Cell display={{ base: 'none', lg: 'table-cell' }} />
+              <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
+                {categories.length === 1 ? categories[0] : ''}
+              </Table.Cell>
+              <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
+                {min === max
+                  ? formatMoney(min, { symbol })
+                  : `${formatMoney(min, { symbol })} – ${formatMoney(max, { symbol })}`}
+              </Table.Cell>
+              <Table.Cell textAlign="end" whiteSpace="nowrap" fontWeight="bold">
+                {group.totalQuantity} {t('stock.units')}
+              </Table.Cell>
+              <Table.Cell />
+            </Table.Row>
+            {isOpen && group.items.map((p) => productRow(p, true))}
+          </Fragment>
+        )
+      })}
+    </>
+  )
+})

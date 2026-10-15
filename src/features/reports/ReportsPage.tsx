@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { memo, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -22,7 +22,7 @@ import {
 import { TrendingUp, TrendingDown, Wallet, BarChart3, Package, Search } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
-import { fold } from '@/lib/textIndex'
+import { fold, foldedOf } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
 import { useProducts } from '@/features/stock/useProducts'
@@ -42,6 +42,8 @@ interface Row {
   boughtCost: number
   profit: number
   margin: number | null
+  /** The name folded for search. */
+  folded: string
 }
 
 export function ReportsPage() {
@@ -57,8 +59,9 @@ export function ReportsPage() {
   const money = (m: number) => formatMoney(m, { symbol })
 
   // Everything below reads the running totals kept on each product, so this
-  // page stays instant no matter how many tickets have been rung up.
-  const rows: Row[] = products.map((p) => {
+  // page stays instant no matter how many tickets have been rung up. Built once
+  // per snapshot: it used to be rebuilt, re-folded and re-sorted per letter.
+  const rows: Row[] = useMemo(() => products.map((p) => {
     const soldRevenue = p.soldRevenue ?? 0
     const soldCost = p.soldCost ?? 0
     const profit = soldRevenue - soldCost
@@ -91,39 +94,55 @@ export function ReportsPage() {
       profit,
       uncosted,
       margin: uncosted || soldRevenue <= 0 ? null : (profit / soldRevenue) * 100,
+      // From the shared fold cache, so this is a lookup for an unchanged article.
+      folded: foldedOf(p).name,
     }
-  })
+  }), [products])
 
   const categories = useMemo(
     () => [...new Set(products.map((p) => p.category ?? ''))].sort((a, b) => a.localeCompare(b)),
     [products],
   )
 
-  const q = fold(search)
-  const sorted = rows
-    .filter(
-      (r) =>
-        (!onlySold || r.soldQty !== 0) &&
-        (category === '' || r.category === category) &&
-        (q === '' || fold(r.name).includes(q)),
-    )
-    .sort((a, b) => {
-      if (sort === 'revenue') return b.soldRevenue - a.soldRevenue
-      if (sort === 'sold') return b.soldQty - a.soldQty
-      // An uncosted article's "profit" is its whole revenue, so ranked by that
-      // number it went straight to the top of "les plus rentables" — the very
-      // thing the comment above says must not happen. It sinks below every
-      // article whose profit is real, still visible, with its orange badge.
-      if (a.uncosted !== b.uncosted) return a.uncosted ? 1 : -1
-      return b.profit - a.profit
-    })
+  // The table follows the box at low priority, so typing never waits for it.
+  const q = fold(useDeferredValue(search))
+  const sorted = useMemo(
+    () =>
+      rows
+        .filter(
+          (r) =>
+            (!onlySold || r.soldQty !== 0) &&
+            (category === '' || r.category === category) &&
+            (q === '' || r.folded.includes(q)),
+        )
+        .sort((a, b) => {
+          if (sort === 'revenue') return b.soldRevenue - a.soldRevenue
+          if (sort === 'sold') return b.soldQty - a.soldQty
+          // An uncosted article's "profit" is its whole revenue, so ranked by that
+          // number it went straight to the top of "les plus rentables" — the very
+          // thing the comment above says must not happen. It sinks below every
+          // article whose profit is real, still visible, with its orange badge.
+          if (a.uncosted !== b.uncosted) return a.uncosted ? 1 : -1
+          return b.profit - a.profit
+        }),
+    [rows, onlySold, category, q, sort],
+  )
   const paged = usePaged(sorted, `${sort}|${q}|${category}|${onlySold}`)
 
-  const totalRevenue = rows.reduce((s, r) => s + r.soldRevenue, 0)
-  const totalCost = rows.reduce((s, r) => s + r.soldCost, 0)
+  const { totalRevenue, totalCost, totalBought, hasSales } = useMemo(() => {
+    let totalRevenue = 0
+    let totalCost = 0
+    let totalBought = 0
+    let hasSales = false
+    for (const r of rows) {
+      totalRevenue += r.soldRevenue
+      totalCost += r.soldCost
+      totalBought += r.boughtCost
+      if (r.soldQty > 0) hasSales = true
+    }
+    return { totalRevenue, totalCost, totalBought, hasSales }
+  }, [rows])
   const totalProfit = totalRevenue - totalCost
-  const totalBought = rows.reduce((s, r) => s + r.boughtCost, 0)
-  const hasSales = rows.some((r) => r.soldQty > 0)
 
   if (loading) {
     return (
@@ -272,60 +291,7 @@ export function ReportsPage() {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
-                    {paged.pageItems.length === 0 && (
-                      <Table.Row>
-                        <Table.Cell colSpan={7}>
-                          <Text color="fg.muted">{t('stock.noResults')}</Text>
-                        </Table.Cell>
-                      </Table.Row>
-                    )}
-                    {paged.pageItems.map((r) => {
-                      const losing = r.soldQty > 0 && r.profit <= 0
-                      return (
-                        <Table.Row key={r.id}>
-                          <Table.Cell>
-                            <Flex align="center" gap={2}>
-                              <Text fontWeight="semibold">{r.name}</Text>
-                              {losing && (
-                                <Badge colorPalette="red" size="sm">
-                                  {t('reports.loss')}
-                                </Badge>
-                              )}
-                            </Flex>
-                          </Table.Cell>
-                          <Table.Cell textAlign="end">
-                            {r.soldQty} {t('reports.units')}
-                          </Table.Cell>
-                          <Table.Cell textAlign="end">{money(r.soldRevenue)}</Table.Cell>
-                          <Table.Cell textAlign="end">
-                            {r.boughtQty} {t('reports.units')}
-                          </Table.Cell>
-                          <Table.Cell textAlign="end">
-                            {r.uncosted ? (
-                              <Badge colorPalette="orange" size="sm">
-                                {t('reports.uncosted')}
-                              </Badge>
-                            ) : (
-                              money(r.soldCost)
-                            )}
-                          </Table.Cell>
-                          <Table.Cell
-                            textAlign="end"
-                            fontWeight="bold"
-                            // A profit computed against no cost is not a profit,
-                            // so it is not painted as one.
-                            color={
-                              r.uncosted ? 'fg.muted' : r.profit >= 0 ? 'green.600' : 'red.600'
-                            }
-                          >
-                            {money(r.profit)}
-                          </Table.Cell>
-                          <Table.Cell textAlign="end" title={r.uncosted ? t('reports.uncostedHint') : undefined}>
-                            {r.uncosted ? '—' : formatPercent(r.margin)}
-                          </Table.Cell>
-                        </Table.Row>
-                      )
-                    })}
+                    <ReportRows rows={paged.pageItems} symbol={symbol} />
                   </Table.Body>
                 </Table.Root>
               </Table.ScrollArea>
@@ -345,6 +311,76 @@ export function ReportsPage() {
     </Box>
   )
 }
+
+/** One page of the table, memoized so typing in the search box does not redraw it. */
+const ReportRows = memo(function ReportRows({
+  rows,
+  symbol,
+}: {
+  rows: readonly Row[]
+  symbol: string
+}) {
+  const { t } = useTranslation()
+  const money = (m: number) => formatMoney(m, { symbol })
+  if (rows.length === 0) {
+    return (
+      <Table.Row>
+        <Table.Cell colSpan={7}>
+          <Text color="fg.muted">{t('stock.noResults')}</Text>
+        </Table.Cell>
+      </Table.Row>
+    )
+  }
+  return (
+    <>
+      {rows.map((r) => {
+        const losing = r.soldQty > 0 && r.profit <= 0
+        return (
+          <Table.Row key={r.id}>
+            <Table.Cell>
+              <Flex align="center" gap={2}>
+                <Text fontWeight="semibold">{r.name}</Text>
+                {losing && (
+                  <Badge colorPalette="red" size="sm">
+                    {t('reports.loss')}
+                  </Badge>
+                )}
+              </Flex>
+            </Table.Cell>
+            <Table.Cell textAlign="end">
+              {r.soldQty} {t('reports.units')}
+            </Table.Cell>
+            <Table.Cell textAlign="end">{money(r.soldRevenue)}</Table.Cell>
+            <Table.Cell textAlign="end">
+              {r.boughtQty} {t('reports.units')}
+            </Table.Cell>
+            <Table.Cell textAlign="end">
+              {r.uncosted ? (
+                <Badge colorPalette="orange" size="sm">
+                  {t('reports.uncosted')}
+                </Badge>
+              ) : (
+                money(r.soldCost)
+              )}
+            </Table.Cell>
+            <Table.Cell
+              textAlign="end"
+              fontWeight="bold"
+              // A profit computed against no cost is not a profit, so it is
+              // not painted as one.
+              color={r.uncosted ? 'fg.muted' : r.profit >= 0 ? 'green.600' : 'red.600'}
+            >
+              {money(r.profit)}
+            </Table.Cell>
+            <Table.Cell textAlign="end" title={r.uncosted ? t('reports.uncostedHint') : undefined}>
+              {r.uncosted ? '—' : formatPercent(r.margin)}
+            </Table.Cell>
+          </Table.Row>
+        )
+      })}
+    </>
+  )
+})
 
 function Kpi({
   label,

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 /** Rows on one page of a long list, everywhere in the app. */
 export const PAGE_SIZE = 25
@@ -31,6 +31,9 @@ export function usePaged<T>(
   const wanted = state.key === resetKey ? state.page : 1
   const page = Math.min(Math.max(1, wanted), pageCount)
   const start = (page - 1) * pageSize
+  // Same array between renders while the page is the same, so a memoized list
+  // underneath can skip redrawing its rows on every keystroke above it.
+  const pageItems = useMemo(() => items.slice(start, start + pageSize), [items, start, pageSize])
 
   return {
     page,
@@ -40,7 +43,7 @@ export function usePaged<T>(
     /** First row index the page needs, and one past the last. */
     start,
     end: Math.min(start + pageSize, total),
-    pageItems: items.slice(start, start + pageSize),
+    pageItems,
     setPage: (next: number) => setState({ key: resetKey, page: next }),
   }
 }

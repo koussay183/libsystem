@@ -1,4 +1,13 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -324,17 +333,31 @@ function ClientPicker({
   const [adding, setAdding] = useState(false)
   // Folded like the carnet's search: "hedi" finds "Hédi", "احمد" finds "أحمد",
   // and "98 123 456" is the same phone number as "98123456".
-  const needle = fold(q)
-  const digits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '')
-  const needleDigits = digits(q.trim())
-  const filtered = needle
-    ? customers.filter(
-        (c) =>
-          fold(c.name).includes(needle) ||
-          (needleDigits !== '' &&
-            (digits(c.phone).includes(needleDigits) || digits(c.cin).includes(needleDigits))),
+  // Folded once per client list, and the list follows the box at low priority:
+  // every client is a button here, and redrawing them all per letter lagged.
+  const applied = useDeferredValue(q)
+  const index = useMemo(
+    () =>
+      customers.map((c) => ({
+        c,
+        name: fold(c.name),
+        phone: clientDigits(c.phone),
+        cin: clientDigits(c.cin),
+      })),
+    [customers],
+  )
+  const filtered = useMemo(() => {
+    const needle = fold(applied)
+    if (!needle) return customers
+    const needleDigits = clientDigits(applied.trim())
+    return index
+      .filter(
+        (r) =>
+          r.name.includes(needle) ||
+          (needleDigits !== '' && (r.phone.includes(needleDigits) || r.cin.includes(needleDigits))),
       )
-    : customers
+      .map((r) => r.c)
+  }, [index, customers, applied])
 
   if (adding) {
     return (
@@ -397,40 +420,225 @@ function ClientPicker({
           </Button>
         </Stack>
       ) : (
-        <Stack
-          gap={1}
-          maxH="15rem"
-          overflowY="auto"
-          borderWidth="1px"
-          borderColor="border"
-          borderRadius="md"
-          p={1}
-        >
-          {filtered.map((c) => (
-            <Button
-              key={c.id}
-              size="lg"
-              variant={value === c.id ? 'solid' : 'ghost'}
-              colorPalette="brand"
-              justifyContent="space-between"
-              // Enter on the client already chosen finishes the sale; Enter on
-              // any other row chooses that one first (see the payment dialog).
-              data-enter-confirms={value === c.id ? '' : undefined}
-              onClick={() => onChange(c.id)}
-            >
-              <Text truncate>{c.name}</Text>
-              {c.balance > 0 && (
-                <Badge colorPalette="orange" variant="subtle">
-                  {formatMoney(c.balance, { symbol })}
-                </Badge>
-              )}
-            </Button>
-          ))}
-        </Stack>
+        <ClientList customers={filtered} value={value} onChange={onChange} symbol={symbol} />
       )}
     </Stack>
   )
 }
+
+const clientDigits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '')
+
+/**
+ * The ticket's lines, memoized.
+ *
+ * The till re-renders on every character in the scan field — a scanner types
+ * thirteen in a few milliseconds — and every one of those used to redraw every
+ * line with its six buttons. Nothing here changes until the cart does.
+ */
+const TicketLines = memo(function TicketLines({
+  lines,
+  staleIds,
+  newestKey,
+  symbol,
+  setQty,
+  toggleReturn,
+  removeLine,
+  onEditPrice,
+}: {
+  lines: PosLine[]
+  staleIds: Set<string>
+  newestKey: string | null
+  symbol: string
+  setQty: (id: string, qty: number) => void
+  toggleReturn: (id: string) => void
+  removeLine: (id: string) => void
+  onEditPrice: (line: PosLine) => void
+}) {
+  const { t } = useTranslation()
+  const money = (m: number) => formatMoney(m, { symbol })
+  return (
+    <>
+      {lines.map((l, i) => {
+        const isReturn = l.qty < 0
+        const stale = staleIds.has(l.id)
+        // The first line of a pack carries the group's heading.
+        const packHead = !!l.packUid && lines[i - 1]?.packUid !== l.packUid
+        const newest = newestKey !== null && (l.packUid ?? l.id) === newestKey
+        return (
+          <Fragment key={l.id}>
+            {packHead && (
+              <Table.Row bg="bg.subtle">
+                <Table.Cell colSpan={4} py={2}>
+                  <Flex align="center" gap={2} wrap="wrap">
+                    <Boxes size={16} />
+                    <Text fontWeight="bold">{l.packName}</Text>
+                    <Badge colorPalette="brand" variant="subtle">
+                      {money(l.packPrice ?? 0)}
+                    </Badge>
+                  </Flex>
+                </Table.Cell>
+              </Table.Row>
+            )}
+            <Table.Row
+              // The row just scanned is marked until the confirmation above
+              // fades. A return keeps its red: what the line IS matters more
+              // than how new it is.
+              bg={isReturn ? 'red.subtle' : newest ? 'green.subtle' : undefined}
+              borderStartWidth={newest && !isReturn ? '4px' : 0}
+              borderStartColor="green.solid"
+            >
+              <Table.Cell py={2} ps={l.packUid ? 6 : undefined}>
+                <Text fontWeight="semibold" lineClamp={1}>
+                  {l.name}
+                </Text>
+                <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
+                  <Text as="span">{money(l.unitPrice)}</Text>
+                  {isReturn && (
+                    <Badge colorPalette="red" size="sm">
+                      {t('pos.returnBadge')}
+                    </Badge>
+                  )}
+                  {l.priceEdited && (
+                    <Badge colorPalette="gray" variant="subtle" size="sm">
+                      {t('pos.priceChanged')}
+                    </Badge>
+                  )}
+                  {stale && (
+                    <Badge colorPalette="red" variant="subtle" size="sm">
+                      {t('pos.deletedBadge')}
+                    </Badge>
+                  )}
+                  {!isReturn && l.productId && l.qty > l.stock && (
+                    <Badge colorPalette="orange" variant="subtle" size="sm">
+                      {l.stock <= 0
+                        ? t('pos.outOfStock')
+                        : t('pos.stockLeft', { count: l.stock })}
+                    </Badge>
+                  )}
+                </HStack>
+              </Table.Cell>
+              <Table.Cell py={2}>
+                <HStack justify="center" gap={1}>
+                  <IconButton
+                    aria-label={t('common.decrease')}
+                    size="md"
+                    variant="outline"
+                    onClick={() => setQty(l.id, l.qty - 1)}
+                  >
+                    <Minus size={18} />
+                  </IconButton>
+                  <QtyCell
+                    value={l.qty}
+                    label={t('pos.editQty')}
+                    onCommit={(n) => setQty(l.id, n)}
+                  />
+                  <IconButton
+                    aria-label={t('common.increase')}
+                    size="md"
+                    variant="outline"
+                    onClick={() => setQty(l.id, l.qty + 1)}
+                  >
+                    <Plus size={18} />
+                  </IconButton>
+                </HStack>
+              </Table.Cell>
+              <Table.Cell
+                py={2}
+                textAlign="end"
+                fontWeight="bold"
+                whiteSpace="nowrap"
+                color={isReturn ? 'red.fg' : undefined}
+              >
+                {money(l.qty * l.unitPrice)}
+              </Table.Cell>
+              <Table.Cell py={2}>
+                <HStack gap={0} justify="flex-end">
+                  <IconButton
+                    aria-label={t('pos.editPrice')}
+                    title={t('pos.editPrice')}
+                    size="md"
+                    variant="ghost"
+                    onClick={() => onEditPrice(l)}
+                  >
+                    <Pencil size={18} />
+                  </IconButton>
+                  <IconButton
+                    aria-label={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                    title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                    size="md"
+                    variant="ghost"
+                    colorPalette={isReturn ? 'gray' : 'orange'}
+                    onClick={() => toggleReturn(l.id)}
+                  >
+                    <Undo2 size={18} />
+                  </IconButton>
+                  <IconButton
+                    aria-label={t('common.remove')}
+                    title={t('common.remove')}
+                    size="md"
+                    variant="ghost"
+                    colorPalette="red"
+                    onClick={() => removeLine(l.id)}
+                  >
+                    <Trash2 size={18} />
+                  </IconButton>
+                </HStack>
+              </Table.Cell>
+            </Table.Row>
+          </Fragment>
+        )
+      })}
+    </>
+  )
+})
+
+/** The client buttons, memoized so typing in the search box does not redraw them. */
+const ClientList = memo(function ClientList({
+  customers,
+  value,
+  onChange,
+  symbol,
+}: {
+  customers: Customer[]
+  value: string
+  onChange: (id: string) => void
+  symbol: string
+}) {
+  return (
+    <Stack
+      gap={1}
+      maxH="15rem"
+      overflowY="auto"
+      borderWidth="1px"
+      borderColor="border"
+      borderRadius="md"
+      p={1}
+    >
+      {customers.map((c) => (
+        <Button
+          key={c.id}
+          size="lg"
+          variant={value === c.id ? 'solid' : 'ghost'}
+          colorPalette="brand"
+          justifyContent="space-between"
+          // Enter on the client already chosen finishes the sale; Enter on
+          // any other row chooses that one first (see the payment dialog).
+          data-enter-confirms={value === c.id ? '' : undefined}
+          onClick={() => onChange(c.id)}
+          // Rows scrolled out of the box skip layout and paint.
+          css={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 2.75rem' }}
+        >
+          <Text truncate>{c.name}</Text>
+          {c.balance > 0 && (
+            <Badge colorPalette="orange" variant="subtle">
+              {formatMoney(c.balance, { symbol })}
+            </Badge>
+          )}
+        </Button>
+      ))}
+    </Stack>
+  )
+})
 
 export function CaissePage() {
   const { t } = useTranslation()
@@ -1575,6 +1783,12 @@ export function CaissePage() {
     return last.packUid ?? last.id
   }, [cart.lines, lastAdded])
 
+  const staleIds = useMemo(() => new Set(staleLines.map((l) => l.id)), [staleLines])
+  const editLinePrice = useCallback((l: PosLine) => {
+    setPriceLine(l)
+    setPriceText(String(fromMinor(l.unitPrice)))
+  }, [])
+
   /** Newest first means the top of the box is where the work appears. */
   useEffect(() => {
     const el = ticketScrollRef.current
@@ -2428,142 +2642,16 @@ export function CaissePage() {
                   </Table.Row>
                 </Table.Header>
                 <Table.Body>
-                  {displayLines.map((l, i) => {
-                    const isReturn = l.qty < 0
-                    const stale = staleLines.some((s) => s.id === l.id)
-                    // The first line of a pack carries the group's heading.
-                    const packHead =
-                      !!l.packUid && displayLines[i - 1]?.packUid !== l.packUid
-                    const newest = newestKey !== null && (l.packUid ?? l.id) === newestKey
-                    return (
-                      <Fragment key={l.id}>
-                        {packHead && (
-                          <Table.Row bg="bg.subtle">
-                            <Table.Cell colSpan={4} py={2}>
-                              <Flex align="center" gap={2} wrap="wrap">
-                                <Boxes size={16} />
-                                <Text fontWeight="bold">{l.packName}</Text>
-                                <Badge colorPalette="brand" variant="subtle">
-                                  {money(l.packPrice ?? 0)}
-                                </Badge>
-                              </Flex>
-                            </Table.Cell>
-                          </Table.Row>
-                        )}
-                        <Table.Row
-                          // The row just scanned is marked until the
-                          // confirmation above fades. A return keeps its red:
-                          // what the line IS matters more than how new it is.
-                          bg={isReturn ? 'red.subtle' : newest ? 'green.subtle' : undefined}
-                          borderStartWidth={newest && !isReturn ? '4px' : 0}
-                          borderStartColor="green.solid"
-                        >
-                          <Table.Cell py={2} ps={l.packUid ? 6 : undefined}>
-                            <Text fontWeight="semibold" lineClamp={1}>
-                              {l.name}
-                            </Text>
-                            <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
-                              <Text as="span">{money(l.unitPrice)}</Text>
-                              {isReturn && (
-                                <Badge colorPalette="red" size="sm">
-                                  {t('pos.returnBadge')}
-                                </Badge>
-                              )}
-                              {l.priceEdited && (
-                                <Badge colorPalette="gray" variant="subtle" size="sm">
-                                  {t('pos.priceChanged')}
-                                </Badge>
-                              )}
-                              {stale && (
-                                <Badge colorPalette="red" variant="subtle" size="sm">
-                                  {t('pos.deletedBadge')}
-                                </Badge>
-                              )}
-                              {!isReturn && l.productId && l.qty > l.stock && (
-                                <Badge colorPalette="orange" variant="subtle" size="sm">
-                                  {l.stock <= 0
-                                    ? t('pos.outOfStock')
-                                    : t('pos.stockLeft', { count: l.stock })}
-                                </Badge>
-                              )}
-                            </HStack>
-                          </Table.Cell>
-                          <Table.Cell py={2}>
-                            <HStack justify="center" gap={1}>
-                              <IconButton
-                                aria-label={t('common.decrease')}
-                                size="md"
-                                variant="outline"
-                                onClick={() => cart.setQty(l.id, l.qty - 1)}
-                              >
-                                <Minus size={18} />
-                              </IconButton>
-                              <QtyCell
-                                value={l.qty}
-                                label={t('pos.editQty')}
-                                onCommit={(n) => cart.setQty(l.id, n)}
-                              />
-                              <IconButton
-                                aria-label={t('common.increase')}
-                                size="md"
-                                variant="outline"
-                                onClick={() => cart.setQty(l.id, l.qty + 1)}
-                              >
-                                <Plus size={18} />
-                              </IconButton>
-                            </HStack>
-                          </Table.Cell>
-                          <Table.Cell
-                            py={2}
-                            textAlign="end"
-                            fontWeight="bold"
-                            whiteSpace="nowrap"
-                            color={isReturn ? 'red.fg' : undefined}
-                          >
-                            {money(l.qty * l.unitPrice)}
-                          </Table.Cell>
-                          <Table.Cell py={2}>
-                            <HStack gap={0} justify="flex-end">
-                              <IconButton
-                                aria-label={t('pos.editPrice')}
-                                title={t('pos.editPrice')}
-                                size="md"
-                                variant="ghost"
-                                onClick={() => {
-                                  setPriceLine(l)
-                                  setPriceText(String(fromMinor(l.unitPrice)))
-                                }}
-                              >
-                                <Pencil size={18} />
-                              </IconButton>
-                              <IconButton
-                                aria-label={
-                                  isReturn ? t('pos.undoReturn') : t('pos.returnLine')
-                                }
-                                title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
-                                size="md"
-                                variant="ghost"
-                                colorPalette={isReturn ? 'gray' : 'orange'}
-                                onClick={() => cart.toggleReturn(l.id)}
-                              >
-                                <Undo2 size={18} />
-                              </IconButton>
-                              <IconButton
-                                aria-label={t('common.remove')}
-                                title={t('common.remove')}
-                                size="md"
-                                variant="ghost"
-                                colorPalette="red"
-                                onClick={() => cart.removeLine(l.id)}
-                              >
-                                <Trash2 size={18} />
-                              </IconButton>
-                            </HStack>
-                          </Table.Cell>
-                        </Table.Row>
-                      </Fragment>
-                    )
-                  })}
+                  <TicketLines
+                    lines={displayLines}
+                    staleIds={staleIds}
+                    newestKey={newestKey}
+                    symbol={symbol}
+                    setQty={cart.setQty}
+                    toggleReturn={cart.toggleReturn}
+                    removeLine={cart.removeLine}
+                    onEditPrice={editLinePrice}
+                  />
                 </Table.Body>
               </Table.Root>
             </Box>

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link as RouterLink } from 'react-router-dom'
@@ -137,8 +137,19 @@ export function SalesTab() {
   /** The stored name wins: it still reads correctly if the client was deleted. */
   const clientOf = (s: Sale) => clientName(s, nameById)
 
-  const q = fold(search)
+  // The list follows the box at low priority, so typing never waits for it.
+  const q = fold(useDeferredValue(search))
   const narrowed = q !== '' || kind !== 'all' || status !== 'all'
+
+  /** Ticket number and client, folded once per snapshot rather than per letter. */
+  const haystack = useMemo(
+    () =>
+      new Map(
+        sales.map((s) => [s.id, [fold(s.ticketNo), fold(clientName(s, nameById) ?? '')]] as const),
+      ),
+    [sales, nameById],
+  )
+
   const filtered = useMemo(() => {
     if (!narrowed) return sales
     return sales.filter((s) => {
@@ -148,9 +159,10 @@ export function SalesTab() {
         return false
       }
       if (q === '') return true
-      return fold(s.ticketNo).includes(q) || fold(clientName(s, nameById) ?? '').includes(q)
+      const [ticketNo, client] = haystack.get(s.id) ?? ['', '']
+      return ticketNo.includes(q) || client.includes(q)
     })
-  }, [sales, narrowed, kind, status, q, nameById])
+  }, [sales, narrowed, kind, status, q, haystack])
 
   /**
    * Unfiltered, the pages are counted from what the SERVER holds for the
@@ -199,6 +211,10 @@ export function SalesTab() {
 
   const previewSale = previewId ? (sales.find((s) => s.id === previewId) ?? null) : null
   const preview: TicketData | null = previewSale ? toTicket(previewSale) : justRecorded
+  const openPreview = useCallback((id: string) => {
+    setJustRecorded(null)
+    setPreviewId(id)
+  }, [])
   const closePreview = () => {
     setPreviewId(null)
     setJustRecorded(null)
@@ -360,78 +376,12 @@ export function SalesTab() {
           </Card.Body>
         </Card.Root>
       ) : (
-        <Stack gap={3}>
-          {paged.pageItems.map((s) => {
-            const itemCount = s.items.reduce((n, i) => n + i.qty, 0)
-            const client = clientOf(s)
-            return (
-              <Card.Root
-                key={s.id}
-                cursor="pointer"
-                _hover={{ borderColor: 'brand.solid' }}
-                onClick={() => {
-                  setJustRecorded(null)
-                  setPreviewId(s.id)
-                }}
-              >
-                <Card.Body>
-                  <Flex align="center" gap={3} wrap="wrap">
-                    <Box minW="0" flex="1">
-                      <HStack gap={2} mb={1} wrap="wrap">
-                        <Text
-                          fontSize="lg"
-                          fontWeight="bold"
-                          color={s.total < 0 ? 'red.600' : undefined}
-                        >
-                          {money(s.total)}
-                        </Text>
-                        <Text
-                          fontSize="xs"
-                          fontFamily="mono"
-                          color="brand.fg"
-                          bg="brand.subtle"
-                          px={2}
-                          py={0.5}
-                          borderRadius="md"
-                        >
-                          {s.ticketNo}
-                        </Text>
-                        {s.kind === 'invoice' && (
-                          <Badge colorPalette="purple" size="lg" variant="subtle">
-                            <FileText size={14} />
-                            {t('sales.invoice')}
-                          </Badge>
-                        )}
-                        {s.hasReturn && (
-                          <Badge colorPalette="red" size="lg" variant="subtle">
-                            {t('sales.refund')}
-                          </Badge>
-                        )}
-                      </HStack>
-                      <Text fontSize="sm" color="fg.muted">
-                        {formatDateTime(s.date)} · {itemCount} {t('sales.items')}
-                        {client ? ` · ${client}` : ''}
-                      </Text>
-                    </Box>
-                    {statusOf(s) === 'partial' ? (
-                      <Badge colorPalette="orange" size="lg" variant="subtle">
-                        {t('pos.partial')}
-                      </Badge>
-                    ) : statusOf(s) === 'credit' ? (
-                      <Badge colorPalette="orange" size="lg">
-                        {t('sales.credit')}
-                      </Badge>
-                    ) : (
-                      <Badge colorPalette="green" size="lg">
-                        {t('sales.paid')}
-                      </Badge>
-                    )}
-                  </Flex>
-                </Card.Body>
-              </Card.Root>
-            )
-          })}
-        </Stack>
+        <SaleCards
+          sales={paged.pageItems}
+          nameById={nameById}
+          symbol={symbol}
+          onOpen={openPreview}
+        />
       )}
 
       {!loading && !error && (
@@ -633,3 +583,94 @@ export function SalesTab() {
     </Box>
   )
 }
+
+/**
+ * One page of tickets, memoized: while the owner types in the search box the
+ * cards are drawn once, at low priority, instead of on every letter.
+ */
+const SaleCards = memo(function SaleCards({
+  sales,
+  nameById,
+  symbol,
+  onOpen,
+}: {
+  sales: readonly Sale[]
+  nameById: Map<string, string>
+  symbol: string
+  onOpen: (id: string) => void
+}) {
+  const { t } = useTranslation()
+  const money = (m: number) => formatMoney(m, { symbol })
+  return (
+    <Stack gap={3}>
+      {sales.map((s) => {
+        const itemCount = s.items.reduce((n, i) => n + i.qty, 0)
+        const client = clientName(s, nameById)
+        const settled = statusOf(s)
+        return (
+          <Card.Root
+            key={s.id}
+            cursor="pointer"
+            _hover={{ borderColor: 'brand.solid' }}
+            onClick={() => onOpen(s.id)}
+          >
+            <Card.Body>
+              <Flex align="center" gap={3} wrap="wrap">
+                <Box minW="0" flex="1">
+                  <HStack gap={2} mb={1} wrap="wrap">
+                    <Text
+                      fontSize="lg"
+                      fontWeight="bold"
+                      color={s.total < 0 ? 'red.600' : undefined}
+                    >
+                      {money(s.total)}
+                    </Text>
+                    <Text
+                      fontSize="xs"
+                      fontFamily="mono"
+                      color="brand.fg"
+                      bg="brand.subtle"
+                      px={2}
+                      py={0.5}
+                      borderRadius="md"
+                    >
+                      {s.ticketNo}
+                    </Text>
+                    {s.kind === 'invoice' && (
+                      <Badge colorPalette="purple" size="lg" variant="subtle">
+                        <FileText size={14} />
+                        {t('sales.invoice')}
+                      </Badge>
+                    )}
+                    {s.hasReturn && (
+                      <Badge colorPalette="red" size="lg" variant="subtle">
+                        {t('sales.refund')}
+                      </Badge>
+                    )}
+                  </HStack>
+                  <Text fontSize="sm" color="fg.muted">
+                    {formatDateTime(s.date)} · {itemCount} {t('sales.items')}
+                    {client ? ` · ${client}` : ''}
+                  </Text>
+                </Box>
+                {settled === 'partial' ? (
+                  <Badge colorPalette="orange" size="lg" variant="subtle">
+                    {t('pos.partial')}
+                  </Badge>
+                ) : settled === 'credit' ? (
+                  <Badge colorPalette="orange" size="lg">
+                    {t('sales.credit')}
+                  </Badge>
+                ) : (
+                  <Badge colorPalette="green" size="lg">
+                    {t('sales.paid')}
+                  </Badge>
+                )}
+              </Flex>
+            </Card.Body>
+          </Card.Root>
+        )
+      })}
+    </Stack>
+  )
+})

@@ -20,6 +20,7 @@ import {
 } from '@chakra-ui/react'
 import { BookMarked, Check, Library, Plus, Search, X } from 'lucide-react'
 import { formatMoney, moneySymbolKey, parseQuantity } from '@/lib/money'
+import { useDebounced } from '@/lib/useDebounced'
 import { useCatalog } from './useCatalog'
 import type { CatalogItem } from './useCatalog'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
@@ -56,6 +57,9 @@ const LEVELS = [
 const errKey = (e: string) =>
   e === 'offline' ? 'catalog.errOffline' : e === 'index' ? 'catalog.errIndex' : 'catalog.errError'
 
+/** How long the typing has to pause before the catalogue is asked. */
+const SEARCH_PAUSE_MS = 300
+
 const levelLabel = (l: string) =>
   l.startsWith('base') ? `${l.slice(4)}ème année` : `${l.slice(3)}ère sec.`
 
@@ -88,9 +92,12 @@ export function CatalogPage() {
   const [level, setLevel] = useState('')
   const [officialOnly, setOfficialOnly] = useState(false)
 
+  // Each search is a server query: wait for a pause in the typing, but let a
+  // cleared box through at once.
+  const sought = useDebounced(search, SEARCH_PAUSE_MS, (s) => s.trim() === '')
   const filter = useMemo(
-    () => ({ search, category, level, officialOnly }),
-    [search, category, level, officialOnly],
+    () => ({ search: sought, category, level, officialOnly }),
+    [sought, category, level, officialOnly],
   )
   const { items, loading, error, done, more, retry } = useCatalog(filter)
 
@@ -530,14 +537,19 @@ export function CatalogPage() {
         here would be a second set of pricing rules to keep in step with the first.
         The catalogue's contribution is that the name, unit and category arrive
         already filled in.
+
+        Mounted only while open, as on the stock page: left mounted, the whole
+        hidden form re-rendered with every letter typed in the search box.
       */}
-      <ProductForm
-        open={adding !== null}
-        onClose={() => setAdding(null)}
-        initialBarcode={adding?.code}
-        seededName={adding?.name}
-        initialName={adding?.name}
-      />
+      {adding && (
+        <ProductForm
+          open
+          onClose={() => setAdding(null)}
+          initialBarcode={adding.code}
+          seededName={adding.name}
+          initialName={adding.name}
+        />
+      )}
     </Box>
   )
 }

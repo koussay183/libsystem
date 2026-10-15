@@ -62,7 +62,11 @@ export function Pager({ page, pageCount, start, end, total, onChange, anchorRef 
       // Only when the top of the list has scrolled away — a short list that is
       // already on screen should not jump. 80 px clears the sticky header.
       const top = el.getBoundingClientRect().top
-      if (top < 0) window.scrollTo({ top: window.scrollY + top - 80, behavior: 'smooth' })
+      if (top < 0) {
+        // A smooth scroll is many frames of repaint; skip it where motion is reduced.
+        const still = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        window.scrollTo({ top: window.scrollY + top - 80, behavior: still ? 'auto' : 'smooth' })
+      }
     }
   }
 

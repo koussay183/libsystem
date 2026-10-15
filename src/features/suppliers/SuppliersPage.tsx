@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -38,9 +38,19 @@ export function SuppliersPage() {
   const [editing, setEditing] = useState<Supplier | null>(null)
 
   const symbol = t(moneySymbolKey())
-  const totalFor = (name: string) =>
-    purchases.filter((p) => p.supplier === name).reduce((s, p) => s + p.total, 0)
-  const totalAll = purchases.reduce((s, p) => s + p.total, 0)
+  // Summed once per snapshot: each row used to walk every purchase on every render.
+  const { bySupplier, totalAll } = useMemo(() => {
+    const bySupplier = new Map<string, number>()
+    let totalAll = 0
+    for (const p of purchases) {
+      totalAll += p.total
+      if (p.supplier !== undefined) {
+        bySupplier.set(p.supplier, (bySupplier.get(p.supplier) ?? 0) + p.total)
+      }
+    }
+    return { bySupplier, totalAll }
+  }, [purchases])
+  const totalFor = (name: string) => bySupplier.get(name) ?? 0
   const listTop = useRef<HTMLDivElement>(null)
 
   const q = fold(search)

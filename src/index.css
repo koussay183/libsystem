@@ -26,6 +26,20 @@
    in normal static flow where the printer can break it wherever it likes.
 --------------------------------------------------------------------------- */
 
+/* A PC set to "reduce animations" (Windows: Settings > Accessibility > Visual
+   effects) is often one that struggles to draw them. Honour it everywhere:
+   dialogs, drawers and hovers then change at once instead of easing. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
 @page thermal {
   size: 80mm auto;
   margin: 3mm;

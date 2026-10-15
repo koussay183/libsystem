@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Box, Button, Input, InputGroup, Text } from '@chakra-ui/react'
@@ -26,16 +26,22 @@ export function ProductSearch({
 
   const symbol = t(moneySymbolKey())
   const query = q.trim().toLowerCase()
-  const results =
-    query === ''
-      ? []
-      : products
-          .filter(
-            (p) =>
-              p.name.toLowerCase().includes(query) ||
-              (p.barcode ?? '').toLowerCase().includes(query),
-          )
-          .slice(0, 8)
+  // The first eight matches, in stock order. Stops scanning once it has them,
+  // and only reruns when the term or the stock changes — not on every render.
+  const results = useMemo(() => {
+    const found: Product[] = []
+    if (query === '') return found
+    for (const p of products) {
+      if (
+        p.name.toLowerCase().includes(query) ||
+        (p.barcode ?? '').toLowerCase().includes(query)
+      ) {
+        found.push(p)
+        if (found.length === 8) break
+      }
+    }
+    return found
+  }, [products, query])
 
   const pick = (p: Product) => {
     onPick(p)
