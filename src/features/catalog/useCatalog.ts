@@ -7,9 +7,12 @@ import {
   limit,
   startAfter,
   getDocs,
+  getDoc,
+  doc,
 } from 'firebase/firestore'
 import type { DocumentData, QueryDocumentSnapshot, QueryConstraint } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
+import { catalogKey, looksLikeCode, normalizeScannedCode } from '@/features/stock/barcode'
 
 /**
  * Reading the shared catalogue, in pages.
@@ -54,8 +57,8 @@ export interface CatalogItem {
   level?: string
 }
 
-function toItem(d: QueryDocumentSnapshot<DocumentData>): CatalogItem {
-  const v = d.data()
+function toItem(d: { id: string; data: () => DocumentData | undefined }): CatalogItem {
+  const v = d.data() ?? {}
   const text = (x: unknown) => (typeof x === 'string' && x.trim() !== '' ? x.trim() : undefined)
   const money = (x: unknown) =>
     typeof x === 'number' && Number.isFinite(x) && x > 0 ? Math.round(x) : undefined
@@ -100,6 +103,18 @@ export interface CatalogFilter {
   level: string
   /** Only the state-priced school books. */
   officialOnly: boolean
+}
+
+/**
+ * The catalogue id a search term names when it is a barcode, or null.
+ *
+ * The catalogue is KEYED by barcode, yet a scanned or typed code went through
+ * the name-prefix search and found nothing ("Rien ne correspond à
+ * « 6199990000016 »"). A code is now a direct read of that one document.
+ */
+function codeSearch(search: string): string | null {
+  const term = normalizeScannedCode(search).trim()
+  return looksLikeCode(term) ? catalogKey(term) : null
 }
 
 /**
@@ -173,21 +188,35 @@ export function useCatalog(filter: CatalogFilter) {
       setLoading(true)
       setError(null)
       let timer: ReturnType<typeof setTimeout> | undefined
+      const deadline = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), QUERY_MS)
+      })
       try {
+        const key = after ? null : codeSearch(filter.search)
+        if (key !== null) {
+          const one = await Promise.race([getDoc(doc(db, 'catalog', key)), deadline])
+          if (mine !== seq.current) return
+          if (one === null || one.metadata.fromCache) {
+            setError('offline')
+            return
+          }
+          setItems(one.exists() ? [toItem(one)].filter((x) => x.name !== '') : [])
+          setCursor(null)
+          setDone(true)
+          return
+        }
         // A race of its own rather than withDeadline: that one turns a
         // rejection into the same null as a timeout, so a refused query or a
         // missing index was reported as "offline" and the catch below — the
         // only place that tells them apart — never ran.
-        const snap = await Promise.race([
-          getDocs(build(after)),
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), QUERY_MS)
-          }),
-        ])
+        const snap = await Promise.race([getDocs(build(after)), deadline])
         if (mine !== seq.current) return
         // Null means the deadline ran out. Said plainly rather than shown as an
         // empty catalogue, which would read as "there is nothing in there".
-        if (snap === null) {
+        // From the cache means offline: a till that never browsed got an
+        // empty list ("le catalogue est vide"), one that did got a handful of
+        // books presented as the whole level.
+        if (snap === null || snap.metadata.fromCache) {
           setError('offline')
           return
         }
@@ -201,13 +230,17 @@ export function useCatalog(filter: CatalogFilter) {
         // finished building, which is worth telling apart from being offline: one
         // fixes itself in minutes, the other when the line comes back.
         const code = (e as { code?: string } | null)?.code ?? ''
-        setError(code === 'failed-precondition' ? 'index' : 'error')
+        // An offline read of a document the cache never held rejects with
+        // 'unavailable' rather than answering from it.
+        setError(
+          code === 'failed-precondition' ? 'index' : code === 'unavailable' ? 'offline' : 'error',
+        )
       } finally {
         clearTimeout(timer)
         if (mine === seq.current) setLoading(false)
       }
     },
-    [build],
+    [build, filter.search],
   )
 
   // A filter change starts a new search from the top; the cursor goes with it.

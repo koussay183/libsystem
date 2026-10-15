@@ -24,7 +24,7 @@ import {
   Text,
 } from '@chakra-ui/react'
 import { Barcode, Boxes, Pencil, Plus, Trash2, X } from 'lucide-react'
-import { formatMoney, fromMinor, parseMoney, parseQuantity, moneySymbolKey } from '@/lib/money'
+import { formatMoney, fromMinor, parseMoney, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { fold } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
@@ -35,11 +35,14 @@ import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
 import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts } from '@/features/stock/useProducts'
 import { ProductScanField } from '@/components/ProductScanField'
-import { codeOf, loose, generateInStoreCode } from '@/features/stock/barcode'
+import { codeOf, loose, generateInStoreCode, normalizeScannedCode } from '@/features/stock/barcode'
+import { BarcodeInput } from '@/features/stock/ScanWedge'
+import { readCount, countMessage } from '@/features/stock/quantity'
 import {
   usePacks,
   createPack,
   updatePack,
+  setPackActive,
   removePack,
   resolvePack,
   packToLines,
@@ -54,6 +57,17 @@ import type { Pack, PackItem, Product } from '@/types/models'
  * it dissolves back into its articles, so the shelf count and the per-article
  * profit stay exactly as truthful as on any other ticket.
  */
+/** Units of one article in a pack. A pack of a thousand is a typo or a scan. */
+const MAX_PACK_QTY = 999
+
+/** The actions column stays on screen when the table scrolls sideways. */
+const STICKY_END = {
+  position: 'sticky',
+  insetInlineEnd: 0,
+  zIndex: 1,
+  bg: 'inherit',
+} as const
+
 export function PacksPage() {
   const { t } = useTranslation()
   const { packs, loading, error, fatal, fatalReason, retry } = usePacks()
@@ -116,11 +130,8 @@ export function PacksPage() {
   const toggleActive = async (pack: Pack) => {
     setActionError('')
     try {
-      const { id, createdAt, updatedAt, ...rest } = pack
-      void id
-      void createdAt
-      void updatedAt
-      await updatePack(pack.id, { ...rest, active: !(pack.active !== false) })
+      // Only the switch is written: see setPackActive.
+      await setPackActive(pack.id, !(pack.active !== false))
     } catch (err) {
       setActionError(err instanceof Error ? err.message : t('common.error'))
     }
@@ -257,7 +268,7 @@ export function PacksPage() {
                     >
                       {t('packs.active')}
                     </Table.ColumnHeader>
-                    <Table.ColumnHeader textAlign="end">
+                    <Table.ColumnHeader textAlign="end" {...STICKY_END}>
                       {t('common.actions')}
                     </Table.ColumnHeader>
                   </Table.Row>
@@ -314,7 +325,8 @@ export function PacksPage() {
                           color="green.fg"
                           display={{ base: 'none', lg: 'table-cell' }}
                         >
-                          {info.saving > 0 ? `-${money(info.saving)}` : '—'}
+                          {/* No minus sign: a saving written "-5,600" read as a loss. */}
+                          {info.saving > 0 ? money(info.saving) : '—'}
                         </Table.Cell>
                         <Table.Cell
                           textAlign="center"
@@ -325,11 +337,11 @@ export function PacksPage() {
                             onCheckedChange={() => void toggleActive(pack)}
                             colorPalette="brand"
                           >
-                            <Switch.HiddenInput />
+                            <Switch.HiddenInput aria-label={`${t('packs.active')} — ${pack.name}`} />
                             <Switch.Control />
                           </Switch.Root>
                         </Table.Cell>
-                        <Table.Cell>
+                        <Table.Cell {...STICKY_END}>
                           <HStack gap={1} justify="flex-end">
                             <IconButton
                               aria-label={t('common.edit')}
@@ -402,12 +414,16 @@ export function PacksPage() {
 function PackQtyInput({
   value,
   onCommit,
+  onInvalid,
   label,
 }: {
   value: number
   onCommit: (n: number) => void
+  /** Why the typed text was put back, for the form to say. */
+  onInvalid: (message: string) => void
   label: string
 }) {
+  const { t } = useTranslation()
   const [text, setText] = useState(String(value))
   useEffect(() => setText(String(value)), [value])
 
@@ -417,12 +433,16 @@ function PackQtyInput({
       setText(String(value))
       return
     }
-    const qty = parseQuantity(trimmed)
-    if (qty === null) {
+    // Bounded: a barcode typed or scanned here (6 191 234 000 158 units) used
+    // to freeze the tab, and a pack of a thousand of one article is a slip.
+    const read = readCount(trimmed, MAX_PACK_QTY)
+    if (read.problem) {
       setText(String(value))
+      const [key, options] = countMessage(read.problem, MAX_PACK_QTY)
+      onInvalid(t(key, options))
       return
     }
-    onCommit(qty)
+    onCommit(read.value)
   }
 
   return (
@@ -472,6 +492,14 @@ function PackForm({
   const [busy, setBusy] = useState(false)
   /** Set once the owner has been told the pack costs more than its parts. */
   const [dearOk, setDearOk] = useState(false)
+  /**
+   * The pack's own code field has the focus. The article search below keeps a
+   * scanner hook alive on the whole window, and it took every scan meant for
+   * this field — put the field back, beeped "not found", grabbed the focus. It
+   * is swapped out while this field is in use.
+   */
+  const [codeFocused, setCodeFocused] = useState(false)
+  const codeUsed = useRef(false)
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
@@ -570,6 +598,13 @@ function PackForm({
       setError(t('packs.priceRequired'))
       return
     }
+    // Two packs on one code is a slip the till cannot resolve for him: it
+    // asks "which one?" on every scan. A code shared with an ARTICLE stays a
+    // warning, as for products.
+    if (codeClash === 'pack') {
+      setError(t('packs.codeTakenPack'))
+      return
+    }
     // A pack dearer than its parts is almost always a slip, but it is the
     // owner's call — warn once, then let it through.
     if (dearerThanParts && !dearOk) {
@@ -581,15 +616,16 @@ function PackForm({
     setBusy(true)
     setError('')
     try {
-      const input = {
+      // No `active` on an edit: it would undo an on/off switch made on the
+      // other till since this form opened. New packs start on sale.
+      const fields = {
         name: name.trim(),
-        barcode: barcode.trim() || null,
+        barcode: normalizeScannedCode(barcode).trim() || null,
         price: priceMinor,
         items,
-        active: pack?.active !== false,
       }
-      if (pack) await updatePack(pack.id, input)
-      else createPack(input)
+      if (pack) await updatePack(pack.id, fields)
+      else createPack({ ...fields, active: true })
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) setError(err instanceof Error ? err.message : t('common.error'))
@@ -605,6 +641,8 @@ function PackForm({
       scrollBehavior="inside"
       open={open}
       onOpenChange={(e) => !e.open && onClose()}
+      // A stray click on the backdrop threw the whole article list away.
+      closeOnInteractOutside={false}
     >
       <Portal>
         <Dialog.Backdrop />
@@ -620,7 +658,7 @@ function PackForm({
             </Dialog.Header>
 
             <Dialog.Body overflowY="auto">
-              <form id="pack-form" onSubmit={submit}>
+              <form id="pack-form" noValidate onSubmit={submit}>
                 <Stack gap={5}>
                   <Field.Root required>
                     <Field.Label>{t('packs.name')}</Field.Label>
@@ -649,13 +687,21 @@ function PackForm({
                     <Field.Root>
                       <Field.Label>{t('stock.barcode')}</Field.Label>
                       <HStack gap={2} w="full">
-                        <Input
+                        <BarcodeInput
                           size="lg"
                           flex="1"
                           minW={0}
                           value={barcode}
-                          onChange={(e) => setBarcode(e.target.value)}
-                          inputMode="numeric"
+                          onChange={setBarcode}
+                          onFocus={() => {
+                            codeUsed.current = true
+                            setCodeFocused(true)
+                          }}
+                          onBlur={() => setCodeFocused(false)}
+                          onKeyDown={(e) => {
+                            // Enter here is "that is the code", not "save the pack".
+                            if (e.key === 'Enter') e.preventDefault()
+                          }}
                         />
                         <Button
                           type="button"
@@ -673,7 +719,8 @@ function PackForm({
                     </Field.Root>
                   </HStack>
 
-                  {codeClash && (
+                  {/* Not twice: a refused save says the same thing below. */}
+                  {codeClash && error !== t('packs.codeTakenPack') && (
                     <Alert.Root status={codeClash === 'pack' ? 'error' : 'warning'}>
                       <Alert.Indicator />
                       <Alert.Content>
@@ -692,16 +739,22 @@ function PackForm({
                     <Text fontWeight="bold" mb={2}>
                       {t('packs.items')}
                     </Text>
-                    <ProductScanField
-                      products={products}
-                      onPick={addProduct}
-                      placeholder={t('packs.searchProduct')}
-                      // Editing an existing pack, the name is already there and
-                      // the only reason to open the form is the article list —
-                      // so that is where the cursor starts. A new pack needs a
-                      // name first, and starts in the field above.
-                      autoFocus={!!pack}
-                    />
+                    {codeFocused ? (
+                      <Input size="xl" disabled placeholder={t('backFix.packCodeScanning')} />
+                    ) : (
+                      <ProductScanField
+                        products={products}
+                        onPick={addProduct}
+                        placeholder={t('packs.searchProduct')}
+                        // Editing an existing pack, the name is already there and
+                        // the only reason to open the form is the article list —
+                        // so that is where the cursor starts. A new pack needs a
+                        // name first, and starts in the field above. Not again
+                        // when it comes back after the code field: that would
+                        // pull the cursor out of wherever he had just clicked.
+                        autoFocus={!!pack && !codeUsed.current}
+                      />
+                    )}
                     <Text fontSize="sm" color="fg.muted" mt={2}>
                       {t('packs.scanToAdd')}
                     </Text>
@@ -732,8 +785,12 @@ function PackForm({
                               </Box>
                               <PackQtyInput
                                 value={item.qty}
-                                label={t('pos.qty')}
-                                onCommit={(qty) => setQty(item.productId, qty)}
+                                label={`${t('pos.qty')} — ${product?.name ?? item.name}`}
+                                onCommit={(qty) => {
+                                  setError('')
+                                  setQty(item.productId, qty)
+                                }}
+                                onInvalid={setError}
                               />
                               <IconButton
                                 aria-label={t('common.remove')}
@@ -768,7 +825,7 @@ function PackForm({
                       {preview.info.saving > 0 && (
                         <Flex justify="space-between" color="green.fg">
                           <Text>{t('packs.saving')}</Text>
-                          <Text fontWeight="semibold">-{money(preview.info.saving)}</Text>
+                          <Text fontWeight="semibold">{money(preview.info.saving)}</Text>
                         </Flex>
                       )}
 

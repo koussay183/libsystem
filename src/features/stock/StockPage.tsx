@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useNavigate } from 'react-router-dom'
 import {
   Box,
   Flex,
@@ -42,6 +43,7 @@ import {
   ChevronRight,
   Zap,
   X,
+  Library,
 } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { buildQuery, matchesQuery, pruneFoldCache } from '@/lib/textIndex'
@@ -52,9 +54,19 @@ import { SearchInput } from '@/components/SearchInput'
 import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
 import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts, removeProduct } from './useProducts'
+import { usePacks } from '@/features/packs/usePacks'
 import { groupByFamily } from './naming'
 import type { Family } from './naming'
-import { codeOf, loose, sharedCodes, looksLikeCode } from './barcode'
+import {
+  codeOf,
+  loose,
+  sharedCodes,
+  looksLikeCode,
+  normalizeScannedCode,
+  sameCode,
+  scannedCode,
+} from './barcode'
+import { ScanWedge } from './ScanWedge'
 import { ProductForm } from './ProductForm'
 import { VariantsDialog } from './VariantsDialog'
 import { StockAdjustDialog } from './StockAdjustDialog'
@@ -86,6 +98,18 @@ const NO_CATEGORY = '\u0000none'
  */
 const STOCK_PAGE = 50
 
+/**
+ * Keeps the actions column on screen when the table is wider than its box.
+ * At 1024 px, beside the sidebar, Modifier and Supprimer sat past the edge of
+ * a sideways-scrolling table. `inherit` takes the row's own background.
+ */
+const STICKY_END = {
+  position: 'sticky',
+  insetInlineEnd: 0,
+  zIndex: 1,
+  bg: 'inherit',
+} as const
+
 /** A row at the top level of the grouped view: a whole family, or one article. */
 type Entry = { family: Family; product?: undefined } | { family?: undefined; product: Product }
 
@@ -93,8 +117,11 @@ export function StockPage() {
   const { t } = useTranslation()
   const alive = useAlive()
   const { products, loading, error } = useProducts()
+  const { packs } = usePacks()
+  const navigate = useNavigate()
 
   const [search, setSearch] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
   // Kept for the tab: back from a sale, the list is as he left it.
   const [view, setView] = useSessionState<View>('stock.view', 'grouped', oneOf(['grouped', 'flat']))
   const [category, setCategory] = useSessionState('stock.category', '')
@@ -140,7 +167,9 @@ export function StockPage() {
   // for the life of the tab. The stock page is where deletion happens.
   useEffect(() => pruneFoldCache(products), [products])
 
-  const q = applied.trim()
+  // A code that reached the box without the scanner hook (a slow scanner, a
+  // paste) arrives as AZERTY punctuation; read it as the digits it meant.
+  const q = normalizeScannedCode(applied).trim()
 
   /**
    * Taken apart once per search rather than once per article: the words to
@@ -273,6 +302,9 @@ export function StockPage() {
   const showLow = () => {
     setStockState('low')
     setSearch('')
+    // The remembered category filter used to stay on, so the list showed
+    // fewer articles than the tile had just counted.
+    setCategory('')
   }
 
   /** Codes carried by more than one article, so the pairs can be marked. */
@@ -324,7 +356,17 @@ export function StockPage() {
 
   const onDelete = useCallback(
     async (p: Product) => {
-      if (!window.confirm(t('stock.deleteConfirm'))) return
+      // A pack holding this article cannot be sold once it is gone ("Article
+      // manquant" at the till) — said before, with the packs named, not after.
+      const inPacks = packs.filter((pack) => pack.items.some((i) => i.productId === p.id))
+      const question =
+        inPacks.length > 0
+          ? t('backFix.deleteUsedInPacks', {
+              name: p.name,
+              packs: inPacks.map((pack) => pack.name).join(', '),
+            })
+          : t('stock.deleteConfirm')
+      if (!window.confirm(question)) return
       setActionError('')
       try {
         // removeProduct queues the deletion rather than awaiting the acknowledgement,
@@ -340,10 +382,38 @@ export function StockPage() {
         }
       }
     },
-    [t, alive],
+    [t, alive, packs],
   )
+  /**
+   * Gives the box back to the scanner: focused, text selected, so the next
+   * code REPLACES this one instead of being glued to its end. preventScroll —
+   * after editing row 40 the page must not jump to the top.
+   */
+  const readyForNextScan = useCallback(() => {
+    setTimeout(() => {
+      const el = searchRef.current
+      if (!el) return
+      el.focus({ preventScroll: true })
+      el.select()
+    }, 60)
+  }, [])
+
   // Typed structurally so it fits both a native <form> and Chakra's `Box as="form"`.
-  const onSearchSubmit = (e: { preventDefault: () => void }) => e.preventDefault()
+  const onSearchSubmit = (e: { preventDefault: () => void }) => {
+    e.preventDefault()
+    searchRef.current?.select()
+  }
+
+  /**
+   * A finished scanner burst, read the way the till reads it (AZERTY digit row
+   * mapped back to digits), replacing whatever was in the box.
+   */
+  const onScan = (code: string, physical: string | null) => {
+    const known = (c: string) => products.some((p) => sameCode(p.barcode, c))
+    setSearch(scannedCode(code, physical, known))
+    requestAnimationFrame(() => searchRef.current?.select())
+  }
+  const dialogOpen = formOpen || variantsOpen || adjusting !== null
 
   return (
     <Box>
@@ -469,9 +539,13 @@ export function StockPage() {
       {/* ---------------- Search / scan + view toggle ---------------- */}
       <Flex gap={3} mb={4} align="center" wrap="wrap">
         <Box as="form" onSubmit={onSearchSubmit} flex="1" minW="16rem">
+          {/* Only while no dialog is up: the hook listens on the whole window
+              and would otherwise take scans away from the dialog's fields. */}
+          {!dialogOpen && <ScanWedge targetRef={searchRef} onScan={onScan} />}
           <SearchInput
             autoFocus
             shortcut
+            inputRef={searchRef}
             value={search}
             onChange={setSearch}
             count={q !== '' ? filtered.length : undefined}
@@ -582,6 +656,12 @@ export function StockPage() {
                 <Layers size={22} />
                 {t('stock.addVariants')}
               </Button>
+              {/* The fastest start at la rentrée: every manuel, priced by the
+                  state, from the catalogue in a few minutes. */}
+              <Button size="xl" variant="outline" colorPalette="brand" onClick={() => navigate('/catalog')}>
+                <Library size={22} />
+                {t('backFix.importManuels')}
+              </Button>
             </Flex>
           </EmptyState.Content>
         </EmptyState.Root>
@@ -604,8 +684,10 @@ export function StockPage() {
             colorPalette="brand"
             flexShrink={0}
             onClick={() =>
+              // Quick in both cases: a scanned article needs only its name and
+              // price to be sold, and the next scan is waiting.
               looksLikeCode(q)
-                ? openForm({ barcode: q })
+                ? openForm({ barcode: q, quick: true })
                 : openForm({ name: q, quick: true })
             }
           >
@@ -623,19 +705,19 @@ export function StockPage() {
                 <Table.Header>
                   <Table.Row>
                     <Table.ColumnHeader>{t('stock.name')}</Table.ColumnHeader>
-                    <Table.ColumnHeader display={{ base: 'none', lg: 'table-cell' }}>
+                    <Table.ColumnHeader display={{ base: 'none', xl: 'table-cell' }}>
                       {t('stock.barcode')}
                     </Table.ColumnHeader>
-                    <Table.ColumnHeader display={{ base: 'none', xl: 'table-cell' }}>
+                    <Table.ColumnHeader display={{ base: 'none', '2xl': 'table-cell' }}>
                       {t('stock.category')}
                     </Table.ColumnHeader>
-                    <Table.ColumnHeader textAlign="end">
+                    <Table.ColumnHeader textAlign="end" whiteSpace="nowrap">
                       {t('stock.salePrice')}
                     </Table.ColumnHeader>
                     <Table.ColumnHeader textAlign="end">
                       {t('stock.quantity')}
                     </Table.ColumnHeader>
-                    <Table.ColumnHeader textAlign="end">
+                    <Table.ColumnHeader textAlign="end" {...STICKY_END}>
                       {t('common.actions')}
                     </Table.ColumnHeader>
                   </Table.Row>
@@ -678,6 +760,11 @@ export function StockPage() {
         <ProductForm
           open
           onClose={() => setFormOpen(false)}
+          onSaved={({ created }) => {
+            // Scan, create, scan the next one: the search keeps the code just
+            // created (so the new row shows) and is ready to be replaced.
+            if (created) readyForNextScan()
+          }}
           product={editing}
           template={template}
           initialBarcode={scanBarcode}
@@ -770,7 +857,7 @@ const StockRows = memo(function StockRows({
         <Table.Cell
           fontFamily="mono"
           color="fg.muted"
-          display={{ base: 'none', lg: 'table-cell' }}
+          display={{ base: 'none', xl: 'table-cell' }}
         >
           <Flex align="center" gap={2} wrap="wrap">
             <Text as="span">{p.barcode}</Text>
@@ -781,16 +868,16 @@ const StockRows = memo(function StockRows({
             )}
           </Flex>
         </Table.Cell>
-        <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
+        <Table.Cell color="fg.muted" display={{ base: 'none', '2xl': 'table-cell' }}>
           {p.category}
         </Table.Cell>
-        <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
+        <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg" whiteSpace="nowrap">
           {formatMoney(p.salePrice, { symbol })}
         </Table.Cell>
         <Table.Cell textAlign="end" whiteSpace="nowrap">
           {p.quantity} {p.unit || t('stock.units')}
         </Table.Cell>
-        <Table.Cell>
+        <Table.Cell {...STICKY_END}>
           <HStack justify="flex-end" gap={1}>
             <IconButton
               aria-label={t('stock.restock')}
@@ -877,11 +964,11 @@ const StockRows = memo(function StockRows({
                   </Badge>
                 </Flex>
               </Table.Cell>
-              <Table.Cell display={{ base: 'none', lg: 'table-cell' }} />
-              <Table.Cell color="fg.muted" display={{ base: 'none', xl: 'table-cell' }}>
+              <Table.Cell display={{ base: 'none', xl: 'table-cell' }} />
+              <Table.Cell color="fg.muted" display={{ base: 'none', '2xl': 'table-cell' }}>
                 {categories.length === 1 ? categories[0] : ''}
               </Table.Cell>
-              <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg">
+              <Table.Cell textAlign="end" fontWeight="bold" color="brand.fg" whiteSpace="nowrap">
                 {min === max
                   ? formatMoney(min, { symbol })
                   : `${formatMoney(min, { symbol })} – ${formatMoney(max, { symbol })}`}
@@ -889,7 +976,7 @@ const StockRows = memo(function StockRows({
               <Table.Cell textAlign="end" whiteSpace="nowrap" fontWeight="bold">
                 {group.totalQuantity} {t('stock.units')}
               </Table.Cell>
-              <Table.Cell />
+              <Table.Cell {...STICKY_END} />
             </Table.Row>
             {isOpen && group.items.map((p) => productRow(p, true))}
           </Fragment>

@@ -8,18 +8,16 @@ import {
   deleteDoc,
   doc,
   deleteField,
-  writeBatch,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
 import { shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
 import { createLiveCollection } from '@/lib/liveCollection'
+import { isLiveProduct } from '@/features/stock/useProducts'
 import type { LiveFatalReason } from '@/lib/liveCollection'
 import type { Product, Purchase, Supplier } from '@/types/models'
 
 const COL = 'suppliers'
-/** Writes per batch when re-tagging, well clear of Firestore's 500. */
-const BATCH_LIMIT = 400
 
 export interface SupplierInput {
   name: string
@@ -143,20 +141,24 @@ export async function updateSupplier(
     same honest limit, as renameCategory: what this device knows about.
   */
   if (!rename || rename.from === name) return
+  /*
+    One write per document, not batches of 400. A batch is all or nothing, and
+    one invoice or article deleted on the other till while this one was offline
+    got its whole batch refused: the supplier was renamed and every purchase
+    stayed under the old name. Re-tagging needs no atomicity — each document
+    is right on its own — so a stale reference now fails alone.
+  */
   const writes = [
     ...rename.purchases
       .filter((p) => p.supplier === rename.from)
       .map((p) => doc(db, shopPath('purchases'), p.id)),
     ...rename.products
-      .filter((p) => p.supplier === rename.from)
+      // Known deleted: not even tried, it would only raise the red badge.
+      .filter((p) => p.supplier === rename.from && isLiveProduct(p.id) !== false)
       .map((p) => doc(db, shopPath('products'), p.id)),
   ]
-  for (let i = 0; i < writes.length; i += BATCH_LIMIT) {
-    const batch = writeBatch(db)
-    for (const ref of writes.slice(i, i + BATCH_LIMIT)) {
-      batch.update(ref, { supplier: name, updatedAt: now })
-    }
-    void track(batch.commit()).catch(() => {
+  for (const ref of writes) {
+    void track(updateDoc(ref, { supplier: name, updatedAt: now })).catch(() => {
       /* replayed by the SDK; a refusal surfaces through the sync badge */
     })
   }

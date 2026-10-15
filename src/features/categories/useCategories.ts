@@ -6,7 +6,6 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
-  writeBatch,
   doc,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -15,13 +14,11 @@ import { track } from '@/lib/syncStatus'
 import { createLiveCollection } from '@/lib/liveCollection'
 import type { LiveFatalReason } from '@/lib/liveCollection'
 import { carryCategoryMargin } from '@/features/settings/useShopSettings'
+import { isLiveProduct } from '@/features/stock/useProducts'
 import type { Category, Product } from '@/types/models'
 
 const COL = 'categories'
 const PRODUCTS = 'products'
-
-/** Firestore caps a batch at 500 writes; stay clear of the edge. */
-const BATCH_LIMIT = 400
 
 /** Live list of managed product categories, ordered by name. */
 const categoriesStore = createLiveCollection<Category>(() =>
@@ -136,14 +133,17 @@ export async function renameCategory(
   // back to shop.defaultMargin. See carryCategoryMargin for the collision rules.
   carryCategoryMargin(from, next)
 
-  const affected = products.filter((p) => p.category === from)
+  // One write per product, not batches of 400: one article deleted on the
+  // other till while this one was offline got its whole batch refused, and up
+  // to 400 articles stayed under a label that no longer exists — with their
+  // margin already moved to the new name. Each re-tag now fails alone, and an
+  // article this device already knows is gone is not even tried.
+  const affected = products.filter((p) => p.category === from && isLiveProduct(p.id) !== false)
   const now = Date.now()
-  for (let i = 0; i < affected.length; i += BATCH_LIMIT) {
-    const batch = writeBatch(db)
-    for (const p of affected.slice(i, i + BATCH_LIMIT)) {
-      batch.update(doc(db, shopPath(PRODUCTS), p.id), { category: next, updatedAt: now })
-    }
-    void track(batch.commit()).catch(() => {
+  for (const p of affected) {
+    void track(
+      updateDoc(doc(db, shopPath(PRODUCTS), p.id), { category: next, updatedAt: now }),
+    ).catch(() => {
       /* replayed by the SDK; a refusal surfaces through the sync badge */
     })
   }

@@ -53,6 +53,62 @@ export function looksLikeCode(term: string): boolean {
 }
 
 /**
+ * The French AZERTY digit row, unshifted. A scanner left on its factory US
+ * layout "types" a code into a plain field as &é"'(-è_çà on the shop's PC.
+ */
+const AZERTY_DIGITS: Record<string, string> = {
+  '&': '1',
+  é: '2',
+  '"': '3',
+  "'": '4',
+  '(': '5',
+  '-': '6',
+  è: '7',
+  _: '8',
+  ç: '9',
+  à: '0',
+}
+
+/**
+ * A code as the owner meant it: AZERTY punctuation and Eastern Arabic digits
+ * put back to 0–9.
+ *
+ * The safety net under every back-office barcode field, for the scans that
+ * reach a field without going through the scanner hook (a slow scanner, a
+ * paste). Only a string made ENTIRELY of digit-row punctuation is mapped —
+ * nobody types "&é"'(" on purpose, while a hyphen inside an ISBN must stay.
+ */
+export function normalizeScannedCode(text: string): string {
+  const arabic = text.replace(/[٠-٩]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+  const trimmed = arabic.trim()
+  if (trimmed.length < 4 || ![...trimmed].every((ch) => ch in AZERTY_DIGITS)) return arabic
+  return [...trimmed].map((ch) => AZERTY_DIGITS[ch]).join('')
+}
+
+/**
+ * The code a scanner burst meant, from the two readings useBarcodeScanner
+ * hands over: what the keyboard layout typed, and what the physical keys say.
+ *
+ * `known` lets a caller prefer whichever reading matches an article it holds,
+ * as the till does. Otherwise the typed reading wins when it is a clean code
+ * (a scanner set to AZERTY agrees with the PC), and the physical one when the
+ * typed one came out as punctuation.
+ */
+export function scannedCode(
+  code: string,
+  physical: string | null,
+  known?: (candidate: string) => boolean,
+): string {
+  const typed = normalizeScannedCode(code).trim()
+  const phys = physical?.trim() || null
+  if (known) {
+    for (const candidate of [typed, phys]) if (candidate && known(candidate)) return candidate
+  }
+  if (phys && !/^[0-9A-Za-z\s.-]+$/.test(typed)) return phys
+  return typed
+}
+
+/**
  * A 13-digit code the shop can print on a pack it made up itself.
  *
  * The leading 2 is the GS1 range reserved for in-store use, so a generated

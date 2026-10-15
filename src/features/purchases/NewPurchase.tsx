@@ -19,13 +19,18 @@ import {
   Alert,
   EmptyState,
 } from '@chakra-ui/react'
-import { Trash2, Truck, Plus, Minus, PackageOpen } from 'lucide-react'
+import { Trash2, Truck, PackageOpen, X } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
-import { ProductSearch } from '@/features/invoices/ProductSearch'
+import { useProducts } from '@/features/stock/useProducts'
+import { ProductForm } from '@/features/stock/ProductForm'
+import { looksLikeCode } from '@/features/stock/barcode'
+import { readCount, countMessage, MAX_UNITS } from '@/features/stock/quantity'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import { recordPurchase, DuplicatePurchaseError } from './usePurchases'
+import { PurchaseSearch } from './PurchaseSearch'
 import { MoneyInput } from '@/components/MoneyInput'
+import { QuantityInput } from '@/components/QuantityInput'
 import { SimilarRecords } from '@/components/SimilarRecords'
 import { findSimilar } from '@/lib/similar'
 import { fold } from '@/lib/textIndex'
@@ -34,9 +39,13 @@ import type { Product } from '@/types/models'
 interface CartItem {
   productId: string
   name: string
-  qty: number
+  /** As typed: a delivery of 200 is typed, not reached with 199 clicks on +. */
+  qtyStr: string
   costStr: string // dinars, editable
 }
+
+/** Units on a line, or 0 while the text is not a usable count. */
+const qtyOf = (i: CartItem) => readCount(i.qtyStr).value ?? 0
 
 /** Sentinel option value that switches the supplier picker into free-text mode. */
 const NEW_SUPPLIER = '__new__'
@@ -47,7 +56,27 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
   const { t } = useTranslation()
   const alive = useAlive()
   const { suppliers } = useSuppliers()
+  const { products } = useProducts()
   const symbol = t(moneySymbolKey())
+  const searchRef = useRef<HTMLInputElement>(null)
+  /** Each line's quantity box, to put the cursor there after a scan. */
+  const qtyRefs = useRef(new Map<string, HTMLInputElement>())
+  /**
+   * The article the owner is creating on the spot, from a code or a name that
+   * found nothing. The delivery stays open underneath it.
+   */
+  const [creating, setCreating] = useState<string | null>(null)
+  const createdLine = useRef(false)
+  /**
+   * A free-text field (supplier, reference, note) has the cursor. The scanner
+   * hook borrows any field a fast burst lands in and puts it back, which is
+   * right for a quantity box and wrong for a reference being typed.
+   */
+  const [freeText, setFreeText] = useState(false)
+  const freeTextProps = {
+    onFocus: () => setFreeText(true),
+    onBlur: () => setFreeText(false),
+  }
   const supplierNames = suppliers.map((s) => s.name)
 
   const [supplier, setSupplier] = useState('')
@@ -93,29 +122,42 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     setError('')
     setBusy(false)
     setDuplicate(false)
+    setCreating(null)
+    setFreeText(false)
     createdRef.current = new Set()
   }, [open])
 
-  const addProduct = (p: Product) => {
+  /**
+   * Scanning the same article again still adds one. Either way the cursor goes
+   * to that line's quantity, text selected: scan, type 120, scan the next one.
+   */
+  const addLine = (productId: string, name: string, costPrice: number) => {
     setError('')
     setCart((prev) => {
-      const existing = prev.find((i) => i.productId === p.id)
+      const existing = prev.find((i) => i.productId === productId)
       if (existing)
-        return prev.map((i) => (i.productId === p.id ? { ...i, qty: i.qty + 1 } : i))
-      return [
-        ...prev,
-        { productId: p.id, name: p.name, qty: 1, costStr: String(fromMinor(p.costPrice)) },
-      ]
+        return prev.map((i) =>
+          i.productId === productId
+            ? { ...i, qtyStr: String(Math.min(MAX_UNITS, qtyOf(i) + 1)) }
+            : i,
+        )
+      return [...prev, { productId, name, qtyStr: '1', costStr: String(fromMinor(costPrice)) }]
     })
+    setTimeout(() => {
+      const el = qtyRefs.current.get(productId)
+      el?.focus()
+      el?.select()
+    }, 30)
   }
-  const setQty = (id: string, qty: number) =>
-    setCart((prev) => prev.map((i) => (i.productId === id ? { ...i, qty } : i)))
+  const addProduct = (p: Product) => addLine(p.id, p.name, p.costPrice)
+  const setQty = (id: string, qtyStr: string) =>
+    setCart((prev) => prev.map((i) => (i.productId === id ? { ...i, qtyStr } : i)))
   const setCost = (id: string, costStr: string) =>
     setCart((prev) => prev.map((i) => (i.productId === id ? { ...i, costStr } : i)))
   const removeItem = (id: string) =>
     setCart((prev) => prev.filter((i) => i.productId !== id))
 
-  const lineMinor = (i: CartItem) => i.qty * (parseMoney(i.costStr) ?? 0)
+  const lineMinor = (i: CartItem) => qtyOf(i) * (parseMoney(i.costStr) ?? 0)
   const total = cart.reduce((s, i) => s + lineMinor(i), 0)
 
   // Untouched field mirrors the total; once edited it keeps what was typed.
@@ -212,6 +254,17 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
       setError(t('sales.amountInvalid'))
       return
     }
+    // A quantity has to be a real count: 0, "12a" or a barcode typed in the
+    // box would otherwise go into the stock and the supplier's bill.
+    for (const i of cart) {
+      const read = readCount(i.qtyStr)
+      if (read.problem || read.value <= 0) {
+        const [key, options] = read.problem ? countMessage(read.problem) : ['common.invalidNumber', {}]
+        setError(`${t('backFix.lineQty', { name: i.name })} ${t(key, options)}`)
+        qtyRefs.current.get(i.productId)?.focus()
+        return
+      }
+    }
     setError('')
     setBusy(true)
     try {
@@ -223,7 +276,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
         items: cart.map((i) => ({
           productId: i.productId,
           name: i.name,
-          qty: i.qty,
+          qty: qtyOf(i),
           unitCost: parseMoney(i.costStr) ?? 0,
         })),
         total,
@@ -246,10 +299,26 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     }
   }
 
+  /**
+   * Every way out goes through here. Escape and the × used to close straight
+   * away, and with them a 35-line delivery being typed; a click beside the
+   * dialog does nothing now.
+   */
+  const dirty = cart.length > 0 || reference.trim() !== '' || note.trim() !== ''
+  const requestClose = () => {
+    if (busy) return
+    if (dirty && !window.confirm(t('backFix.discardPurchase'))) return
+    onClose()
+  }
+
   return (
+    <>
     <Dialog.Root
       open={open}
-      onOpenChange={(e) => !e.open && onClose()}
+      onOpenChange={(e) => {
+        if (!e.open) requestClose()
+      }}
+      closeOnInteractOutside={false}
       size="xl"
       scrollBehavior="inside"
     >
@@ -264,6 +333,11 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                 </Box>
                 <Dialog.Title>{t('purchases.new')}</Dialog.Title>
               </HStack>
+              <Dialog.CloseTrigger asChild>
+                <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
+                  <X size={18} />
+                </IconButton>
+              </Dialog.CloseTrigger>
             </Dialog.Header>
 
             <Dialog.Body>
@@ -282,7 +356,11 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                         autoFocus
                         value={supplier}
                         onChange={(e) => setSupplier(e.target.value)}
-                        onBlur={commitNewSupplier}
+                        onFocus={freeTextProps.onFocus}
+                        onBlur={(e) => {
+                          setFreeText(false)
+                          commitNewSupplier(e)
+                        }}
                         placeholder={t('supplier.namePlaceholder')}
                       />
                     ) : (
@@ -325,6 +403,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                       size="lg"
                       value={reference}
                       onChange={(e) => setReference(e.target.value)}
+                      {...freeTextProps}
                     />
                     <Field.HelperText>{t('common.optional')}</Field.HelperText>
                   </Field.Root>
@@ -335,14 +414,18 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                       size="lg"
                       value={note}
                       onChange={(e) => setNote(e.target.value)}
+                      {...freeTextProps}
                     />
                     <Field.HelperText>{t('purchases.attachHint')}</Field.HelperText>
                   </Field.Root>
                 </SimpleGrid>
 
-                <ProductSearch
+                <PurchaseSearch
+                  products={products}
                   onPick={addProduct}
-                  placeholder={t('purchases.searchProduct')}
+                  onCreate={setCreating}
+                  scanEnabled={!creating && !freeText}
+                  inputRef={searchRef}
                 />
 
                 {cart.length === 0 ? (
@@ -384,6 +467,11 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                         </Box>
 
                         <Box w="7rem">
+                          {/* A visible label: a bare "13.09" could be HT,
+                              TTC, per unit or per line. */}
+                          <Text fontSize="xs" color="fg.muted" mb={1} truncate>
+                            {t('purchases.unitCost')}
+                          </Text>
                           <MoneyInput
                             size="lg"
                             preview={false}
@@ -391,36 +479,32 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                             placeholder=""
                             value={i.costStr}
                             onChange={(v) => setCost(i.productId, v)}
-                            aria-label={t('purchases.unitCost')}
+                            aria-label={`${t('purchases.unitCost')} — ${i.name}`}
                           />
                         </Box>
 
-                        <HStack
-                          gap={0}
-                          borderWidth="2px"
-                          borderColor="border"
-                          borderRadius="xl"
-                        >
-                          <IconButton
-                            aria-label={t('common.decrease')}
-                            variant="ghost"
-                            size="lg"
-                            onClick={() => setQty(i.productId, Math.max(1, i.qty - 1))}
-                          >
-                            <Minus size={18} />
-                          </IconButton>
-                          <Text minW="2.5rem" textAlign="center" fontSize="lg" fontWeight="semibold">
-                            {i.qty}
+                        <Box w="10rem">
+                          <Text fontSize="xs" color="fg.muted" mb={1}>
+                            {t('stock.quantity')}
                           </Text>
-                          <IconButton
-                            aria-label={t('common.increase')}
-                            variant="ghost"
-                            size="lg"
-                            onClick={() => setQty(i.productId, i.qty + 1)}
-                          >
-                            <Plus size={18} />
-                          </IconButton>
-                        </HStack>
+                          <QuantityInput
+                            ref={(el: HTMLInputElement | null) => {
+                              if (el) qtyRefs.current.set(i.productId, el)
+                              else qtyRefs.current.delete(i.productId)
+                            }}
+                            min={1}
+                            max={MAX_UNITS}
+                            value={i.qtyStr}
+                            onChange={(v) => setQty(i.productId, v)}
+                            aria-label={`${t('stock.quantity')} — ${i.name}`}
+                            onKeyDown={(e) => {
+                              // Enter: that is the count, back to the scanner.
+                              if (e.key !== 'Enter') return
+                              e.preventDefault()
+                              searchRef.current?.focus()
+                            }}
+                          />
+                        </Box>
 
                         <IconButton
                           aria-label={t('common.remove')}
@@ -502,6 +586,10 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                     {formatMoney(total, { symbol })}
                   </Text>
                 </Box>
+                <HStack gap={2}>
+                <Button size="xl" variant="outline" onClick={requestClose} disabled={busy}>
+                  {t('common.cancel')}
+                </Button>
                 <Button
                   size="xl"
                   colorPalette="brand"
@@ -518,11 +606,37 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                       ? t('purchases.duplicateConfirm')
                       : t('purchases.save')}
                 </Button>
+                </HStack>
               </Flex>
             </Dialog.Footer>
           </Dialog.Content>
         </Dialog.Positioner>
       </Portal>
     </Dialog.Root>
+
+    {/* Stacked over the delivery, which stays open underneath. No quantity is
+        asked: this purchase is what brings the stock in. */}
+    {creating !== null && (
+      <ProductForm
+        open
+        quick
+        noStock
+        initialBarcode={looksLikeCode(creating) ? creating : undefined}
+        initialName={looksLikeCode(creating) ? undefined : creating}
+        onClose={() => {
+          setCreating(null)
+          // Created: addLine has put the cursor on its quantity. Cancelled:
+          // back to the scanner.
+          if (!createdLine.current) setTimeout(() => searchRef.current?.focus(), 30)
+          createdLine.current = false
+        }}
+        onSaved={({ id, input, created }) => {
+          if (!created) return
+          createdLine.current = true
+          addLine(id, input.name, input.costPrice)
+        }}
+      />
+    )}
+    </>
   )
 }
