@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { Badge, Box, Flex, HStack, Text } from '@chakra-ui/react'
 import { formatMoney } from '@/lib/money'
 import { choiceCode, choiceId, choiceName, choicePrice } from './posSearch'
@@ -40,6 +41,13 @@ export function ScanSuggestions({
   askPriceLabel: string
   unitsLabel: (n: number) => string
 }) {
+  // The highlighted row follows the arrow keys into view: with eight results
+  // the last two sat below the fold and ArrowDown never showed them.
+  useEffect(() => {
+    if (!open || highlight < 0) return
+    document.getElementById(`pos-opt-${highlight}`)?.scrollIntoView({ block: 'nearest' })
+  }, [open, highlight])
+
   if (!open || items.length === 0) return null
 
   return (
@@ -70,6 +78,7 @@ export function ScanSuggestions({
           return (
             <Flex
               key={choiceId(c)}
+              id={`pos-opt-${i}`}
               role="option"
               aria-selected={i === highlight}
               align="center"
@@ -90,7 +99,14 @@ export function ScanSuggestions({
               onClick={() => onPick(c)}
             >
               <Box minW={0} flex="1">
-                <Text fontSize="lg" fontWeight="semibold" lineClamp={1}>
+                <Text
+                  fontSize="lg"
+                  fontWeight="semibold"
+                  lineClamp={1}
+                  dir="auto"
+                  _rtl={{ textAlign: 'right' }}
+                  title={choiceName(c)}
+                >
                   {choiceName(c)}
                 </Text>
                 <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">

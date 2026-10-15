@@ -6,11 +6,12 @@ import { Search } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useProducts } from '@/features/stock/useProducts'
 import { sameCode } from '@/features/stock/barcode'
+import { searchProducts } from '@/features/pos/posSearch'
 import type { Product } from '@/types/models'
 
 /**
  * A search box that finds a product by name or barcode and calls onPick.
- * Scanner-friendly: pressing Enter picks the exact barcode match (or the top
+ * Scanner-friendly: pressing Enter picks the exact barcode match (or the only
  * result) and clears the box, ready for the next scan.
  */
 export function ProductSearch({
@@ -25,23 +26,10 @@ export function ProductSearch({
   const [q, setQ] = useState('')
 
   const symbol = t(moneySymbolKey())
-  const query = q.trim().toLowerCase()
-  // The first eight matches, in stock order. Stops scanning once it has them,
-  // and only reruns when the term or the stock changes — not on every render.
-  const results = useMemo(() => {
-    const found: Product[] = []
-    if (query === '') return found
-    for (const p of products) {
-      if (
-        p.name.toLowerCase().includes(query) ||
-        (p.barcode ?? '').toLowerCase().includes(query)
-      ) {
-        found.push(p)
-        if (found.length === 8) break
-      }
-    }
-    return found
-  }, [products, query])
+  // The till's search: accents and Arabic diacritics folded ("seyes" finds
+  // "Seyès"), best matches first. Only reruns when the term or the stock
+  // changes — not on every render.
+  const results = useMemo(() => searchProducts(products, q, 8), [products, q])
 
   const pick = (p: Product) => {
     onPick(p)
@@ -59,7 +47,9 @@ export function ProductSearch({
       return
     }
     if (hits.length > 1) return
-    if (results[0]) pick(results[0])
+    // A name search picks only when it is not a guess: Enter on "stylo" used
+    // to add whichever pen came first. Several results stay up to be chosen.
+    if (results.length === 1) pick(results[0])
   }
 
   return (

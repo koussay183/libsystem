@@ -76,8 +76,14 @@ import type { CatalogEntry } from '@/lib/catalog'
 import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCustomers, createCustomer } from '@/features/customers/useCustomers'
 import { useShopSettings } from '@/features/settings/useShopSettings'
-import { recordSale, paymentModeOf } from '@/features/sales/useSales'
-import { usePosCart } from './usePosCart'
+import { recordSale, paymentModeOf, CustomerMissingError } from '@/features/sales/useSales'
+import { useAuth } from '@/auth/AuthContext'
+import { auth } from '@/lib/firebase'
+import { PhoneInput } from '@/components/PhoneInput'
+import { SimilarRecords } from '@/components/SimilarRecords'
+import { findSimilar } from '@/lib/similar'
+import { normalizePhone } from '@/lib/phone'
+import { usePosCart, POS_MAX_QTY } from './usePosCart'
 import { useBarcodeScanner } from './useBarcodeScanner'
 import { ScanSuggestions } from './ScanSuggestions'
 import { commandOf } from './scanCommands'
@@ -124,32 +130,80 @@ const CONSUMED_MS = 400
 const MAX_PENDING = 20
 
 /**
+ * The whole code, when a scan reached lookup() as only its tail and the scan
+ * field still holds its head; null when the two do not fit together.
+ *
+ * The field ends with the tail itself (nothing was swallowed), or with the
+ * first characters of the tail (the wedge swallows the rest, see
+ * useBarcodeScanner) preceded by the head.
+ */
+function rejoinBurst(field: string, tail: string): string | null {
+  if (field === '' || tail.length < 4 || field === tail) return null
+  if (field.endsWith(tail)) return field
+  const at = field.lastIndexOf(tail.slice(0, 4))
+  if (at > 0 && tail.startsWith(field.slice(at))) return field.slice(0, at) + tail
+  return null
+}
+
+/**
+ * More than this, handed over for a ticket, is not money but a slip — in
+ * practice a barcode scanned into the "Le client donne" box. Twenty times the
+ * ticket, and never less than the ticket plus a thousand dinars.
+ */
+const ABSURD_MULTIPLE = 20
+const ABSURD_MARGIN = 1_000_000 // millimes
+
+function absurdGiven(given: number, total: number): boolean {
+  return given > Math.max(total * ABSURD_MULTIPLE, total + ABSURD_MARGIN)
+}
+
+/** A key this soon after the previous one was not typed by a hand. */
+const MACHINE_GAP_MS = 45
+
+/**
  * Quantity is edited as free text and only committed on blur/Enter — otherwise
  * clearing the field mid-typing would momentarily read as 0 and drop the line.
+ *
+ * Whole units within the line limit, or nothing. 100000 used to be clamped to
+ * 999 and "2,5" read as 2, so the ticket changed with nothing on screen saying
+ * it had: now the cell goes back to what it was and turns red.
  */
 function QtyCell({
   value,
   onCommit,
   label,
+  invalidLabel,
 }: {
   value: number
   onCommit: (n: number) => void
   label: string
+  invalidLabel: string
 }) {
   const [text, setText] = useState(String(value))
+  const [bad, setBad] = useState(false)
   useEffect(() => setText(String(value)), [value])
 
   const commit = () => {
-    const n = Number.parseInt(text, 10)
-    if (Number.isFinite(n)) onCommit(n)
-    else setText(String(value))
+    const raw = text.trim()
+    if (/^-?\d+$/.test(raw) && Math.abs(Number(raw)) <= POS_MAX_QTY) {
+      setBad(false)
+      onCommit(Number(raw))
+      return
+    }
+    setBad(raw !== '' && raw !== String(value))
+    setText(String(value))
   }
 
   return (
     <Input
       aria-label={label}
+      aria-invalid={bad || undefined}
+      title={bad ? invalidLabel : undefined}
       value={text}
-      onChange={(e) => setText(e.target.value)}
+      onChange={(e) => {
+        setBad(false)
+        setText(e.target.value)
+      }}
       onBlur={commit}
       onFocus={(e) => e.currentTarget.select()}
       onKeyDown={(e) => {
@@ -159,12 +213,15 @@ function QtyCell({
           e.currentTarget.blur()
         }
       }}
-      size="xl"
-      w="5rem"
+      size={{ base: 'lg', '2xl': 'xl' }}
+      w={{ base: '3.75rem', '2xl': '5rem' }}
+      px={1}
       textAlign="center"
       fontWeight="bold"
       fontSize="xl"
       inputMode="numeric"
+      borderColor={bad ? 'red.solid' : undefined}
+      borderWidth={bad ? '2px' : undefined}
     />
   )
 }
@@ -184,12 +241,12 @@ function QuickClientForm({
   initialName,
   onCreated,
   onCancel,
-  existingNames,
+  customers,
 }: {
   initialName: string
   onCreated: (id: string) => void
   onCancel: () => void
-  existingNames: string[]
+  customers: Customer[]
 }) {
   const { t } = useTranslation()
   const [name, setName] = useState(initialName)
@@ -205,9 +262,10 @@ function QuickClientForm({
   }, [])
 
   const trimmed = name.trim()
-  const duplicate =
-    trimmed !== '' &&
-    existingNames.some((n) => n.toLowerCase() === trimmed.toLowerCase())
+  // The same check as the carnet's own form: folded names and the phone's
+  // digits. An exact-name test let "Ahmed" with Ahmed Ben Salah's number
+  // through, and his debt was then split across two carnets.
+  const similar = useMemo(() => findSimilar(customers, name, phone), [customers, name, phone])
 
   const submit = () => {
     if (trimmed === '') {
@@ -218,7 +276,9 @@ function QuickClientForm({
     onCreated(
       createCustomer({
         name: trimmed,
-        phone: phone.trim() || undefined,
+        // Normalised here too: Enter in the phone box submits before
+        // PhoneInput's own blur tidy has run.
+        phone: normalizePhone(phone) || undefined,
         cin: cin.trim() || undefined,
       }),
     )
@@ -267,14 +327,7 @@ function QuickClientForm({
       <SimpleGrid columns={{ base: 1, sm: 2 }} gap={3}>
         <Field.Root>
           <Field.Label fontSize="md">{t('customer.phone')}</Field.Label>
-          <Input
-            size="xl"
-            bg="bg"
-            inputMode="tel"
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            onKeyDown={onKeyDown}
-          />
+          <PhoneInput size="xl" bg="bg" value={phone} onChange={setPhone} onKeyDown={onKeyDown} />
         </Field.Root>
         <Field.Root>
           <Field.Label fontSize="md">{t('customer.cin')}</Field.Label>
@@ -291,15 +344,9 @@ function QuickClientForm({
       </SimpleGrid>
 
       {/* Two clients of the same name is legal — two records for the SAME
-          client is what wrecks a carnet. Say so, do not block. */}
-      {duplicate && (
-        <Alert.Root status="warning">
-          <Alert.Indicator />
-          <Alert.Content>
-            <Alert.Title>{t('customer.alreadyExists')}</Alert.Title>
-          </Alert.Content>
-        </Alert.Root>
-      )}
+          client is what wrecks a carnet. Say so, do not block; picking one
+          puts the existing client on the ticket instead of a copy. */}
+      <SimilarRecords matches={similar} onPick={(c) => onCreated(c.id)} />
 
       <HStack gap={2}>
         <Button size="lg" variant="outline" bg="bg" flexShrink={0} onClick={onCancel}>
@@ -364,7 +411,7 @@ function ClientPicker({
       <QuickClientForm
         // What he already typed looking for the client IS the client's name.
         initialName={q.trim()}
-        existingNames={customers.map((c) => c.name)}
+        customers={customers}
         onCancel={() => setAdding(false)}
         onCreated={(id) => {
           setAdding(false)
@@ -384,6 +431,17 @@ function ClientPicker({
           minW={0}
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key !== 'Enter') return
+            // One client left under the search: Enter takes him, and the next
+            // Enter (on the client now chosen) finishes the sale. It used to
+            // fall through to the dialog and answer "Choisissez un client".
+            const only = filtered.length === 1 ? filtered[0] : null
+            if (only && only.id !== value) {
+              e.preventDefault()
+              onChange(only.id)
+            }
+          }}
           placeholder={searchLabel}
           autoFocus
         />
@@ -434,6 +492,10 @@ const clientDigits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '
  * The till re-renders on every character in the scan field — a scanner types
  * thirteen in a few milliseconds — and every one of those used to redraw every
  * line with its six buttons. Nothing here changes until the cart does.
+ *
+ * Below 2xl the controls are a size smaller: with the shell's sidebar and the
+ * totals column, a 1280 screen left the names about fifty pixels, so two
+ * colours of one pen read the same and the delete column was clipped.
  */
 const TicketLines = memo(function TicketLines({
   lines,
@@ -456,26 +518,67 @@ const TicketLines = memo(function TicketLines({
 }) {
   const { t } = useTranslation()
   const money = (m: number) => formatMoney(m, { symbol })
+  const iconSize = { base: 'sm', '2xl': 'md' } as const
   return (
     <>
       {lines.map((l, i) => {
         const isReturn = l.qty < 0
         const stale = staleIds.has(l.id)
+        const inPack = !!l.packUid
         // The first line of a pack carries the group's heading.
-        const packHead = !!l.packUid && lines[i - 1]?.packUid !== l.packUid
+        const packHead = inPack && lines[i - 1]?.packUid !== l.packUid
         const newest = newestKey !== null && (l.packUid ?? l.id) === newestKey
         return (
           <Fragment key={l.id}>
             {packHead && (
-              <Table.Row bg="bg.subtle">
-                <Table.Cell colSpan={4} py={2}>
+              /*
+                A PACK IS SOLD AND RETURNED WHOLE, so its controls live here
+                and nowhere else. Every member line used to carry − / + / price
+                / return / delete: one more prorated notebook at 0,516, or a
+                repriced pen, and the ticket no longer matched the pack price
+                still shown on this row — while the bin on ONE article quietly
+                removed the whole pack.
+              */
+              <Table.Row bg={isReturn ? 'red.subtle' : 'bg.subtle'}>
+                <Table.Cell colSpan={3} py={2}>
                   <Flex align="center" gap={2} wrap="wrap">
                     <Boxes size={16} />
-                    <Text fontWeight="bold">{l.packName}</Text>
+                    <Text fontWeight="bold" dir="auto" _rtl={{ textAlign: 'right' }}>
+                      {l.packName}
+                    </Text>
                     <Badge colorPalette="brand" variant="subtle">
                       {money(l.packPrice ?? 0)}
                     </Badge>
+                    {isReturn && (
+                      <Badge colorPalette="red" size="sm">
+                        {t('pos.returnBadge')}
+                      </Badge>
+                    )}
                   </Flex>
+                </Table.Cell>
+                <Table.Cell py={2}>
+                  <HStack gap={1} justify="flex-end">
+                    <IconButton
+                      aria-label={isReturn ? t('tillFix.packUndoReturn') : t('tillFix.packReturn')}
+                      title={isReturn ? t('tillFix.packUndoReturn') : t('tillFix.packReturn')}
+                      size={iconSize}
+                      variant="ghost"
+                      colorPalette={isReturn ? 'gray' : 'orange'}
+                      onClick={() => toggleReturn(l.id)}
+                    >
+                      <Undo2 size={18} />
+                    </IconButton>
+                    <IconButton
+                      aria-label={`${t('tillFix.packRemove')} : ${l.packName ?? ''}`}
+                      title={t('tillFix.packRemove')}
+                      size={iconSize}
+                      variant="ghost"
+                      colorPalette="red"
+                      onClick={() => removeLine(l.id)}
+                    >
+                      <Trash2 size={18} />
+                    </IconButton>
+                  </HStack>
                 </Table.Cell>
               </Table.Row>
             )}
@@ -487,13 +590,46 @@ const TicketLines = memo(function TicketLines({
               borderStartWidth={newest && !isReturn ? '4px' : 0}
               borderStartColor="green.solid"
             >
-              <Table.Cell py={2} ps={l.packUid ? 6 : undefined}>
-                <Text fontWeight="semibold" lineClamp={1}>
+              <Table.Cell py={2} ps={inPack ? 6 : undefined}>
+                {/* Two lines, not one: the words that tell two variants apart
+                    (the colour, "Seyès") sit at the end of the name. dir="auto"
+                    keeps a French name readable in the Arabic till, where it
+                    used to lose its first letters to the ellipsis. */}
+                <Text
+                  fontWeight="semibold"
+                  lineClamp={2}
+                  wordBreak="break-word"
+                  title={l.name}
+                  dir="auto"
+                  _rtl={{ textAlign: 'right' }}
+                >
                   {l.name}
                 </Text>
                 <HStack gap={2} color="fg.muted" fontSize="sm" wrap="wrap">
-                  <Text as="span">{money(l.unitPrice)}</Text>
-                  {isReturn && (
+                  {/* The price is where it is changed: one pencil fewer in the
+                      action column, which is the width the names were missing. */}
+                  {inPack ? (
+                    <Text as="span">{money(l.unitPrice)}</Text>
+                  ) : (
+                    <Button
+                      size="xs"
+                      variant="ghost"
+                      h="auto"
+                      minW={0}
+                      px={1}
+                      py={0.5}
+                      fontWeight="normal"
+                      fontSize="sm"
+                      color="fg.muted"
+                      aria-label={`${t('pos.editPrice')} : ${money(l.unitPrice)}`}
+                      title={t('pos.editPrice')}
+                      onClick={() => onEditPrice(l)}
+                    >
+                      {money(l.unitPrice)}
+                      <Pencil size={12} />
+                    </Button>
+                  )}
+                  {isReturn && !inPack && (
                     <Badge colorPalette="red" size="sm">
                       {t('pos.returnBadge')}
                     </Badge>
@@ -518,29 +654,43 @@ const TicketLines = memo(function TicketLines({
                 </HStack>
               </Table.Cell>
               <Table.Cell py={2}>
-                <HStack justify="center" gap={1}>
-                  <IconButton
-                    aria-label={t('common.decrease')}
-                    size="md"
-                    variant="outline"
-                    onClick={() => setQty(l.id, l.qty - 1)}
+                {inPack ? (
+                  <Text
+                    textAlign="center"
+                    fontWeight="bold"
+                    fontSize="lg"
+                    color="fg.muted"
+                    whiteSpace="nowrap"
+                    title={t('tillFix.packLocked')}
                   >
-                    <Minus size={18} />
-                  </IconButton>
-                  <QtyCell
-                    value={l.qty}
-                    label={t('pos.editQty')}
-                    onCommit={(n) => setQty(l.id, n)}
-                  />
-                  <IconButton
-                    aria-label={t('common.increase')}
-                    size="md"
-                    variant="outline"
-                    onClick={() => setQty(l.id, l.qty + 1)}
-                  >
-                    <Plus size={18} />
-                  </IconButton>
-                </HStack>
+                    × {Math.abs(l.qty)}
+                  </Text>
+                ) : (
+                  <HStack justify="center" gap={1}>
+                    <IconButton
+                      aria-label={t('common.decrease')}
+                      size={iconSize}
+                      variant="outline"
+                      onClick={() => setQty(l.id, l.qty - 1)}
+                    >
+                      <Minus size={18} />
+                    </IconButton>
+                    <QtyCell
+                      value={l.qty}
+                      label={t('pos.editQty')}
+                      invalidLabel={t('tillFix.qtyInvalid', { max: POS_MAX_QTY })}
+                      onCommit={(n) => setQty(l.id, n)}
+                    />
+                    <IconButton
+                      aria-label={t('common.increase')}
+                      size={iconSize}
+                      variant="outline"
+                      onClick={() => setQty(l.id, l.qty + 1)}
+                    >
+                      <Plus size={18} />
+                    </IconButton>
+                  </HStack>
+                )}
               </Table.Cell>
               <Table.Cell
                 py={2}
@@ -552,37 +702,40 @@ const TicketLines = memo(function TicketLines({
                 {money(l.qty * l.unitPrice)}
               </Table.Cell>
               <Table.Cell py={2}>
-                <HStack gap={0} justify="flex-end">
-                  <IconButton
-                    aria-label={t('pos.editPrice')}
-                    title={t('pos.editPrice')}
-                    size="md"
-                    variant="ghost"
-                    onClick={() => onEditPrice(l)}
-                  >
-                    <Pencil size={18} />
-                  </IconButton>
-                  <IconButton
-                    aria-label={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
-                    title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
-                    size="md"
-                    variant="ghost"
-                    colorPalette={isReturn ? 'gray' : 'orange'}
-                    onClick={() => toggleReturn(l.id)}
-                  >
-                    <Undo2 size={18} />
-                  </IconButton>
-                  <IconButton
-                    aria-label={t('common.remove')}
-                    title={t('common.remove')}
-                    size="md"
-                    variant="ghost"
-                    colorPalette="red"
-                    onClick={() => removeLine(l.id)}
-                  >
-                    <Trash2 size={18} />
-                  </IconButton>
-                </HStack>
+                {!inPack && (
+                  <HStack gap={1} justify="flex-end">
+                    <IconButton
+                      aria-label={t('pos.editPrice')}
+                      title={t('pos.editPrice')}
+                      size={iconSize}
+                      variant="ghost"
+                      display={{ base: 'none', '2xl': 'inline-flex' }}
+                      onClick={() => onEditPrice(l)}
+                    >
+                      <Pencil size={18} />
+                    </IconButton>
+                    <IconButton
+                      aria-label={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                      title={isReturn ? t('pos.undoReturn') : t('pos.returnLine')}
+                      size={iconSize}
+                      variant="ghost"
+                      colorPalette={isReturn ? 'gray' : 'orange'}
+                      onClick={() => toggleReturn(l.id)}
+                    >
+                      <Undo2 size={18} />
+                    </IconButton>
+                    <IconButton
+                      aria-label={t('tillFix.removeLine', { name: l.name })}
+                      title={t('common.remove')}
+                      size={iconSize}
+                      variant="ghost"
+                      colorPalette="red"
+                      onClick={() => removeLine(l.id)}
+                    >
+                      <Trash2 size={18} />
+                    </IconButton>
+                  </HStack>
+                )}
               </Table.Cell>
             </Table.Row>
           </Fragment>
@@ -647,6 +800,14 @@ export function CaissePage() {
   const { customers } = useCustomers()
   const { packs, loading: packsLoading } = usePacks()
   const { shop, loading: shopLoading } = useShopSettings()
+  /**
+   * Past the plan's grace window the server refuses every write — and
+   * Firestore answers a refusal by rolling the sale back AFTER the receipt has
+   * printed. So a blocked till stops before recordSale instead of handing the
+   * customer a ticket for a sale that will not exist. `blocked`, not `lapsed`:
+   * during the fortnight of grace the till keeps selling, by design.
+   */
+  const { blocked: planBlocked } = useAuth()
   const cart = usePosCart()
 
   const scanRef = useRef<HTMLInputElement>(null)
@@ -723,12 +884,27 @@ export function CaissePage() {
   }, [])
 
   /**
+   * Whether there is a list to close. The scanner asks on the fourth
+   * character of every burst, and setting state there re-rendered the whole
+   * till in the middle of the code — long enough, on the shop PC, for the
+   * burst to break in two and a real article to come out as unknown.
+   */
+  const listShown = useRef(false)
+  listShown.current = query !== '' || highlight !== -1
+  const closeSuggestionsIfOpen = useCallback(() => {
+    if (listShown.current) closeSuggestions()
+  }, [closeSuggestions])
+
+  /**
    * Codes scanned before the stock finished loading, in the order they came,
    * replayed once it lands. A queue and not a single slot: a cashier who
    * empties a basket across the counter while the app is still waking up would
    * otherwise keep only the last article.
+   *
+   * Both readings are kept: on the AZERTY till the typed one is punctuation
+   * and only the physical-key reading finds the article.
    */
-  const pendingScans = useRef<string[]>([])
+  const pendingScans = useRef<{ term: string; physical: string | null }[]>([])
 
   /**
    * The code that was just dealt with, and when. Every path that can ring an
@@ -747,6 +923,7 @@ export function CaissePage() {
   const [newCost, setNewCost] = useState('')
   const [newError, setNewError] = useState('')
   const [newPriceError, setNewPriceError] = useState('')
+  const [newCostError, setNewCostError] = useState('')
   const [newQty, setNewQty] = useState('1')
   /**
    * The name the CATALOGUE proposes, held apart from what the owner typed.
@@ -765,14 +942,21 @@ export function CaissePage() {
   const [miscOpen, setMiscOpen] = useState(false)
   const [miscName, setMiscName] = useState('')
   const [miscPrice, setMiscPrice] = useState('')
+  const [miscNameError, setMiscNameError] = useState('')
+  const [miscPriceError, setMiscPriceError] = useState('')
+  const miscPriceRef = useRef<HTMLInputElement>(null)
 
   // Price renegotiated on one line
   const [priceLine, setPriceLine] = useState<PosLine | null>(null)
   const [priceText, setPriceText] = useState('')
+  const [priceError, setPriceError] = useState('')
+  /** A price of 0 was typed once; the second Enregistrer gives it away. */
+  const [priceZeroAsked, setPriceZeroAsked] = useState(false)
 
   // Whole-ticket discount, as a percentage of it
   const [discountOpen, setDiscountOpen] = useState(false)
   const [discountText, setDiscountText] = useState('')
+  const [discountError, setDiscountError] = useState('')
 
   /**
    * The till is taking goods BACK.
@@ -792,6 +976,13 @@ export function CaissePage() {
   const [customerId, setCustomerId] = useState('')
   const [received, setReceived] = useState('')
   const [payError, setPayError] = useState('')
+  /**
+   * Which field the error is about. It used to be drawn only under the client
+   * picker, so a cash "5O" or a 20 DT note for a 49 DT ticket did nothing at
+   * all on Confirmer — no message, no red field — and neither did a partial
+   * payment once a client was chosen.
+   */
+  const [payErrorOn, setPayErrorOn] = useState<'client' | 'amount'>('amount')
 
   /**
    * In-flight guard. `busy` is React state and only lands on the next render,
@@ -804,6 +995,9 @@ export function CaissePage() {
   const [ticket, setTicket] = useState<TicketData | null>(null)
   const [lastTicket, setLastTicket] = useState<TicketData | null>(null)
   const [paper, setPaper] = useState<'thermal' | 'a4'>('thermal')
+  const payConfirmRef = useRef<HTMLButtonElement>(null)
+  const printBtnRef = useRef<HTMLButtonElement>(null)
+  const newTicketRef = useRef<HTMLButtonElement>(null)
 
   const symbol = t(moneySymbolKey())
   const money = (m: number) => formatMoney(m, { symbol })
@@ -858,6 +1052,19 @@ export function CaissePage() {
    */
   const blocked = useRef(false)
   blocked.current = dialogBlocking || busy
+  const payOpenRef = useRef(false)
+  payOpenRef.current = payOpen
+
+  /**
+   * The keys typed in the payment dialog, timed on their own clock.
+   *
+   * The wedge catches a scan in this dialog and swallows its Enter. This is
+   * the second net, for when it cannot: thirteen digits at machine speed into
+   * "Le client donne" and an Enter right behind them is a barcode, not money,
+   * and it used to confirm the sale with the code as the cash handed over.
+   */
+  const payKeys = useRef({ at: 0, count: 0, before: '' })
+  const amountRef = useRef<HTMLInputElement>(null)
 
   // The cursor belongs in the scan field at all times - coming back from any
   // dialog, the next scan must land without a click.
@@ -881,8 +1088,20 @@ export function CaissePage() {
     return cart.lines.filter((l) => l.productId && !live.has(l.productId))
   }, [cart.lines, products, productsLoading])
 
-  const canSettle = cart.lines.length > 0 && staleLines.length === 0 && !busy
+  const canSettle = cart.lines.length > 0 && staleLines.length === 0 && !busy && !planBlocked
   const isRefund = cart.total < 0
+
+  /**
+   * The claim that says "blocked" can be out of date: a plan renewed in the
+   * CLI reaches this browser only with a fresh token, which the SDK fetches
+   * about once an hour. Asked for at the moment the cashier is refused, so a
+   * renewal unblocks the till as soon as the line answers. Never awaited.
+   */
+  const refreshPlan = () => {
+    void auth.currentUser?.getIdToken(true).catch(() => {
+      /* offline: the claim on disk stands, and so does the refusal */
+    })
+  }
 
   // --- services sold by scanning a printed label -------------------------
 
@@ -1231,6 +1450,12 @@ export function CaissePage() {
         setScan('')
         setNoticeStatus('warning')
         setNotice(t('pos.scanRefused'))
+        // The notice above sits behind the payment dialog; say it in there,
+        // where the cashier is looking, or the article just goes missing.
+        if (payOpenRef.current) {
+          setPayErrorOn('amount')
+          setPayError(t('tillFix.scanInPay'))
+        }
         return
       }
 
@@ -1249,7 +1474,7 @@ export function CaissePage() {
       if (productsLoading || packsLoading || shopLoading) {
         // Answering "unknown code" here would be a lie, and offering to create
         // the article would duplicate it. Hold it and replay it below.
-        if (pendingScans.current.length < MAX_PENDING) pendingScans.current.push(term)
+        if (pendingScans.current.length < MAX_PENDING) pendingScans.current.push({ term, physical })
         setNoticeStatus('info')
         setNotice(t('pos.waitingStock'))
         return
@@ -1261,29 +1486,35 @@ export function CaissePage() {
       // Sellable packs stand next to the articles as equal candidates; the
       // rest are kept aside to explain themselves if nothing else matches.
       const packHits = findPackByCode(term, physical)
-      const sellableHits = packHits.filter((pack) => !packProblem(pack))
-      const exact = findByCode(term, physical) ?? []
       const serviceHits = findServiceByCode(term, physical)
-      const liveServices = serviceHits.filter((s) => s.active !== false)
-
-      const exactChoices: ScanChoice[] = [
-        ...liveServices.map((service): ScanChoice => ({ kind: 'service', service })),
-        ...sellableHits.map((pack): ScanChoice => ({ kind: 'pack', pack })),
-        ...exact.map((product): ScanChoice => ({ kind: 'product', product })),
+      const exactFor = (code: string, phys: string | null): ScanChoice[] => [
+        ...findServiceByCode(code, phys)
+          .filter((s) => s.active !== false)
+          .map((service): ScanChoice => ({ kind: 'service', service })),
+        ...findPackByCode(code, phys)
+          .filter((pack) => !packProblem(pack))
+          .map((pack): ScanChoice => ({ kind: 'pack', pack })),
+        ...(findByCode(code, phys) ?? []).map(
+          (product): ScanChoice => ({ kind: 'product', product }),
+        ),
       ]
+      const takeExact = (choices: ScanChoice[]) => {
+        if (choices.length === 1) {
+          take(choices[0])
+          return true
+        }
+        if (choices.length > 1) {
+          setMatches(choices.slice(0, 40))
+          setMatchKind('code')
+          setNoticeStatus('warning')
+          setNotice(t('pos.sameCode'))
+          beepWarn()
+          return true
+        }
+        return false
+      }
 
-      if (exactChoices.length === 1) {
-        take(exactChoices[0])
-        return
-      }
-      if (exactChoices.length > 1) {
-        setMatches(exactChoices.slice(0, 40))
-        setMatchKind('code')
-        setNoticeStatus('warning')
-        setNotice(t('pos.sameCode'))
-        beepWarn()
-        return
-      }
+      if (takeExact(exactFor(term, physical))) return
 
       if (serviceHits.length > 0) {
         setNoticeStatus('warning')
@@ -1308,6 +1539,19 @@ export function CaissePage() {
         beepError()
         focusScan()
         return
+      }
+
+      /*
+        A BURST CUT IN TWO. When the page stalled mid-scan the wedge could
+        start over part-way through the code and hand over only its tail, while
+        the head sat in the scan field — and a real article came out as
+        "produit inexistant". Put the two back together, but only to FIND a
+        known article: a rejoined code is never what the miss below offers to
+        create, since a stray digit the cashier typed would end up in it.
+      */
+      if (source === 'scan') {
+        const whole = rejoinBurst(codeOf(scanRef.current?.value ?? ''), term)
+        if (whole !== null && takeExact(exactFor(whole, null))) return
       }
 
       // Folded the same way the suggestion list folds, or Enter would answer
@@ -1337,6 +1581,16 @@ export function CaissePage() {
       }
       if (found.length > 1) {
         // Never guess: picking the first alphabetical match sells the wrong item.
+        // And number them in the order the suggestion list showed them: in
+        // stock order, "1" sold the dearer notebook rather than the one that
+        // had just been at the top of the list.
+        const order = new Map(
+          searchChoices(products, sellablePacks, services, term, Number.MAX_SAFE_INTEGER).map(
+            (c, i) => [choiceId(c), i],
+          ),
+        )
+        const rankOf = (c: ScanChoice) => order.get(choiceId(c)) ?? Number.MAX_SAFE_INTEGER
+        found.sort((a, b) => rankOf(a) - rankOf(b))
         setMatches(found.slice(0, 40))
         setMatchKind('name')
         setNoticeStatus('warning')
@@ -1345,8 +1599,19 @@ export function CaissePage() {
         return
       }
 
+      // On the AZERTY till a US-mode scanner's digits type as &é"'(…, and the
+      // wedge also hands over the physical-key reading. Known codes are matched
+      // through it above; the miss has to use it too, or the unknown article
+      // is offered with the punctuation as its NAME, no barcode, and no
+      // catalogue lookup. `consumed` above stays on the raw term: it is
+      // compared with the next raw burst to catch the trailing Enter.
+      const codeTerm =
+        !looksLikeCode(term) && physical && looksLikeCode(codeOf(physical))
+          ? codeOf(physical)
+          : term
+
       setNoticeStatus('warning')
-      setNotice(t('pos.notFound', { term }))
+      setNotice(t('pos.notFound', { term: codeTerm }))
       setCanCreate(true)
       /**
        * looksLikeCode(), the same test the stock page uses (StockPage.tsx:522).
@@ -1359,9 +1624,9 @@ export function CaissePage() {
        * loose() on the way in, so the stored code is the digits the scanner will
        * actually send next time, not the separators a catalogue happened to print.
        */
-      const missed = looksLikeCode(term) ? loose(term) : ''
+      const missed = looksLikeCode(codeTerm) ? loose(codeTerm) : ''
       setNewCode(missed)
-      setNewName(looksLikeCode(term) ? '' : term)
+      setNewName(missed !== '' ? '' : codeTerm)
       focusScan()
 
       /*
@@ -1407,7 +1672,7 @@ export function CaissePage() {
       */
       if (source === 'scan' || missed !== '') {
         beepFail()
-        setUnknown({ term, code: missed || term, at: performance.now(), nag: 0 })
+        setUnknown({ term: codeTerm, code: missed || codeTerm, at: performance.now(), nag: 0 })
       } else {
         beepError()
       }
@@ -1437,6 +1702,7 @@ export function CaissePage() {
     [
       take,
       activePacks,
+      sellablePacks,
       services,
       findByCode,
       findPackByCode,
@@ -1573,7 +1839,7 @@ export function CaissePage() {
     targetRef: scanRef,
     onScan: (code, physical) => lookup(code, physical, 'scan'),
     // A machine is typing: whatever list was open is not what it is after.
-    onBurstStart: closeSuggestions,
+    onBurstStart: closeSuggestionsIfOpen,
     // Known code, nothing longer starts with it: do not wait for the silence.
     isComplete: isCompleteCode,
     splitAt: splitScan,
@@ -1608,6 +1874,9 @@ export function CaissePage() {
     scanner.reset()
     consumed.current = { term, at: performance.now() }
     setScan('')
+    // The next customer's first article closes the last receipt, as a scan
+    // through lookup() does; this path used to leave it open over his basket.
+    setTicket(null)
     // Typed by hand rather than scanned, but a shared code is still a shared
     // code — ask which one instead of leaving the field sitting there.
     if (hits.length > 1) {
@@ -1651,14 +1920,14 @@ export function CaissePage() {
   useEffect(() => {
     if (productsLoading || packsLoading || shopLoading) return
     if (dialogBlocking || busy) return
-    const code = pendingScans.current.shift()
-    if (code === undefined) return
+    const next = pendingScans.current.shift()
+    if (next === undefined) return
     // Each code was stamped as dealt with when it went on hold, and the same
     // article can legitimately appear twice in the queue. Clear the stamp
     // before every replay, or the second copy is mistaken for a scanner's
     // trailing Enter and dropped.
     consumed.current = { term: '', at: 0 }
-    lookup(code, null, 'scan')
+    lookup(next.term, next.physical, 'scan')
     // Come back after this code's render for the next one.
     setReplayTick((n) => n + 1)
   }, [productsLoading, packsLoading, shopLoading, lookup, dialogBlocking, busy, replayTick])
@@ -1787,7 +2056,54 @@ export function CaissePage() {
   const editLinePrice = useCallback((l: PosLine) => {
     setPriceLine(l)
     setPriceText(String(fromMinor(l.unitPrice)))
+    setPriceError('')
+    setPriceZeroAsked(false)
   }, [])
+
+  /**
+   * The line's new price, or the reason it was not taken. An unreadable entry
+   * used to close the dialog with the price unchanged, so the cashier believed
+   * he had changed it; and 0 gave the article away on one Enter.
+   */
+  const savePrice = () => {
+    if (!priceLine) return
+    const v = parseMoney(priceText)
+    if (v === null) {
+      setPriceError(t('sales.amountInvalid'))
+      return
+    }
+    if (v === 0 && !priceZeroAsked) {
+      setPriceZeroAsked(true)
+      setPriceError(t('tillFix.priceZero'))
+      return
+    }
+    cart.setPrice(priceLine.id, v)
+    setPriceLine(null)
+    focusScan()
+  }
+
+  /**
+   * An empty box means no discount. Anything else has to read as 0-100: "1O"
+   * used to clear a 10 % discount without a word, and 150 gave the whole
+   * ticket away. Only "Sans remise" removes it on purpose.
+   */
+  const applyDiscount = () => {
+    const raw = discountText.trim()
+    const pct = raw === '' ? 0 : parsePercent(raw)
+    if (pct === null || pct < 0 || pct > 100) {
+      setDiscountError(t('tillFix.discountInvalid'))
+      return
+    }
+    cart.setDiscountPercent(pct)
+    setDiscountOpen(false)
+    focusScan()
+  }
+
+  const openDiscount = () => {
+    setDiscountText(cart.discountPercent ? String(cart.discountPercent) : '')
+    setDiscountError('')
+    setDiscountOpen(true)
+  }
 
   /** Newest first means the top of the box is where the work appears. */
   useEffect(() => {
@@ -1871,7 +2187,18 @@ export function CaissePage() {
    */
   const parkLabel = () => {
     const first = cart.lines[0]?.name ?? ''
-    return `${first} · ${cart.itemCount} ${t('pos.items')} · ${money(cart.total)}`
+    // The amount first: the chip is cut at its end, and a long article name
+    // used to push the one figure the cashier recognises out of sight.
+    return `${money(cart.total)} · ${first} · ${t('tillFix.itemsCount', { count: cart.itemCount })}`
+  }
+
+  /** Parks the basket and leaves a clean till: no stale banner, no return mode. */
+  const parkNow = () => {
+    if (cart.lines.length === 0) return
+    cart.park(parkLabel())
+    setLastAdded(null)
+    setReturnMode(false)
+    focusScan()
   }
 
   const toggleSound = () => {
@@ -1888,6 +2215,7 @@ export function CaissePage() {
     setNewCost('')
     setNewError('')
     setNewPriceError('')
+    setNewCostError('')
     setNewQty('1')
     setNewOpen(true)
 
@@ -1922,6 +2250,14 @@ export function CaissePage() {
   const saveNewProduct = async () => {
     setNewError('')
     setNewPriceError('')
+    setNewCostError('')
+    // The server refuses the article and rolls it back after it was put on
+    // the ticket. @see planBlocked
+    if (planBlocked) {
+      setNewError(t('tillFix.blockedTill'))
+      refreshPlan()
+      return
+    }
     if (newName.trim() === '') {
       setNewError(t('stock.nameRequired'))
       return
@@ -1942,7 +2278,19 @@ export function CaissePage() {
     */
     const salePrice = parseMoney(newPrice)
     if (salePrice === null || salePrice <= 0) {
-      setNewPriceError(t('common.required'))
+      // "Obligatoire" under a box that is filled reads as a bug: say what is
+      // wrong with what was typed.
+      setNewPriceError(
+        newPrice.trim() !== '' && salePrice === null
+          ? t('sales.amountInvalid')
+          : t('common.required'),
+      )
+      return
+    }
+    // A blank cost is allowed (see costBlankWarn); an unreadable one is not —
+    // "abc" was saved as 0 and made the article pure profit for ever.
+    if (newCost.trim() !== '' && parseMoney(newCost) === null) {
+      setNewCostError(t('sales.amountInvalid'))
       return
     }
     /*
@@ -2005,7 +2353,19 @@ export function CaissePage() {
   // --- free line ---------------------------------------------------------
   const addMisc = () => {
     const price = parseMoney(miscPrice)
-    if (miscName.trim() === '' || price === null) return
+    // Said, not silent: an empty box or "5O" used to leave the dialog sitting
+    // there with nothing explaining why. And 0 is refused, as for a service.
+    const nameBad = miscName.trim() === ''
+    const priceBad = price === null || price <= 0
+    setMiscNameError(nameBad ? t('tillFix.miscNameRequired') : '')
+    setMiscPriceError(
+      !priceBad
+        ? ''
+        : miscPrice.trim() !== '' && price === null
+          ? t('sales.amountInvalid')
+          : t('tillFix.miscPriceRequired'),
+    )
+    if (nameBad || priceBad || price === null) return
     cart.addMisc(miscName.trim(), price, returnMode)
     setLastAdded({ productId: null, name: miscName.trim(), price })
     beepOk()
@@ -2015,14 +2375,36 @@ export function CaissePage() {
     focusScan()
   }
 
+  const openMisc = () => {
+    setMiscNameError('')
+    setMiscPriceError('')
+    setMiscOpen(true)
+  }
+
   // --- settlement --------------------------------------------------------
   const openPay = (kind: PayKind) => {
+    // F2 / F3 on a blocked till: the refusal is already on screen above the
+    // ticket; the tone says the key was heard.
+    if (planBlocked) {
+      beepError()
+      refreshPlan()
+      return
+    }
     if (!canSettle) return
     setPayKind(kind)
     setPayError('')
+    setPayErrorOn('amount')
+    setSaveError('')
     setCustomerId('')
     setReceived('')
     setPayOpen(true)
+  }
+
+  /** Shows a settlement error under the field it is about. */
+  const failPay = (on: 'client' | 'amount', message: string) => {
+    setPayErrorOn(on)
+    setPayError(message)
+    beepError()
   }
 
   const finish = async (
@@ -2033,6 +2415,14 @@ export function CaissePage() {
   ) => {
     if (cart.lines.length === 0 || staleLines.length > 0) return
     if (submitting.current) return
+    // Checked here as well as on the buttons: "Compte juste", F2 and the
+    // scanned "payer" label all reach this. @see planBlocked
+    if (planBlocked) {
+      setSaveError(t('tillFix.blockedTill'))
+      beepError()
+      refreshPlan()
+      return
+    }
     submitting.current = true
     setBusy(true)
     setSaveError('')
@@ -2088,7 +2478,7 @@ export function CaissePage() {
       setPayOpen(false)
       setCustomerId('')
       setReceived('')
-    } catch {
+    } catch (e) {
       // Only a refusal raised before anything was queued reaches here now — an
       // unpaid balance with no client attached, or a shop id that has gone. A
       // rejection from the SERVER cannot: it arrives long after this ticket was
@@ -2100,7 +2490,9 @@ export function CaissePage() {
       // The dialog stays open on purpose: the cashier is mid-payment and the
       // retry button has to be where he is already looking.
       if (alive.current) {
-        setSaveError(t('pos.saveFailed'))
+        setSaveError(
+          e instanceof CustomerMissingError ? t('sales.customerGone') : t('pos.saveFailed'),
+        )
         beepError()
       }
     } finally {
@@ -2112,14 +2504,23 @@ export function CaissePage() {
   const confirmPay = async () => {
     if (payKind === 'cash') {
       if (received.trim() !== '' && parseMoney(received) === null) {
-        setPayError(t('sales.amountInvalid'))
+        failPay('amount', t('sales.amountInvalid'))
         return
       }
       const given = parseMoney(received)
       // An empty field means "exact money" — one keystroke for the common case.
       const receivedNow = given ?? cart.total
       if (receivedNow < cart.total) {
-        setPayError(t('pos.notEnough'))
+        failPay(
+          'amount',
+          `${t('pos.notEnough')} — ${t('tillFix.missing', { amount: money(cart.total - receivedNow) })}`,
+        )
+        return
+      }
+      // The last net under a barcode scanned into this box: thirteen digits
+      // read as dinars, recorded as the cash handed over.
+      if (given !== null && absurdGiven(given, cart.total)) {
+        failPay('amount', t('tillFix.amountAbsurd', { amount: money(given) }))
         return
       }
       await finish('paid', cart.total, receivedNow, null)
@@ -2127,7 +2528,7 @@ export function CaissePage() {
     }
 
     if (!customerId) {
-      setPayError(t('pos.needClient'))
+      failPay('client', t('pos.needClient'))
       return
     }
     if (payKind === 'credit') {
@@ -2137,10 +2538,14 @@ export function CaissePage() {
     // Typed but unreadable ("5O") is refused: read as zero, the whole ticket
     // went on the client's carnet although he had just paid part of it.
     if (received.trim() !== '' && parseMoney(received) === null) {
-      setPayError(t('sales.amountInvalid'))
+      failPay('amount', t('sales.amountInvalid'))
       return
     }
     const given = Math.max(0, parseMoney(received) ?? 0)
+    if (absurdGiven(given, cart.total)) {
+      failPay('amount', t('tillFix.amountAbsurd', { amount: money(given) }))
+      return
+    }
     const paidNow = Math.min(given, cart.total)
     // The shared rule, so a client who hands over the whole amount in this
     // dialog is "payé" — not a "paiement partiel" badge on a settled ticket.
@@ -2160,6 +2565,8 @@ export function CaissePage() {
   useEffect(() => {
     if (printRequest === 0) return
     window.print()
+    // Printed: the next Enter means "next customer", not a second copy.
+    newTicketRef.current?.focus()
   }, [printRequest, paper])
 
   const reprintLast = () => {
@@ -2254,10 +2661,10 @@ export function CaissePage() {
         if (cart.total > 0) openPay('partial')
       } else if (e.key === 'F4') {
         e.preventDefault()
-        if (cart.lines.length > 0) cart.park(parkLabel())
+        parkNow()
       } else if (e.key === 'F6') {
         e.preventDefault()
-        setMiscOpen(true)
+        openMisc()
       } else if (e.key === 'F7') {
         e.preventDefault()
         openPacks()
@@ -2287,8 +2694,13 @@ export function CaissePage() {
   }, [cart.total])
 
   const receivedMinor = parseMoney(received) ?? 0
-  const changeDue = Math.max(0, receivedMinor - cart.total)
+  // Never "À rendre 6 191 234 000 026,500 DT" off a barcode in the box.
+  const changeDue = absurdGiven(receivedMinor, cart.total)
+    ? 0
+    : Math.max(0, receivedMinor - cart.total)
   const remainingAfter = Math.max(0, cart.total - receivedMinor)
+  /** The settlement dialog has an amount box (not credit, not a refund). */
+  const amountShown = payKind !== 'credit' && !isRefund
 
   return (
     <Flex
@@ -2364,8 +2776,10 @@ export function CaissePage() {
               </Box>
 
               {/* The suggestion list hangs off this box, so it lines up with
-                  the field and not with the card. */}
-              <Box position="relative" flex="1" minW={0}>
+                  the field and not with the card. Never narrower than a
+                  barcode: at 1024 px the labelled buttons beside it used to
+                  squeeze it down to "Scar". */}
+              <Box position="relative" flex="1" minW={{ base: 0, md: '14rem' }}>
                 <Input
                   ref={scanRef}
                   size="xl"
@@ -2378,11 +2792,15 @@ export function CaissePage() {
                   }}
                   onBlur={closeSuggestions}
                   placeholder={t('pos.scanPlaceholder')}
+                  aria-label={t('pos.scanPlaceholder')}
                   fontSize="lg"
                   autoComplete="off"
                   role="combobox"
                   aria-expanded={suggestOpen}
-                  aria-controls="pos-suggestions"
+                  aria-controls={suggestOpen ? 'pos-suggestions' : undefined}
+                  aria-activedescendant={
+                    suggestOpen && highlight >= 0 ? `pos-opt-${highlight}` : undefined
+                  }
                 />
                 <ScanSuggestions
                   open={suggestOpen}
@@ -2399,6 +2817,9 @@ export function CaissePage() {
                 />
               </Box>
 
+              {/* Labels from xl only: below it the scan field needs the room
+                  more than these three need words (their keys are in the
+                  tooltips). */}
               <Button
                 type="button"
                 size="xl"
@@ -2407,9 +2828,10 @@ export function CaissePage() {
                 flexShrink={0}
                 onClick={openPacks}
                 title={`${t('packs.title')} · F7`}
+                aria-label={t('packs.title')}
               >
                 <Boxes size={20} />
-                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                <Text as="span" display={{ base: 'none', xl: 'inline' }}>
                   {t('packs.title')}
                 </Text>
               </Button>
@@ -2419,11 +2841,12 @@ export function CaissePage() {
                 size="xl"
                 variant="outline"
                 flexShrink={0}
-                onClick={() => setMiscOpen(true)}
+                onClick={openMisc}
                 title={`${t('pos.misc')} · F6`}
+                aria-label={t('pos.misc')}
               >
                 <PackagePlus size={20} />
-                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                <Text as="span" display={{ base: 'none', xl: 'inline' }}>
                   {t('pos.misc')}
                 </Text>
               </Button>
@@ -2441,24 +2864,45 @@ export function CaissePage() {
                   focusScan()
                 }}
                 title={`${t('pos.returnMode')} · F8`}
+                aria-label={t('pos.returnMode')}
               >
                 <Undo2 size={20} />
-                <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                <Text as="span" display={{ base: 'none', xl: 'inline' }}>
                   {t('pos.returnMode')}
                 </Text>
               </Button>
 
-              <IconButton
-                type="button"
-                aria-label={sound ? t('pos.soundOn') : t('pos.soundOff')}
-                title={sound ? t('pos.soundOn') : t('pos.soundOff')}
-                variant="ghost"
-                size="lg"
-                flexShrink={0}
-                onClick={toggleSound}
-              >
-                {sound ? <Volume2 size={20} /> : <VolumeX size={20} />}
-              </IconButton>
+              {/* Muted, it says so in words: the loud tone of the red
+                  "inexistant" screen is part of how a miss gets noticed. */}
+              {sound ? (
+                <IconButton
+                  type="button"
+                  aria-label={t('pos.soundOn')}
+                  title={t('pos.soundOn')}
+                  variant="ghost"
+                  size="lg"
+                  flexShrink={0}
+                  onClick={toggleSound}
+                >
+                  <Volume2 size={20} />
+                </IconButton>
+              ) : (
+                <Button
+                  type="button"
+                  aria-label={t('pos.soundOff')}
+                  title={t('pos.soundOff')}
+                  variant="subtle"
+                  colorPalette="orange"
+                  size="lg"
+                  flexShrink={0}
+                  onClick={toggleSound}
+                >
+                  <VolumeX size={20} />
+                  <Text as="span" display={{ base: 'none', lg: 'inline' }}>
+                    {t('tillFix.soundMuted')}
+                  </Text>
+                </Button>
+              )}
 
               {lastTicket && (
                 <IconButton
@@ -2476,6 +2920,30 @@ export function CaissePage() {
             </Flex>
           </form>
 
+          {/* The plan's grace has run out: said here, at the till, where the
+              buttons have gone grey — not only in the shell's banner. */}
+          {planBlocked && (
+            <Alert.Root status="error" mt={3}>
+              <Alert.Indicator />
+              <Alert.Content>
+                <Alert.Title fontSize="lg">{t('auth.blockedTitle')}</Alert.Title>
+                <Alert.Description>{t('tillFix.blockedTill')}</Alert.Description>
+              </Alert.Content>
+            </Alert.Root>
+          )}
+
+          {/* Below xl there is no totals column to carry it. */}
+          {saveError && !payOpen && !planBlocked && (
+            <Alert.Root status="error" mt={3} display={{ base: 'flex', xl: 'none' }}>
+              <Alert.Indicator>
+                <AlertTriangle size={20} />
+              </Alert.Indicator>
+              <Alert.Content>
+                <Alert.Title>{saveError}</Alert.Title>
+              </Alert.Content>
+            </Alert.Root>
+          )}
+
           {/* The loud, unmissable "it went in". Big enough to read from
               arm's length, and undoable without hunting for a small icon. */}
           {lastAdded && (
@@ -2489,6 +2957,8 @@ export function CaissePage() {
               borderColor={returnMode ? 'red.emphasized' : 'green.emphasized'}
               bg={returnMode ? 'red.subtle' : 'green.subtle'}
               borderRadius="lg"
+              role="status"
+              aria-live="polite"
             >
               <Box color={returnMode ? 'red.fg' : 'green.fg'} flexShrink={0}>
                 {returnMode ? <Undo2 size={30} /> : <CheckCircle2 size={30} />}
@@ -2499,6 +2969,9 @@ export function CaissePage() {
                   fontWeight="bold"
                   color={returnMode ? 'red.fg' : 'green.fg'}
                   truncate
+                  dir="auto"
+                  _rtl={{ textAlign: 'right' }}
+                  title={lastAdded.name}
                 >
                   {lastAdded.name}
                 </Text>
@@ -2512,6 +2985,7 @@ export function CaissePage() {
                 variant="outline"
                 colorPalette="red"
                 flexShrink={0}
+                aria-label={t('tillFix.undoOne', { name: lastAdded.name })}
                 onClick={undoLastAdded}
               >
                 <Undo2 size={18} />
@@ -2521,7 +2995,7 @@ export function CaissePage() {
           )}
 
           {notice && (
-            <Alert.Root status={noticeStatus} mt={3}>
+            <Alert.Root status={noticeStatus} mt={3} aria-live="polite">
               <Alert.Indicator />
               <Alert.Content>
                 <Alert.Title fontSize="lg">{notice}</Alert.Title>
@@ -2587,7 +3061,9 @@ export function CaissePage() {
                 onClick={() => cart.resume(s.id, parkLabel())}
               >
                 <PlayCircle size={16} />
-                <Text truncate>{s.label}</Text>
+                <Text truncate title={s.label}>
+                  {s.label}
+                </Text>
               </Button>
               <IconButton
                 aria-label={t('common.delete')}
@@ -2630,7 +3106,7 @@ export function CaissePage() {
               overflowX="auto"
               overscrollBehavior="contain"
             >
-              <Table.Root size="md" stickyHeader>
+              <Table.Root size={{ base: 'sm', '2xl': 'md' }} stickyHeader>
                 <Table.Header>
                   <Table.Row bg="bg.panel">
                     <Table.ColumnHeader>{t('pos.product')}</Table.ColumnHeader>
@@ -2671,7 +3147,7 @@ export function CaissePage() {
           <Card.Root flexShrink={0}>
             <Card.Body p={4}>
               <Flex justify="space-between" color="fg.muted" fontSize="sm">
-                <Text>{`${cart.itemCount} ${t('pos.items')}`}</Text>
+                <Text>{t('tillFix.itemsCount', { count: cart.itemCount })}</Text>
                 {cart.discount > 0 && (
                   <Text color="orange.fg">
                     -{cart.discountPercent}% · -{money(cart.discount)}
@@ -2682,11 +3158,17 @@ export function CaissePage() {
               <Text color="fg.muted" mt={2}>
                 {isRefund ? t('pos.refundTotal') : t('pos.total')}
               </Text>
+              {/* Never cut: "87,00…" is the one figure the customer is told.
+                  A long amount takes a smaller size instead. */}
               <Heading
-                fontSize="var(--pos-total-size, 3rem)"
+                fontSize={
+                  money(Math.abs(cart.total)).length > 11
+                    ? '2rem'
+                    : 'var(--pos-total-size, 3rem)'
+                }
                 lineHeight="1.1"
                 color={isRefund ? 'red.fg' : 'brand.fg'}
-                truncate
+                whiteSpace="nowrap"
               >
                 {money(Math.abs(cart.total))}
               </Heading>
@@ -2737,6 +3219,7 @@ export function CaissePage() {
                     variant="subtle"
                     disabled={!canSettle || cart.total <= 0}
                     onClick={() => openPay('partial')}
+                    title={`${t('pos.partial')} · F3`}
                   >
                     <Wallet size={18} />
                     {t('pos.partialShort')}
@@ -2764,10 +3247,7 @@ export function CaissePage() {
                 flex="1"
                 variant="outline"
                 disabled={cart.lines.length === 0}
-                onClick={() => {
-                  setDiscountText(cart.discountPercent ? String(cart.discountPercent) : '')
-                  setDiscountOpen(true)
-                }}
+                onClick={openDiscount}
               >
                 <Percent size={18} />
                 {t('pos.discount')}
@@ -2776,7 +3256,8 @@ export function CaissePage() {
                 flex="1"
                 variant="outline"
                 disabled={cart.lines.length === 0}
-                onClick={() => cart.park(parkLabel())}
+                onClick={parkNow}
+                title={`${t('pos.park')} · F4`}
               >
                 <PauseCircle size={18} />
                 {t('pos.park')}
@@ -2807,7 +3288,11 @@ export function CaissePage() {
         display={{ base: 'flex', xl: 'none' }}
         flexShrink={0}
         align="center"
-        gap={3}
+        // When the screen is too narrow for everything, the buttons wrap to a
+        // second row; the total is never the one that gives way.
+        wrap="wrap"
+        justify="flex-end"
+        gap={2}
         p={3}
         borderWidth="1px"
         borderColor="border"
@@ -2815,32 +3300,36 @@ export function CaissePage() {
         bg="bg.panel"
         boxShadow="md"
       >
-        <Box minW={0} flex="1">
-          <Text fontSize="xs" color="fg.muted">
-            {`${cart.itemCount} ${t('pos.items')}`}
+        <Box flex="1 0 auto">
+          <Text fontSize="xs" color="fg.muted" truncate>
+            {t('tillFix.itemsCount', { count: cart.itemCount })}
           </Text>
+          {/* Never truncated: at 1024 px it read "87,00…". */}
           <Text
-            fontSize="2xl"
+            fontSize={{ base: 'xl', lg: '2xl' }}
             fontWeight="bold"
             color={isRefund ? 'red.fg' : 'brand.fg'}
-            truncate
+            whiteSpace="nowrap"
           >
             {money(Math.abs(cart.total))}
           </Text>
         </Box>
         <Button
-          size="lg"
+          size="md"
+          h="3rem"
           colorPalette="orange"
           variant="subtle"
           display={{ base: 'none', lg: 'inline-flex' }}
           disabled={!canSettle || cart.total <= 0}
           onClick={() => openPay('partial')}
+          title={`${t('pos.partial')} · F3`}
         >
           <Wallet size={18} />
           {t('pos.partialShort')}
         </Button>
         <Button
-          size="lg"
+          size="md"
+          h="3rem"
           colorPalette="red"
           variant="subtle"
           display={{ base: 'none', md: 'inline-flex' }}
@@ -2858,6 +3347,7 @@ export function CaissePage() {
           disabled={!canSettle}
           loading={busy}
           onClick={() => openPay('cash')}
+          title={`${isRefund ? t('pos.refundButton') : t('pos.pay')} · F2`}
         >
           <Banknote size={24} />
           {isRefund ? t('pos.refundButton') : t('pos.pay')}
@@ -2951,6 +3441,8 @@ export function CaissePage() {
                             fontWeight="bold"
                             whiteSpace="normal"
                             wordBreak="break-word"
+                            dir="auto"
+                            _rtl={{ textAlign: 'right' }}
                           >
                             {choiceName(c)}
                           </Text>
@@ -3007,151 +3499,183 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Create a product from the till ---------------- */}
-      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={newOpen} onOpenChange={(e) => setNewOpen(e.open)}>
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        scrollBehavior="inside"
+        size="lg"
+        open={newOpen}
+        onOpenChange={(e) => setNewOpen(e.open)}
+      >
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
             <Dialog.Content>
-              <Dialog.Header>
-                <Dialog.Title>{t('stock.addProduct')}</Dialog.Title>
-              </Dialog.Header>
-              <Dialog.Body>
-                <Stack gap={4}>
-                  {/* The wow moment, at the counter: a code this shop has never
-                      stocked, named by a bookshop it has never met. Prices stay
-                      his — see src/lib/catalog.ts. */}
-                  {recognised && (
-                    <Alert.Root status="info" variant="subtle">
-                      <Alert.Indicator />
-                      <Alert.Content gap={2}>
-                        <Alert.Title>{t('stock.recognised')}</Alert.Title>
-                        <Alert.Description>
-                          {/* The proposed name is what is being decided, so it
-                              is the biggest thing here. It used to be invisible:
-                              the banner showed only the brand and category while
-                              the name silently filled the field below, which is
-                              indistinguishable from the form remembering
-                              something this shop had typed before. */}
-                          <Text fontWeight="bold" fontSize="lg">
-                            {recognised.name}
-                          </Text>
-                          <Text fontSize="sm" color="fg.muted">
-                            {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
-                              t('stock.recognisedHint')}
-                          </Text>
-                        </Alert.Description>
-                        <HStack gap={2} wrap="wrap">
-                          <Button
-                            size="sm"
-                            colorPalette="brand"
-                            onClick={() => setNewName(recognised.name)}
-                          >
-                            {t('stock.recognisedUse')}
-                          </Button>
-                          <Button size="sm" variant="ghost" onClick={() => setRecognised(null)}>
-                            {t('stock.recognisedIgnore')}
-                          </Button>
-                        </HStack>
-                      </Alert.Content>
-                    </Alert.Root>
-                  )}
-                  <Field.Root required invalid={!!newError}>
-                    <Field.Label>{t('stock.name')}</Field.Label>
-                    <Input
-                      size="lg"
-                      autoFocus
-                      value={newName}
-                      onChange={(e) => setNewName(e.target.value)}
-                      placeholder={t('stock.namePlaceholder')}
-                    />
-                    <Field.ErrorText>{newError}</Field.ErrorText>
-                  </Field.Root>
-                  <Field.Root>
-                    <Field.Label>{t('stock.barcode')}</Field.Label>
-                    <Input
-                      size="lg"
-                      value={newCode}
-                      onChange={(e) => setNewCode(e.target.value)}
-                      inputMode="numeric"
-                    />
-                    {/* A warning, never a block: two products legitimately
-                        sharing one code is normal here — a publisher reuses an
-                        EAN across two variants — and the till already has a
-                        chooser for exactly that. What was wrong was saving a
-                        second one in silence, with the information to hand. */}
-                    {(() => {
-                      const key = loose(codeOf(newCode))
-                      if (key === '') return null
-                      const twin = products.find((p) => loose(codeOf(p.barcode)) === key)
-                      return twin ? (
-                        <Text fontSize="sm" color="orange.fg" mt={1}>
-                          {t('stock.codeTwin', { name: twin.name })}
-                        </Text>
-                      ) : null
-                    })()}
-                  </Field.Root>
-                  <HStack gap={4} align="flex-start">
-                    {/* Required, and it says so. A blank here used to save an
-                        article that rings up nothing — see saveNewProduct. */}
-                    <Field.Root required invalid={!!newPriceError}>
-                      <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
+              {/* A form, so Enter in any field saves — the cashier types the
+                  name, the price and presses Enter, as everywhere else. */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault()
+                  if (!busy) void saveNewProduct()
+                }}
+                style={{ display: 'contents' }}
+              >
+                <Dialog.Header>
+                  <Dialog.Title>{t('stock.addProduct')}</Dialog.Title>
+                </Dialog.Header>
+                <Dialog.Body>
+                  <Stack gap={4}>
+                    {/* The wow moment, at the counter: a code this shop has never
+                        stocked, named by a bookshop it has never met. Prices stay
+                        his — see src/lib/catalog.ts. */}
+                    {recognised && (
+                      <Alert.Root status="info" variant="subtle">
+                        <Alert.Indicator />
+                        <Alert.Content gap={2}>
+                          <Alert.Title>{t('stock.recognised')}</Alert.Title>
+                          <Alert.Description>
+                            {/* The proposed name is what is being decided, so it
+                                is the biggest thing here. It used to be invisible:
+                                the banner showed only the brand and category while
+                                the name silently filled the field below, which is
+                                indistinguishable from the form remembering
+                                something this shop had typed before. */}
+                            <Text fontWeight="bold" fontSize="lg">
+                              {recognised.name}
+                            </Text>
+                            <Text fontSize="sm" color="fg.muted">
+                              {[recognised.brand, recognised.category].filter(Boolean).join(' · ') ||
+                                t('stock.recognisedHint')}
+                            </Text>
+                          </Alert.Description>
+                          <HStack gap={2} wrap="wrap">
+                            <Button
+                              type="button"
+                              size="sm"
+                              colorPalette="brand"
+                              onClick={() => setNewName(recognised.name)}
+                            >
+                              {t('stock.recognisedUse')}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setRecognised(null)}
+                            >
+                              {t('stock.recognisedIgnore')}
+                            </Button>
+                          </HStack>
+                        </Alert.Content>
+                      </Alert.Root>
+                    )}
+                    <Field.Root required invalid={!!newError}>
+                      <Field.Label>{t('stock.name')}</Field.Label>
                       <Input
                         size="lg"
-                        value={newPrice}
-                        onChange={(e) => setNewPrice(e.target.value)}
-                        inputMode="decimal"
-                        placeholder={moneyPlaceholder()}
+                        autoFocus
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder={t('stock.namePlaceholder')}
                       />
-                      <Field.ErrorText>{newPriceError}</Field.ErrorText>
+                      <Field.ErrorText>{newError}</Field.ErrorText>
                     </Field.Root>
-                    {/* Defaulted to 1, not 0: he is holding one and selling it
-                        now. Zero froze "Rupture" onto the ticket line and then
-                        drove the stock to -1 on the sale. */}
                     <Field.Root>
-                      <Field.Label>{t('stock.quantity')}</Field.Label>
+                      <Field.Label>{t('stock.barcode')}</Field.Label>
                       <Input
                         size="lg"
-                        value={newQty}
-                        onChange={(e) => setNewQty(e.target.value)}
+                        value={newCode}
+                        onChange={(e) => setNewCode(e.target.value)}
                         inputMode="numeric"
                       />
+                      {/* A warning, never a block: two products legitimately
+                          sharing one code is normal here — a publisher reuses an
+                          EAN across two variants — and the till already has a
+                          chooser for exactly that. What was wrong was saving a
+                          second one in silence, with the information to hand. */}
+                      {(() => {
+                        const key = loose(codeOf(newCode))
+                        if (key === '') return null
+                        const twin = products.find((p) => loose(codeOf(p.barcode)) === key)
+                        return twin ? (
+                          <Text fontSize="sm" color="orange.fg" mt={1}>
+                            {t('stock.codeTwin', { name: twin.name })}
+                          </Text>
+                        ) : null
+                      })()}
                     </Field.Root>
-                    <Field.Root>
-                      <Field.Label>{`${t('stock.costPrice')} (${symbol})`}</Field.Label>
-                      <Input
-                        size="lg"
-                        value={newCost}
-                        onChange={(e) => setNewCost(e.target.value)}
-                        inputMode="decimal"
-                        placeholder={moneyPlaceholder()}
-                      />
-                      {/* A blank cost is allowed — a queue at the counter beats
-                          a correct margin — but it must not be invisible.
-                          costPrice 0 makes the article pure profit for ever in
-                          the rentabilite report, and nothing downstream can
-                          tell "free" from "nobody typed it". */}
-                      {(parseMoney(newCost) ?? 0) === 0 && (
-                        <Text fontSize="sm" color="orange.fg" mt={1}>
-                          {t('stock.costBlankWarn')}
-                        </Text>
-                      )}
-                    </Field.Root>
-                  </HStack>
-                </Stack>
-              </Dialog.Body>
-              <Dialog.Footer>
-                <Button size="lg" variant="outline" onClick={() => setNewOpen(false)}>
-                  {t('common.cancel')}
-                </Button>
-                <Button
-                  size="lg"
-                  colorPalette="brand"
-                  loading={busy}
-                  onClick={saveNewProduct}
-                >
-                  {t('common.save')}
-                </Button>
-              </Dialog.Footer>
+                    {/* One column on a narrow screen: three fields side by side
+                        in the default dialog wrapped every label. */}
+                    <SimpleGrid columns={{ base: 1, sm: 3 }} gap={4} alignItems="start">
+                      {/* Required, and it says so. A blank here used to save an
+                          article that rings up nothing — see saveNewProduct. */}
+                      <Field.Root required invalid={!!newPriceError}>
+                        <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
+                        <Input
+                          size="lg"
+                          value={newPrice}
+                          onChange={(e) => {
+                            setNewPrice(e.target.value)
+                            setNewPriceError('')
+                          }}
+                          inputMode="decimal"
+                          placeholder={moneyPlaceholder()}
+                        />
+                        <Field.ErrorText>{newPriceError}</Field.ErrorText>
+                      </Field.Root>
+                      {/* Defaulted to 1, not 0: he is holding one and selling it
+                          now. Zero froze "Rupture" onto the ticket line and then
+                          drove the stock to -1 on the sale. */}
+                      <Field.Root>
+                        <Field.Label>{t('stock.quantity')}</Field.Label>
+                        <Input
+                          size="lg"
+                          value={newQty}
+                          onChange={(e) => setNewQty(e.target.value)}
+                          inputMode="numeric"
+                        />
+                      </Field.Root>
+                      <Field.Root invalid={!!newCostError}>
+                        <Field.Label>{`${t('stock.costPrice')} (${symbol})`}</Field.Label>
+                        <Input
+                          size="lg"
+                          value={newCost}
+                          onChange={(e) => {
+                            setNewCost(e.target.value)
+                            setNewCostError('')
+                          }}
+                          inputMode="decimal"
+                          placeholder={moneyPlaceholder()}
+                        />
+                        <Field.ErrorText>{newCostError}</Field.ErrorText>
+                        {/* A blank cost is allowed — a queue at the counter beats
+                            a correct margin — but it must not be invisible.
+                            costPrice 0 makes the article pure profit for ever in
+                            the rentabilite report, and nothing downstream can
+                            tell "free" from "nobody typed it". */}
+                        {!newCostError && (parseMoney(newCost) ?? 0) === 0 && (
+                          <Text fontSize="sm" color="orange.fg" mt={1}>
+                            {t('stock.costBlankWarn')}
+                          </Text>
+                        )}
+                      </Field.Root>
+                    </SimpleGrid>
+                  </Stack>
+                </Dialog.Body>
+                <Dialog.Footer>
+                  <Button
+                    type="button"
+                    size="lg"
+                    variant="outline"
+                    onClick={() => setNewOpen(false)}
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                  <Button type="submit" size="lg" colorPalette="brand" loading={busy}>
+                    {t('common.save')}
+                  </Button>
+                </Dialog.Footer>
+              </form>
             </Dialog.Content>
           </Dialog.Positioner>
         </Portal>
@@ -3169,21 +3693,36 @@ export function CaissePage() {
               <Dialog.Body>
                 <Stack gap={4}>
                   <Text color="fg.muted">{t('pos.miscHint')}</Text>
-                  <Field.Root required>
+                  <Field.Root required invalid={!!miscNameError}>
                     <Field.Label>{t('pos.miscName')}</Field.Label>
                     <Input
                       size="lg"
                       autoFocus
                       value={miscName}
-                      onChange={(e) => setMiscName(e.target.value)}
+                      onChange={(e) => {
+                        setMiscName(e.target.value)
+                        setMiscNameError('')
+                      }}
+                      onKeyDown={(e) => {
+                        // Enter in the name goes on to the price, which is
+                        // what he types next; it used to do nothing.
+                        if (e.key !== 'Enter') return
+                        e.preventDefault()
+                        miscPriceRef.current?.focus()
+                      }}
                     />
+                    <Field.ErrorText>{miscNameError}</Field.ErrorText>
                   </Field.Root>
-                  <Field.Root required>
+                  <Field.Root required invalid={!!miscPriceError}>
                     <Field.Label>{`${t('pos.miscPrice')} (${symbol})`}</Field.Label>
                     <Input
+                      ref={miscPriceRef}
                       size="lg"
                       value={miscPrice}
-                      onChange={(e) => setMiscPrice(e.target.value)}
+                      onChange={(e) => {
+                        setMiscPrice(e.target.value)
+                        setMiscPriceError('')
+                      }}
                       inputMode="decimal"
                       placeholder={moneyPlaceholder()}
                       onKeyDown={(e) => {
@@ -3193,6 +3732,7 @@ export function CaissePage() {
                         }
                       }}
                     />
+                    <Field.ErrorText>{miscPriceError}</Field.ErrorText>
                   </Field.Root>
                 </Stack>
               </Dialog.Body>
@@ -3219,7 +3759,7 @@ export function CaissePage() {
                 <Dialog.Title>{t('pos.editPrice')}</Dialog.Title>
               </Dialog.Header>
               <Dialog.Body>
-                <Field.Root>
+                <Field.Root invalid={!!priceError}>
                   <Field.Label>
                     {priceLine?.name} ({symbol})
                   </Field.Label>
@@ -3227,32 +3767,37 @@ export function CaissePage() {
                     size="xl"
                     autoFocus
                     value={priceText}
-                    onChange={(e) => setPriceText(e.target.value)}
+                    onChange={(e) => {
+                      setPriceText(e.target.value)
+                      setPriceError('')
+                      setPriceZeroAsked(false)
+                    }}
                     inputMode="decimal"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter') {
                         e.preventDefault()
-                        const v = parseMoney(priceText)
-                        if (priceLine && v !== null) cart.setPrice(priceLine.id, v)
-                        setPriceLine(null)
+                        savePrice()
                       }
                     }}
                   />
+                  <Field.ErrorText fontSize="md">{priceError}</Field.ErrorText>
+                  {!priceError && priceLine && (
+                    <Field.HelperText>
+                      {/* What it was, so a change is a decision and not a guess;
+                          and a warning — never a block — under the cost. */}
+                      {money(priceLine.unitPrice)}
+                      {priceLine.unitCost > 0 &&
+                        (parseMoney(priceText) ?? priceLine.unitCost) < priceLine.unitCost &&
+                        ` · ${t('tillFix.belowCost', { cost: money(priceLine.unitCost) })}`}
+                    </Field.HelperText>
+                  )}
                 </Field.Root>
               </Dialog.Body>
               <Dialog.Footer>
                 <Button size="lg" variant="outline" onClick={() => setPriceLine(null)}>
                   {t('common.cancel')}
                 </Button>
-                <Button
-                  size="lg"
-                  colorPalette="brand"
-                  onClick={() => {
-                    const v = parseMoney(priceText)
-                    if (priceLine && v !== null) cart.setPrice(priceLine.id, v)
-                    setPriceLine(null)
-                  }}
-                >
+                <Button size="lg" colorPalette="brand" onClick={savePrice}>
                   {t('common.save')}
                 </Button>
               </Dialog.Footer>
@@ -3271,20 +3816,21 @@ export function CaissePage() {
                 <Dialog.Title>{t('pos.discountOnTotal')}</Dialog.Title>
               </Dialog.Header>
               <Dialog.Body>
-                <Field.Root>
+                <Field.Root invalid={!!discountError}>
                   <Field.Label fontSize="lg">{`${t('pos.discount')} (%)`}</Field.Label>
                   <Input
                     size="xl"
                     autoFocus
                     value={discountText}
-                    onChange={(e) => setDiscountText(e.target.value)}
+                    onChange={(e) => {
+                      setDiscountText(e.target.value)
+                      setDiscountError('')
+                    }}
                     onFocus={(e) => e.currentTarget.select()}
                     onKeyDown={(e) => {
                       if (e.key !== 'Enter') return
                       e.preventDefault()
-                      cart.setDiscountPercent(parsePercent(discountText) ?? 0)
-                      setDiscountOpen(false)
-                      focusScan()
+                      applyDiscount()
                     }}
                     inputMode="decimal"
                     placeholder="10"
@@ -3292,6 +3838,7 @@ export function CaissePage() {
                     fontSize="2xl"
                     fontWeight="bold"
                   />
+                  <Field.ErrorText fontSize="md">{discountError}</Field.ErrorText>
                   <Field.HelperText>
                     {`${t('pos.subtotal')} ${money(cart.subtotal)}`}
                   </Field.HelperText>
@@ -3306,7 +3853,10 @@ export function CaissePage() {
                       size="lg"
                       variant={Number(discountText) === pct ? 'solid' : 'outline'}
                       colorPalette="orange"
-                      onClick={() => setDiscountText(String(pct))}
+                      onClick={() => {
+                        setDiscountText(String(pct))
+                        setDiscountError('')
+                      }}
                     >
                       {pct}%
                     </Button>
@@ -3340,18 +3890,12 @@ export function CaissePage() {
                   onClick={() => {
                     cart.setDiscountPercent(0)
                     setDiscountOpen(false)
+                    focusScan()
                   }}
                 >
                   {t('pos.noDiscount')}
                 </Button>
-                <Button
-                  size="lg"
-                  colorPalette="brand"
-                  onClick={() => {
-                    cart.setDiscountPercent(parsePercent(discountText) ?? 0)
-                    setDiscountOpen(false)
-                  }}
-                >
+                <Button size="lg" colorPalette="brand" onClick={applyDiscount}>
                   {t('common.apply')}
                 </Button>
               </Dialog.Footer>
@@ -3361,12 +3905,47 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Settlement ---------------- */}
-      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={payOpen} onOpenChange={(e) => setPayOpen(e.open)}>
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        scrollBehavior="inside"
+        open={payOpen}
+        onOpenChange={(e) => setPayOpen(e.open)}
+        // A refund has no amount box, so the focus fell on the ✕ and the usual
+        // Enter closed the dialog with nothing recorded.
+        initialFocusEl={isRefund ? () => payConfirmRef.current : undefined}
+      >
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
             <Dialog.Content
               maxH="92dvh"
+              onKeyDownCapture={(e) => {
+                // The amount box and the buttons only: the client search is
+                // typed by a hand, however fast.
+                const el = e.target as HTMLElement
+                if (el.tagName === 'INPUT' && el !== amountRef.current) {
+                  payKeys.current = { at: 0, count: 0, before: '' }
+                  return
+                }
+                const at = e.nativeEvent.timeStamp || performance.now()
+                const k = payKeys.current
+                if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                  // A new run starts: remember the box as it was before it.
+                  if (at - k.at > MACHINE_GAP_MS) payKeys.current = { at, count: 1, before: received }
+                  else payKeys.current = { ...k, at, count: k.count + 1 }
+                  return
+                }
+                payKeys.current = { at: 0, count: 0, before: '' }
+                if (e.key !== 'Enter') return
+                if (k.count >= 4 && at - k.at < 150) {
+                  // @see payKeys
+                  e.preventDefault()
+                  e.stopPropagation()
+                  setReceived(k.before)
+                  failPay('amount', t('tillFix.scanInPay'))
+                }
+              }}
               /*
                 ENTER FINISHES THE SALE FROM ANYWHERE IN THIS DIALOG.
 
@@ -3379,8 +3958,9 @@ export function CaissePage() {
 
                 A scanner’s trailing Enter cannot reach this: the wedge
                 swallows it in the capture phase while a burst is pending (see
-                useBarcodeScanner). And a repeat press cannot double-record —
-                `busy` is already set by the first.
+                useBarcodeScanner), and payKeys above catches one that slipped
+                past. And a repeat press cannot double-record — `busy` is
+                already set by the first.
               */
               onKeyDown={(e) => {
                 if (e.key !== 'Enter' || e.defaultPrevented || busy) return
@@ -3401,11 +3981,13 @@ export function CaissePage() {
             >
               <Dialog.Header>
                 <Dialog.Title>
-                  {payKind === 'cash'
-                    ? t('pos.pay')
-                    : payKind === 'credit'
-                      ? t('pos.credit')
-                      : t('pos.partial')}
+                  {isRefund
+                    ? t('pos.refundButton')
+                    : payKind === 'cash'
+                      ? t('pos.pay')
+                      : payKind === 'credit'
+                        ? t('pos.credit')
+                        : t('pos.partial')}
                 </Dialog.Title>
                 <Dialog.CloseTrigger asChild>
                   <IconButton aria-label={t('common.close')} variant="ghost" size="sm">
@@ -3416,17 +3998,17 @@ export function CaissePage() {
 
               <Dialog.Body overflowY="auto">
                 <Stack gap={4}>
-                  <Flex justify="space-between" align="baseline">
+                  <Flex justify="space-between" align="baseline" gap={3}>
                     <Text color="fg.muted" fontSize="lg">
                       {isRefund ? t('pos.refundTotal') : t('pos.total')}
                     </Text>
-                    <Heading size="2xl" color={isRefund ? 'red.600' : 'brand.fg'}>
+                    <Heading size="2xl" color={isRefund ? 'red.600' : 'brand.fg'} whiteSpace="nowrap">
                       {money(Math.abs(cart.total))}
                     </Heading>
                   </Flex>
 
                   {payKind !== 'cash' && (
-                    <Field.Root invalid={!!payError && !customerId}>
+                    <Field.Root invalid={payErrorOn === 'client' && !!payError}>
                       <Field.Label>{t('pos.client')}</Field.Label>
                       <ClientPicker
                         customers={customers}
@@ -3442,17 +4024,19 @@ export function CaissePage() {
                     </Field.Root>
                   )}
 
-                  {payKind !== 'credit' && !isRefund && (
-                    <Field.Root>
+                  {amountShown && (
+                    <Field.Root invalid={payErrorOn === 'amount' && !!payError}>
                       <Field.Label>
                         {payKind === 'cash'
                           ? `${t('pos.amountGiven')} (${symbol})`
                           : `${t('pos.amountReceived')} (${symbol})`}
                       </Field.Label>
                       <Input
+                        ref={amountRef}
                         size="xl"
                         autoFocus={payKind === 'cash'}
                         inputMode="decimal"
+                        autoComplete="off"
                         placeholder={
                           payKind === 'cash' ? t('pos.payExact') : '0.000'
                         }
@@ -3468,13 +4052,19 @@ export function CaissePage() {
                           }
                         }}
                       />
+                      <Field.ErrorText fontSize="md" fontWeight="semibold">
+                        {payError}
+                      </Field.ErrorText>
                       {quickCash.length > 0 && payKind === 'cash' && (
                         <HStack gap={2} mt={2} wrap="wrap">
                           <Button
                             size="lg"
                             variant="subtle"
                             data-enter-confirms=""
-                            onClick={() => setReceived(String(fromMinor(cart.total)))}
+                            onClick={() => {
+                              setReceived(String(fromMinor(cart.total)))
+                              setPayError('')
+                            }}
                           >
                             {t('pos.payExact')}
                           </Button>
@@ -3484,7 +4074,10 @@ export function CaissePage() {
                               size="lg"
                               variant="outline"
                               data-enter-confirms=""
-                              onClick={() => setReceived(String(fromMinor(v)))}
+                              onClick={() => {
+                                setReceived(String(fromMinor(v)))
+                                setPayError('')
+                              }}
                             >
                               {money(v)}
                             </Button>
@@ -3494,14 +4087,25 @@ export function CaissePage() {
                     </Field.Root>
                   )}
 
+                  {/* No amount box to hang it under (credit, refund): a refused
+                      scan still has to be said somewhere he is looking. */}
+                  {!amountShown && payErrorOn === 'amount' && payError && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{payError}</Alert.Title>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   <Separator />
 
                   {payKind === 'cash' && !isRefund && (
-                    <Flex justify="space-between" align="baseline">
+                    <Flex justify="space-between" align="baseline" gap={3}>
                       <Text color="fg.muted" fontSize="lg">
                         {t('pos.change')}
                       </Text>
-                      <Heading size="3xl" color="green.600">
+                      <Heading size="3xl" color="green.600" whiteSpace="nowrap">
                         {money(changeDue)}
                       </Heading>
                     </Flex>
@@ -3534,8 +4138,9 @@ export function CaissePage() {
                   {t('common.cancel')}
                 </Button>
                 <Button
+                  ref={payConfirmRef}
                   size="lg"
-                  colorPalette="brand"
+                  colorPalette={isRefund ? 'red' : 'green'}
                   loading={busy}
                   onClick={confirmPay}
                 >
@@ -3548,42 +4153,78 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* ---------------- Ticket after a sale ---------------- */}
-      <Dialog.Root lazyMount unmountOnExit scrollBehavior="inside" open={!!ticket} onOpenChange={(e) => !e.open && setTicket(null)}>
+      <Dialog.Root
+        lazyMount
+        unmountOnExit
+        scrollBehavior="inside"
+        open={!!ticket}
+        onOpenChange={(e) => !e.open && setTicket(null)}
+        /*
+          Enter prints, on purpose and said on the button. Ark ignored the old
+          autoFocus on "Nouveau ticket" and the focus fell on "80mm" anyway, so
+          Enter printed by accident and a second Enter printed twice. After a
+          print the focus moves to "Nouveau ticket" (see the print effect).
+        */
+        initialFocusEl={() => printBtnRef.current}
+      >
         <Portal>
           <Dialog.Backdrop />
           <Dialog.Positioner>
             <Dialog.Content>
               <Dialog.Header>
-                <Dialog.Title>
-                  {t('pos.saved')} — {ticket?.ticketNo}
-                </Dialog.Title>
+                <Box minW={0}>
+                  <Dialog.Title>{t('pos.saved')}</Dialog.Title>
+                  <Text color="fg.muted" fontSize="sm" fontFamily="mono">
+                    {ticket?.ticketNo}
+                  </Text>
+                </Box>
               </Dialog.Header>
               <Dialog.Body>
                 {ticket && (
                   <Stack gap={2}>
-                    <Flex justify="space-between">
-                      <Text color="fg.muted">{t('pos.total')}</Text>
-                      <Text fontWeight="bold">{money(ticket.total)}</Text>
-                    </Flex>
-                    <Flex justify="space-between">
-                      <Text color="fg.muted">{t('pos.paidLabel')}</Text>
-                      <Text>{money(ticket.paid)}</Text>
-                    </Flex>
-                    {ticket.received > ticket.total && (
-                      <Flex justify="space-between" fontSize="xl">
-                        <Text color="fg.muted">{t('pos.change')}</Text>
-                        <Text fontWeight="bold" color="green.600">
-                          {money(ticket.received - ticket.total)}
+                    {/* The one figure the cashier acts on next — the change to
+                        count out, or the money to hand back — is the biggest
+                        thing here, not a row under two lines of grey text. */}
+                    {ticket.total < 0 ? (
+                      <Box textAlign="center" py={2}>
+                        <Text color="fg.muted" fontSize="lg">
+                          {t('tillFix.refundedToClient')}
                         </Text>
-                      </Flex>
+                        <Text fontSize="5xl" fontWeight="bold" color="red.fg" lineHeight="1.1">
+                          {money(Math.abs(ticket.total))}
+                        </Text>
+                      </Box>
+                    ) : (
+                      ticket.received > ticket.total && (
+                        <Box textAlign="center" py={2}>
+                          <Text color="fg.muted" fontSize="lg">
+                            {t('pos.change')}
+                          </Text>
+                          <Text fontSize="5xl" fontWeight="bold" color="green.fg" lineHeight="1.1">
+                            {money(ticket.received - ticket.total)}
+                          </Text>
+                        </Box>
+                      )
                     )}
-                    {ticket.total - ticket.paid > 0 && (
-                      <Flex justify="space-between">
-                        <Text color="fg.muted">{t('pos.creditLabel')}</Text>
-                        <Text fontWeight="bold" color="red.600">
-                          {money(ticket.total - ticket.paid)}
-                        </Text>
-                      </Flex>
+                    {ticket.total >= 0 && (
+                      <>
+                        <Flex justify="space-between">
+                          <Text color="fg.muted">{t('pos.total')}</Text>
+                          <Text fontWeight="bold">{money(ticket.total)}</Text>
+                        </Flex>
+                        <Flex justify="space-between">
+                          <Text color="fg.muted">{t('pos.paidLabel')}</Text>
+                          <Text>{money(ticket.paid)}</Text>
+                        </Flex>
+                        {ticket.total - ticket.paid > 0 && (
+                          <Flex justify="space-between">
+                            <Text color="fg.muted">{t('pos.creditLabel')}</Text>
+                            <Text fontWeight="bold" color="red.600">
+                              {money(ticket.total - ticket.paid)}
+                            </Text>
+                          </Flex>
+                        )}
+                      </>
                     )}
                   </Stack>
                 )}
@@ -3603,19 +4244,25 @@ export function CaissePage() {
                   {t('pos.nextCustomerHint')}
                 </Text>
               </Dialog.Body>
-              <Dialog.Footer>
-                <Button size="lg" variant="outline" onClick={() => doPrint('thermal')}>
+              <Dialog.Footer flexWrap="wrap">
+                <Button
+                  ref={printBtnRef}
+                  size="lg"
+                  colorPalette="brand"
+                  title="80mm"
+                  onClick={() => doPrint('thermal')}
+                >
                   <Printer size={18} />
-                  80mm
+                  {t('tillFix.printEnter')}
                 </Button>
                 <Button size="lg" variant="outline" onClick={() => doPrint('a4')}>
                   <Printer size={18} />
                   A4
                 </Button>
                 <Button
+                  ref={newTicketRef}
                   size="lg"
-                  colorPalette="brand"
-                  autoFocus
+                  variant="outline"
                   onClick={() => {
                     setTicket(null)
                     focusScan()
@@ -3910,8 +4557,7 @@ export function CaissePage() {
                     disabled={cart.lines.length === 0}
                     onClick={() => {
                       setMoreOpen(false)
-                      setDiscountText(cart.discountPercent ? String(cart.discountPercent) : '')
-                      setDiscountOpen(true)
+                      openDiscount()
                     }}
                   >
                     <Percent size={20} />
@@ -3923,7 +4569,7 @@ export function CaissePage() {
                     disabled={cart.lines.length === 0}
                     onClick={() => {
                       setMoreOpen(false)
-                      cart.park(parkLabel())
+                      parkNow()
                     }}
                   >
                     <PauseCircle size={20} />
@@ -3951,7 +4597,7 @@ export function CaissePage() {
       </Dialog.Root>
 
       {/* Hidden on screen; revealed by the print stylesheet */}
-      {ticket && <Ticket data={ticket} shop={shop} symbol={symbol} paper={paper} />}
+      {ticket && <Ticket data={ticket} shop={shop} paper={paper} />}
 
       {/* The till, stopped: an article nobody has entered. See the state. */}
       {unknown && (

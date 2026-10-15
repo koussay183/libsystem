@@ -352,6 +352,13 @@ export function recordSale(input: RecordSaleInput): RecordedSale {
   if (unpaid > 0 && !input.customerId) {
     throw new Error('recordSale: unpaid balance requires a customer')
   }
+  // The client was deleted (on the other till, say) while the ticket was being
+  // rung up: the balance increment on his missing document would make the
+  // server refuse the whole batch, ticket included. Refused here instead,
+  // before anything is queued. The same check updateSale makes.
+  if (unpaid > 0 && input.customerId && isLiveCustomer(input.customerId) === false) {
+    throw new CustomerMissingError()
+  }
 
   const now = Date.now()
   const ticketNo = makeTicketNo(now)
@@ -512,13 +519,32 @@ export class SaleGoneError extends Error {
  * 1×, a correction made here from the stale 2× would write 2× back while the
  * counters moved as if from 1× — the other correction silently undone and the
  * stock off by one. Asked of the server under the same short deadline as the
- * carnet line; offline, the copy in hand is the best there is and is used.
+ * carnet line; offline, this device's cache, and the copy in hand only when the
+ * cache has never seen the ticket.
+ *
+ * This narrows the two-tills race, it does not close it: two tills that are
+ * both offline still each void or correct the same ticket from their own copy.
+ * Only a rule on the server can refuse the second one.
  */
 async function freshSale(given: Sale): Promise<Sale> {
-  const snap = await withDeadline(getDoc(doc(db, shopPath(SALES), given.id)), READ_DEADLINE_MS)
-  if (!snap || snap.metadata.fromCache) return given
-  if (!snap.exists()) throw new SaleGoneError()
-  return { id: snap.id, ...(snap.data() as Omit<Sale, 'id'>) }
+  const ref = doc(db, shopPath(SALES), given.id)
+  const snap = await withDeadline(getDoc(ref), READ_DEADLINE_MS)
+  if (snap && !snap.metadata.fromCache) {
+    if (!snap.exists()) throw new SaleGoneError()
+    return { id: snap.id, ...(snap.data() as Omit<Sale, 'id'>) }
+  }
+  /*
+    No server answer. The cache still knows more than the copy in hand: it
+    holds this till's own pending corrections, and it knows when the ticket
+    has already been voided here or by a sync from the other till. Voiding
+    that ticket a second time from a stale list put its stock back twice and
+    took its debt off the client twice. Only a cache that has never seen the
+    ticket falls back to `given`.
+  */
+  const cached = await getDocFromCache(ref).catch(() => null)
+  if (!cached) return given
+  if (!cached.exists()) throw new SaleGoneError()
+  return { id: cached.id, ...(cached.data() as Omit<Sale, 'id'>) }
 }
 
 /** The ticket leaves money unpaid and the chosen client no longer exists. */
@@ -684,10 +710,15 @@ export async function updateSale(
     discount: edit.discount,
     total: edit.total,
     paid: edit.paid,
-    // `received` is the cash handed over, which only the till knows. Kept when
-    // the paid figure did not move; otherwise the new paid figure is the best
-    // available truth.
-    received: edit.paid === before.paid ? (before.received ?? before.paid) : edit.paid,
+    // `received` is the cash handed over, which only the till knows. Kept only
+    // when the correction moved neither the paid figure nor the total: once
+    // the total moves (a forgotten article added), the old cash no longer
+    // describes this ticket, and the reprint showed "Rendu" next to
+    // "Reste (crédit)".
+    received:
+      edit.paid === before.paid && edit.total === before.total
+        ? (before.received ?? before.paid)
+        : edit.paid,
     mode: paymentModeOf(edit.total, edit.paid),
     onCredit: unpaid > 0,
     customerId: edit.customerId,

@@ -68,6 +68,7 @@ const PARKED_LEGACY_KEY = 'pos.parked.v3'
 
 /** Nobody sells a thousand of anything on one line — past this it is a typo. */
 const MAX_QTY = 999
+export const POS_MAX_QTY = MAX_QTY
 
 /**
  * Where the ticket CURRENTLY on the counter is mirrored, as opposed to the
@@ -286,8 +287,44 @@ function forgetDraft(): void {
   }
 }
 
+/**
+ * A reload, a close or a navigation away hands the basket back.
+ *
+ * TAB_ID is a module constant, so F5 — which the sync banner and the crash
+ * screen both tell the cashier to press — comes back as a NEW tab and found its
+ * own basket "held" by the page it had just replaced: a claim a few seconds
+ * old, refused for LIVE_TAB_MS, and overwritten by the next scan. An ownerless
+ * draft is adoptable at once (see loadDraft). A page parked in the back/forward
+ * cache (`persisted`) may come back holding its lines, so it keeps its claim.
+ *
+ * Not a sessionStorage id: "Dupliquer l'onglet" copies sessionStorage, and two
+ * live tabs sharing one id is the double-sell the owner check exists to stop.
+ */
+if (typeof window !== 'undefined') {
+  window.addEventListener('pagehide', (e: PageTransitionEvent) => {
+    if (e.persisted) return
+    const key = draftKey()
+    if (!key) return
+    try {
+      const raw = localStorage.getItem(key)
+      if (!raw) return
+      const d = JSON.parse(raw) as Partial<StoredDraft> | null
+      if (!d || d.owner !== TAB_ID) return
+      const released: Partial<StoredDraft> = { ...d }
+      delete released.owner
+      localStorage.setItem(key, JSON.stringify(released))
+    } catch {
+      /* best-effort, like the mirror */
+    }
+  })
+}
+
 let seq = 0
 const nextId = () => `l${Date.now().toString(36)}${(seq++).toString(36)}`
+
+/** Parked tickets need ids that two parks in the same millisecond cannot share. */
+const parkId = () =>
+  `p${Date.now().toString(36)}${(seq++).toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`
 
 function parkedKey(): string | null {
   const shop = currentShopId()
@@ -372,6 +409,44 @@ export function usePosCart() {
       /* storage full or unavailable — parking is best-effort */
     }
   }, [parked])
+
+  /**
+   * Another till tab parked or resumed a ticket. Without this each tab wrote
+   * its own stale list over the other's, and a parked customer vanished. The
+   * echo write above stores an identical value, which fires no event, so the
+   * two tabs do not ping-pong.
+   */
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      // null: localStorage.clear() in another tab.
+      if (e.key !== null && e.key !== parkedKey()) return
+      setParked(loadParked())
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  /**
+   * A tab that died without a pagehide (the renderer crashed, Windows killed
+   * the browser) leaves a claim that looks live for LIVE_TAB_MS, so the first
+   * load refused it. Look once more after that: a dead holder has stopped
+   * re-stamping and loadDraft adopts it; a live one is still refused. Only on a
+   * till that is still empty — a cashier who started a new ticket meanwhile
+   * keeps it.
+   */
+  useEffect(() => {
+    if (restored.lines.length > 0) return
+    const timer = setTimeout(() => {
+      if (counter.current.lines.length > 0) return
+      const late = loadDraft()
+      if (late.lines.length === 0) return
+      setLines(late.lines)
+      setDiscountState(late.discountPercent)
+    }, LIVE_TAB_MS + 1_000)
+    return () => clearTimeout(timer)
+    // Once per mount, on purpose: this answers the first load only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   /**
    * Mirror the open ticket after every change to it, so the copy on disk is
@@ -552,16 +627,21 @@ export function usePosCart() {
     const n = Number.isFinite(qty)
       ? Math.max(-MAX_QTY, Math.min(MAX_QTY, Math.trunc(qty)))
       : 0
-    setLines((prev) =>
-      n === 0
+    setLines((prev) => {
+      // A pack line is sold and returned only as a whole: one more unit of it
+      // at its prorated price no longer adds up to the pack price on screen.
+      if (prev.some((l) => l.id === id && l.packUid)) return prev
+      return n === 0
         ? prev.filter((l) => l.id !== id)
-        : prev.map((l) => (l.id === id ? { ...l, qty: n } : l)),
-    )
+        : prev.map((l) => (l.id === id ? { ...l, qty: n } : l))
+    })
   }, [])
 
   const setPrice = useCallback((id: string, unitPrice: number) => {
     setLines((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, unitPrice, priceEdited: true } : l)),
+      prev.map((l) =>
+        l.id === id && !l.packUid ? { ...l, unitPrice, priceEdited: true } : l,
+      ),
     )
   }, [])
 
@@ -630,24 +710,26 @@ export function usePosCart() {
     setDiscountState(0)
   }, [])
 
+  /**
+   * Read from the counter and written with three plain calls, like resume().
+   * It used to nest setParked inside the setLines updater, and React may run an
+   * updater twice: one F4 parked the same ticket four times under one id.
+   */
   const park = useCallback((label: string) => {
-    setLines((current) => {
-      if (current.length === 0) return current
-      setDiscountState((currentPercent) => {
-        setParked((prev) => [
-          ...prev,
-          {
-            id: `${Date.now()}`,
-            label,
-            at: Date.now(),
-            lines: current,
-            discountPercent: currentPercent,
-          },
-        ])
-        return 0
-      })
-      return []
-    })
+    const { lines: current, discount: currentPercent } = counter.current
+    if (current.length === 0) return
+    setParked((prev) => [
+      ...prev,
+      {
+        id: parkId(),
+        label,
+        at: Date.now(),
+        lines: current,
+        discountPercent: currentPercent,
+      },
+    ])
+    setLines([])
+    setDiscountState(0)
   }, [])
 
   /**
@@ -670,7 +752,7 @@ export function usePosCart() {
       return [
         ...rest,
         {
-          id: `${Date.now()}`,
+          id: parkId(),
           label: currentLabel,
           at: Date.now(),
           lines: current,

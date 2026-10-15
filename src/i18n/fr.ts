@@ -214,6 +214,36 @@ export const fr = {
     recordedHere:
       'Le ticket est enregistré sur cet ordinateur. L’envoi au serveur se fait tout seul — le voyant en haut de l’écran indique où il en est.',
   },
+  // Caisse, ventes et factures. « Articles : 3 » plutôt que « 3 articles » :
+  // pas de pluriel _one/_other (voir la note au-dessus de `filters`).
+  tillFix: {
+    itemsCount: 'Articles : {{count}}',
+    missing: 'Il manque {{amount}}',
+    amountAbsurd: 'Montant anormal ({{amount}}) — vérifiez la somme reçue',
+    scanInPay:
+      'Article non ajouté : un paiement est ouvert. Annulez-le (Échap), scannez l’article, puis encaissez.',
+    blockedTill:
+      'Abonnement expiré : la caisse n’enregistre plus de vente. Renouvelez l’abonnement pour reprendre.',
+    printEnter: 'Imprimer · Entrée',
+    refundedToClient: 'Rendu au client',
+    priceZero: 'Prix à 0 : l’article sera offert. Appuyez encore sur Enregistrer pour confirmer.',
+    belowCost: 'Sous le prix d’achat ({{cost}})',
+    discountInvalid: 'Remise illisible : tapez un pourcentage de 0 à 100',
+    miscNameRequired: 'Tapez une désignation',
+    miscPriceRequired: 'Tapez un prix supérieur à 0',
+    qtyInvalid: 'Quantité : un nombre entier de 1 à {{max}}',
+    qtyTooBig: 'Quantité trop grande (max {{max}})',
+    priceTooBig: 'Prix anormal — vérifiez le montant',
+    priceMissing: 'Prix manquant',
+    dateFuture: 'La date ne peut pas être dans le futur',
+    packRemove: 'Retirer le pack',
+    packReturn: 'Passer le pack en retour',
+    packUndoReturn: 'Annuler le retour du pack',
+    packLocked: 'Article d’un pack : il se vend et se rend avec le pack entier',
+    undoOne: 'Retirer une unité : {{name}}',
+    removeLine: 'Supprimer la ligne : {{name}}',
+    soundMuted: 'Son coupé',
+  },
   catalog: {
     title: 'Catalogue',
     subtitle:
@@ -598,12 +628,13 @@ export const fr = {
     editHint: 'Le stock, les compteurs de vente et le carnet du client sont corrigés en même temps.',
     putOnCarnet: 'Mettre sur le carnet de…',
     wasPaid: 'Ce ticket était payé comptant. Ce qui reste ira sur le carnet du client choisi.',
-    voidTicket: 'Annuler le ticket',
-    voidConfirm: 'Annuler définitivement le ticket {{ref}} ? Le stock et le carnet seront remis comme avant.',
+    voidTicket: 'Supprimer la vente',
+    voidConfirm:
+      'Supprimer définitivement la vente {{ref}} ? Le stock et le carnet du client seront remis comme avant.',
     saveChanges: 'Enregistrer les modifications',
     addProduct: 'Ajouter un article oublié',
     removeLine: 'Retirer la ligne',
-    keepOneLine: 'Un ticket garde au moins une ligne — pour tout retirer, utilisez « Annuler le ticket ».',
+    keepOneLine: 'Un ticket garde au moins une ligne — pour tout retirer, utilisez « Supprimer la vente ».',
     qtyInvalid: 'Quantité invalide',
     priceInvalid: 'Prix invalide',
     discountTooBig: 'La remise dépasse le sous-total',

@@ -76,8 +76,27 @@ function stampFor(dateStr: string, original: number): number {
   if (!d.isValid()) return original
   const t = dayjs(original)
   if (d.isSame(t, 'day')) return original
-  return d.hour(t.hour()).minute(t.minute()).second(t.second()).millisecond(0).valueOf()
+  const stamp = d.hour(t.hour()).minute(t.minute()).second(t.second()).millisecond(0).valueOf()
+  // Never later than now: a ticket dated in the future counted as "today" on
+  // every list and sat on top of them for good. save() refuses such a day; this
+  // is the belt to that brace for today's date at a later hour.
+  return Math.min(stamp, Date.now())
 }
+
+/** True when the chosen day is after today. The `max` attribute stops the
+ * picker, not a date typed in by hand. */
+function isFutureDay(dateStr: string): boolean {
+  const d = dayjs(dateStr)
+  return d.isValid() && d.isAfter(dayjs(), 'day')
+}
+
+/**
+ * Past these a line is a typo, not a sale: 999 999 999 notebooks went through
+ * once and the dashboard read 800 million dinars. Wholesale orders run to the
+ * hundreds, so the cap leaves room; the unit price cap is 100 000 DT.
+ */
+const MAX_EDIT_QTY = 9999
+const MAX_UNIT_PRICE = 100_000_000 // millimes
 
 /**
  * CORRECTING A TICKET THAT HAS ALREADY BEEN RUNG UP.
@@ -157,7 +176,10 @@ export function SaleEditor({
 
   // --- arithmetic -----------------------------------------------------------
 
-  const qtyOf = (l: EditLine) => parseQuantity(l.qtyStr)
+  // Whole units only: parseQuantity reads "2,5" as 2, and the corrected ticket
+  // must not say something other than what was typed.
+  const qtyOf = (l: EditLine) =>
+    /^\d+$/.test(l.qtyStr.replace(/\s/g, '')) ? parseQuantity(l.qtyStr) : null
 
   /**
    * A PRICE OF ZERO IS A PRICE, and this is what stopped the whole feature
@@ -200,11 +222,17 @@ export function SaleEditor({
     const q = qtyOf(l)
     const p = priceOf(l)
     if (q === null || q <= 0) return t('sales.qtyInvalid')
+    if (q > MAX_EDIT_QTY) return t('tillFix.qtyTooBig', { max: MAX_EDIT_QTY })
     if (p === null || p < 0) return t('sales.priceInvalid')
+    if (p > MAX_UNIT_PRICE) return t('tillFix.priceTooBig')
     return ''
   })
+  const anyLineProblem = lineProblems.some(Boolean)
   const discountTooBig = subtotal > 0 && (parseMoney(discountStr) ?? 0) > subtotal
-  const paidTooBig = !refund && (parseMoney(paidStr) ?? 0) > total
+  // Not judged while a line is wrong: an unreadable price counts as 0, and
+  // "le montant payé dépasse le total" then pointed at the wrong field.
+  const paidTooBig = !refund && !anyLineProblem && (parseMoney(paidStr) ?? 0) > total
+  const dateInFuture = isFutureDay(dateStr)
   /*
     Typed, but not a number — "2O" with a letter O, say.
 
@@ -218,8 +246,12 @@ export function SaleEditor({
 
   // --- line edits -------------------------------------------------------------
 
-  const patchLine = (i: number, patch: Partial<EditLine>) =>
+  // Every edit clears the last refusal: "Prix invalide" used to stay on screen
+  // after the price had been corrected.
+  const patchLine = (i: number, patch: Partial<EditLine>) => {
+    setError('')
     setLines((prev) => prev.map((l, k) => (k === i ? { ...l, ...patch } : l)))
+  }
 
   const bump = (i: number, delta: number) => {
     const l = lines[i]
@@ -237,15 +269,19 @@ export function SaleEditor({
   }
 
   /**
-   * A forgotten article. The same product on an existing sale line is simply
-   * one more of it; anything else is a new line at today's shelf price and
+   * A forgotten article. The same product on a line already at today's shelf
+   * price is one more of it; a pack line (apportioned price), a renegotiated
+   * line, or anything else becomes a new line at today's shelf price and
    * today's cost — the ticket is being corrected today, and the owner can
-   * still type the price that was actually agreed.
+   * still type the price that was actually agreed. Merging into a pack line
+   * sold the forgotten notebook at its 1,200 share instead of 1,500.
    */
   const addProduct = (p: Product) => {
     setError('')
     setLines((prev) => {
-      const i = prev.findIndex((l) => l.productId === p.id && l.sign === 1)
+      const i = prev.findIndex(
+        (l) => l.productId === p.id && l.sign === 1 && priceOf(l) === p.salePrice,
+      )
       if (i >= 0) {
         const cur = parseQuantity(prev[i].qtyStr) ?? 0
         return prev.map((l, k) => (k === i ? { ...l, qtyStr: String(cur + 1) } : l))
@@ -295,8 +331,12 @@ export function SaleEditor({
   const save = async () => {
     if (submitting.current) return
     setError('')
-    if (lineProblems.some(Boolean)) {
+    if (anyLineProblem) {
       setError(lineProblems.find(Boolean) ?? '')
+      return
+    }
+    if (dateInFuture) {
+      setError(t('tillFix.dateFuture'))
       return
     }
     if (discountInvalid || paidInvalid) {
@@ -517,7 +557,10 @@ export function SaleEditor({
                       size="lg"
                       inputMode="decimal"
                       value={discountStr}
-                      onChange={(e) => setDiscountStr(e.target.value)}
+                      onChange={(e) => {
+                        setDiscountStr(e.target.value)
+                        setError('')
+                      }}
                       placeholder={moneyPlaceholder()}
                       disabled={subtotal <= 0}
                     />
@@ -533,7 +576,10 @@ export function SaleEditor({
                         size="lg"
                         inputMode="decimal"
                         value={paidStr}
-                        onChange={(e) => setPaidStr(e.target.value)}
+                        onChange={(e) => {
+                          setPaidStr(e.target.value)
+                          setError('')
+                        }}
                         placeholder={moneyPlaceholder()}
                         fontWeight={toCredit ? 'bold' : undefined}
                       />
@@ -554,15 +600,19 @@ export function SaleEditor({
                     </Field.Root>
                   )}
 
-                  <Field.Root>
+                  <Field.Root invalid={dateInFuture}>
                     <Field.Label>{t('sales.date')}</Field.Label>
                     <Input
                       size="lg"
                       type="date"
                       value={dateStr}
                       max={dayjs().format('YYYY-MM-DD')}
-                      onChange={(e) => setDateStr(e.target.value)}
+                      onChange={(e) => {
+                        setDateStr(e.target.value)
+                        setError('')
+                      }}
                     />
+                    <Field.ErrorText>{t('tillFix.dateFuture')}</Field.ErrorText>
                   </Field.Root>
                 </SimpleGrid>
 
@@ -617,13 +667,13 @@ export function SaleEditor({
                       {money(Math.abs(total))}
                     </Text>
                   </Flex>
-                  {!refund && (
+                  {/* Only when something goes on the carnet: with nothing
+                      left to pay it read "Payé", then "Payé" again below. */}
+                  {!refund && remaining > 0 && (
                     <Flex justify="space-between" mt={1}>
                       <Text color="fg.muted">{t('credit.putOnAccount')}</Text>
-                      <Text fontWeight="bold" color={remaining > 0 ? 'red.600' : 'green.600'}>
-                        {remaining > 0
-                          ? `${money(remaining)}${customer ? ` · ${customer.name}` : ''}`
-                          : t('sales.paid')}
+                      <Text fontWeight="bold" color="red.600">
+                        {`${money(remaining)}${customer ? ` · ${customer.name}` : ''}`}
                       </Text>
                     </Flex>
                   )}
