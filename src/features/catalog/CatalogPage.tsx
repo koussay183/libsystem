@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Alert,
@@ -17,7 +17,7 @@ import {
   Text,
 } from '@chakra-ui/react'
 import { BookMarked, Check, Library, Plus } from 'lucide-react'
-import { formatMoney, moneySymbolKey, parseQuantity } from '@/lib/money'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { useDebounced } from '@/lib/useDebounced'
 import { useCatalog } from './useCatalog'
 import type { CatalogItem } from './useCatalog'
@@ -25,7 +25,9 @@ import { useProducts, createProduct } from '@/features/stock/useProducts'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { ProductForm } from '@/features/stock/ProductForm'
-import { codeOf, loose } from '@/features/stock/barcode'
+import { codeOf, loose, scannedCode } from '@/features/stock/barcode'
+import { ScanWedge } from '@/features/stock/ScanWedge'
+import { readCount, countMessage } from '@/features/stock/quantity'
 import { marginFromPrices } from '@/features/stock/pricing'
 import { SearchInput } from '@/components/SearchInput'
 import { QuantityInput } from '@/components/QuantityInput'
@@ -62,8 +64,20 @@ const errKey = (e: string) =>
 /** How long the typing has to pause before the catalogue is asked. */
 const SEARCH_PAUSE_MS = 300
 
-const levelLabel = (l: string) =>
-  l.startsWith('base') ? `${l.slice(4)}ème année` : `${l.slice(3)}ère sec.`
+/**
+ * "base3" -> backFix.levelBase3. Translated keys, not a French template: the
+ * template gave "1ème année" and "2ère sec.", and the same French in Arabic.
+ */
+const levelKey = (l: string) =>
+  l.startsWith('base') ? `backFix.levelBase${l.slice(4)}` : `backFix.levelSec${l.slice(3)}`
+
+/** The actions column stays on screen when the table scrolls sideways. */
+const STICKY_END = {
+  position: 'sticky',
+  insetInlineEnd: 0,
+  zIndex: 1,
+  bg: 'inherit',
+} as const
 
 /**
  * The shared catalogue, from the shop's side.
@@ -90,6 +104,7 @@ export function CatalogPage() {
   const { shop } = useShopSettings()
 
   const [search, setSearch] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
   const [category, setCategory] = useSessionState('catalog.category', '')
   const [level, setLevel] = useState('')
   const [officialOnly, setOfficialOnly] = useSessionState('catalog.official', false)
@@ -131,11 +146,33 @@ export function CatalogPage() {
 
   /** The article being added through the full product form. */
   const [adding, setAdding] = useState<CatalogItem | null>(null)
+  /**
+   * What the catalogue knows beyond the name: its unit and category, and for
+   * a state-priced manuel the official prices. Only the name and code used to
+   * reach the form, despite the note below saying otherwise.
+   */
+  const addingSeed = useMemo(
+    () =>
+      adding
+        ? {
+            unit: adding.unit,
+            category: adding.category,
+            salePrice: adding.officialPrice,
+            costPrice: adding.officialCost,
+          }
+        : undefined,
+    [adding],
+  )
 
   // --- the school books -----------------------------------------------------
 
   const [bookLevel, setBookLevel] = useSessionState('catalog.bookLevel', '')
-  const [qty, setQty] = useState<Record<string, string>>({})
+  /**
+   * Each typed quantity WITH its book. Keyed by id alone, the button counted
+   * and created only the books of the level on screen, and the quantities
+   * typed under the previous level were then wiped without a word.
+   */
+  const [qty, setQty] = useState<Record<string, { item: CatalogItem; text: string }>>({})
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkDone, setBulkDone] = useState(0)
 
@@ -167,9 +204,15 @@ export function CatalogPage() {
    */
   const priced = (b: CatalogItem) => (b.officialPrice ?? 0) > 0
 
-  const pending = books.items.filter(
-    (b) => !has(b) && priced(b) && (parseQuantity(qty[b.id] ?? '') ?? 0) > 0,
-  )
+  const pending = Object.values(qty)
+    .filter(({ item, text }) => !has(item) && priced(item) && (readCount(text).value ?? 0) > 0)
+    .map(({ item }) => item)
+  const pendingElsewhere = pending.filter((b) => !books.items.some((x) => x.id === b.id)).length
+  /** A quantity box holding something that is not a count (a scanned code, "12a"). */
+  const badQty = Object.values(qty)
+    .map(({ text }) => readCount(text).problem)
+    .find((p) => p !== undefined)
+  const [badKey, badOptions] = countMessage(badQty ?? 'unreadable')
 
   /**
    * Adds every school book that has a quantity against it.
@@ -205,7 +248,7 @@ export function CatalogPage() {
       }
       for (const b of pending) {
         const cat = catOf(b)
-        const quantity = parseQuantity(qty[b.id] ?? '') ?? 0
+        const quantity = readCount(qty[b.id]?.text ?? '').value ?? 0
         if (quantity <= 0) continue
         const sale = b.officialPrice ?? 0
         const cost = b.officialCost ?? 0
@@ -237,8 +280,16 @@ export function CatalogPage() {
     }
   }
 
+  /** A scan anywhere on the page goes to the search, read as the till reads it. */
+  const onScan = (code: string, physical: string | null) => {
+    setSearch(scannedCode(code, physical))
+    requestAnimationFrame(() => searchRef.current?.select())
+  }
+
   return (
     <Box>
+      {/* Not while the product form is open: it would take the form's scans. */}
+      {!adding && <ScanWedge targetRef={searchRef} onScan={onScan} />}
       <Flex align="center" gap={3} mb={1}>
         <Library size={26} />
         <Text fontSize="2xl" fontWeight="bold">
@@ -274,7 +325,7 @@ export function CatalogPage() {
                 <option value="">{t('catalog.allLevels')}</option>
                 {LEVELS.map((l) => (
                   <option key={l} value={l}>
-                    {levelLabel(l)}
+                    {t(levelKey(l))}
                   </option>
                 ))}
               </NativeSelect.Field>
@@ -293,6 +344,17 @@ export function CatalogPage() {
               </Button>
             )}
           </HStack>
+
+          {pendingElsewhere > 0 && (
+            <Text fontSize="sm" color="fg.muted" mb={3}>
+              {t('backFix.booksOtherLevels', { count: pendingElsewhere })}
+            </Text>
+          )}
+          {badQty && (
+            <Text fontSize="sm" color="red.fg" mb={3}>
+              {t(badKey, badOptions)}
+            </Text>
+          )}
 
           {bulkDone > 0 && (
             <Alert.Root status="success" mb={4}>
@@ -340,7 +402,7 @@ export function CatalogPage() {
                       <Text fontWeight="semibold">{b.name}</Text>
                       <Text fontSize="xs" color="fg.muted">
                         {b.code}
-                        {b.level ? ` · ${levelLabel(b.level)}` : ''}
+                        {b.level && LEVELS.includes(b.level) ? ` · ${t(levelKey(b.level))}` : ''}
                       </Text>
                     </Box>
                     <Box textAlign="end" minW="7rem">
@@ -368,8 +430,8 @@ export function CatalogPage() {
                           size="md"
                           placeholder={t('catalog.qty')}
                           aria-label={t('catalog.qty')}
-                          value={qty[b.id] ?? ''}
-                          onChange={(v) => setQty((q) => ({ ...q, [b.id]: v }))}
+                          value={qty[b.id]?.text ?? ''}
+                          onChange={(v) => setQty((q) => ({ ...q, [b.id]: { item: b, text: v } }))}
                         />
                       </Box>
                     )}
@@ -394,6 +456,7 @@ export function CatalogPage() {
       <SimpleGrid columns={{ base: 1, md: 3 }} gap={3} mb={4}>
         <SearchInput
           shortcut
+          inputRef={searchRef}
           value={search}
           onChange={setSearch}
           placeholder={t('catalog.searchPlaceholder')}
@@ -468,7 +531,9 @@ export function CatalogPage() {
                   <Table.ColumnHeader>{t('common.name')}</Table.ColumnHeader>
                   <Table.ColumnHeader>{t('stock.barcode')}</Table.ColumnHeader>
                   <Table.ColumnHeader>{t('stock.category')}</Table.ColumnHeader>
-                  <Table.ColumnHeader textAlign="end">{t('common.actions')}</Table.ColumnHeader>
+                  <Table.ColumnHeader textAlign="end" {...STICKY_END}>
+                    {t('common.actions')}
+                  </Table.ColumnHeader>
                 </Table.Row>
               </Table.Header>
               <Table.Body>
@@ -499,7 +564,7 @@ export function CatalogPage() {
                           </Badge>
                         )}
                       </Table.Cell>
-                      <Table.Cell textAlign="end">
+                      <Table.Cell textAlign="end" {...STICKY_END}>
                         {owned ? (
                           <Badge colorPalette="green" size="lg">
                             <Check size={14} />
@@ -551,6 +616,7 @@ export function CatalogPage() {
           initialBarcode={adding.code}
           seededName={adding.name}
           initialName={adding.name}
+          seed={addingSeed}
         />
       )}
     </Box>

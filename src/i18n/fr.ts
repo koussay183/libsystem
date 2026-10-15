@@ -501,6 +501,46 @@ export const fr = {
     sharedCode: 'Code partagé',
     priceBelowCost: 'Le prix de vente est inférieur au prix d’achat',
   },
+  // Corrections du back-office (stock, achats, packs, fournisseurs, catalogue).
+  backFix: {
+    priceUnreadable:
+      'Un montant est illisible (une lettre O à la place d’un 0 ?) : corrigez-le avant d’enregistrer.',
+    salePriceCleared: 'Indiquez un prix de vente : sans prix, l’article passerait à 0 en caisse.',
+    nameWasCode:
+      'C’était un code-barres : il a été mis dans « Code-barres ». Tapez maintenant le nom.',
+    sameName:
+      'Un article porte déjà exactement ce nom. Changez la déclinaison ou le nom, ou enregistrez quand même.',
+    qtyEditHint: 'Pour changer la quantité, utilisez « Réapprovisionner » dans la liste.',
+    qtyLooksLikeCode: 'Ceci ressemble à un code-barres, pas à une quantité.',
+    qtyTooBig: 'Quantité trop grande (maximum {{max}}).',
+    lineQty: 'Vérifiez la quantité de « {{name}} ».',
+    packCodeScanning: 'Le scan va dans le code du pack…',
+    createArticle: 'Créer cet article',
+    discardPurchase: 'Abandonner cette saisie ? Les articles déjà entrés seront perdus.',
+    waitPurchases:
+      'Les achats sont encore en chargement : attendez un instant avant de renommer ce fournisseur.',
+    supplierOwedDelete:
+      'Il reste {{amount}} à payer à ce fournisseur. Le supprimer quand même ? Ses factures restent dans Achats.',
+    variantRowNoName: 'Donnez un nom à chaque sorte qui a un code, un prix ou une quantité.',
+    variantsRequired: 'Ajoutez au moins une déclinaison.',
+    booksOtherLevels: 'Dont saisis sous un autre niveau : {{count}}',
+    deleteUsedInPacks:
+      'Supprimer « {{name}} » ? Il fait partie de ces packs : {{packs}}. Ils ne pourront plus être vendus.',
+    importManuels: 'Importer les manuels scolaires',
+    levelBase1: '1ère année de base',
+    levelBase2: '2ème année de base',
+    levelBase3: '3ème année de base',
+    levelBase4: '4ème année de base',
+    levelBase5: '5ème année de base',
+    levelBase6: '6ème année de base',
+    levelBase7: '7ème année de base',
+    levelBase8: '8ème année de base',
+    levelBase9: '9ème année de base',
+    levelSec1: '1ère année secondaire',
+    levelSec2: '2ème année secondaire',
+    levelSec3: '3ème année secondaire',
+    levelSec4: '4ème année secondaire (bac)',
+  },
   customer: {
     title: 'Clients',
     add: 'Ajouter un client',

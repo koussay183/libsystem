@@ -27,6 +27,7 @@ export function SupplierForm({
   supplier,
   purchases = [],
   suppliers = [],
+  purchasesLoading = false,
   onPickExisting,
 }: {
   open: boolean
@@ -36,6 +37,8 @@ export function SupplierForm({
   purchases?: Purchase[]
   /** The existing suppliers, to warn before a second "Sotupa" is created. */
   suppliers?: Supplier[]
+  /** The purchases have not arrived yet: a rename now would carry none of them. */
+  purchasesLoading?: boolean
   /** Switches the form to an existing supplier the owner recognised. */
   onPickExisting?: (supplier: Supplier) => void
 }) {
@@ -72,6 +75,12 @@ export function SupplierForm({
     if (busy) return
     if (name.trim() === '') {
       setNameError(t('supplier.nameRequired'))
+      return
+    }
+    // Renamed before the purchases list arrived, nothing was re-tagged and the
+    // supplier came out with 0 DT bought.
+    if (supplier && name.trim() !== supplier.name && purchasesLoading) {
+      setNameError(t('backFix.waitPurchases'))
       return
     }
     setBusy(true)

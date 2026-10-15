@@ -18,8 +18,8 @@ import {
 } from '@chakra-ui/react'
 import { Minus, PackagePlus, Plus, X } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { parseQuantity } from '@/lib/money'
 import { addStock, setStock } from './useProducts'
+import { readCount, countMessage, MAX_UNITS } from './quantity'
 import type { Product } from '@/types/models'
 
 type Mode = 'add' | 'set'
@@ -55,14 +55,17 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
   }, [open, product])
 
   const current = product?.quantity ?? 0
-  // Refuse to guess: "abc" must not quietly become 0 and empty a shelf.
-  const parsed = parseQuantity(value)
-  const invalid = parsed === null
-  const typed = parsed ?? 0
+  // Refuse to guess: "abc" must not quietly become 0 and empty a shelf, and a
+  // code scanned into the box is not 100000000000000000000 units.
+  const read = readCount(value)
+  const invalid = read.problem !== undefined
+  const typed = read.value ?? 0
+  const [problemKey, problemOptions] = countMessage(read.problem ?? 'unreadable')
+  const problemText = invalid ? t(problemKey, problemOptions) : ''
   const next = mode === 'add' ? current + typed : Math.max(0, typed)
 
   const step = (delta: number) => {
-    setValue(String(Math.max(0, typed + delta)))
+    setValue(String(Math.max(0, Math.min(MAX_UNITS, typed + delta))))
     setSaveError('')
   }
 
@@ -86,7 +89,7 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
     e.preventDefault()
     if (!product) return
     if (invalid) {
-      setSaveError(t('common.invalidNumber'))
+      setSaveError(problemText)
       return
     }
     setSaveError('')
@@ -203,11 +206,19 @@ export function StockAdjustDialog({ open, onClose, product }: StockAdjustDialogP
                         <Plus size={22} />
                       </IconButton>
                     </Flex>
-                    <Field.HelperText>
-                      {mode === 'add'
-                        ? `${current} + ${typed} = ${next} ${t('stock.units')}`
-                        : `${next} ${t('stock.units')}`}
-                    </Field.HelperText>
+                    {/* Said, not just a greyed-out Save: "5O" used to read
+                        "7 + 0 = 7" as if 0 had been understood. */}
+                    {invalid ? (
+                      <Text fontSize="sm" color="red.fg" mt={1}>
+                        {problemText}
+                      </Text>
+                    ) : (
+                      <Field.HelperText>
+                        {mode === 'add'
+                          ? `${current} + ${typed} = ${next} ${product?.unit || t('stock.units')}`
+                          : `${next} ${product?.unit || t('stock.units')}`}
+                      </Field.HelperText>
+                    )}
                   </Field.Root>
 
                   {saveError && (

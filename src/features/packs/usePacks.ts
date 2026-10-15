@@ -99,9 +99,26 @@ export function createPack(input: PackInput): string {
  * sync badge, which is the only place that can report it after the dialog has
  * closed anyway.
  */
-export async function updatePack(id: string, input: PackInput) {
+export async function updatePack(id: string, input: Omit<PackInput, 'active'>) {
   void track(
     updateDoc(doc(db, shopPath(COL), id), { ...input, updatedAt: Date.now() }),
+  ).catch(() => {
+    /* replayed by the SDK; a refusal surfaces on the sync badge */
+  })
+}
+
+/**
+ * Switches a pack on or off and touches NOTHING else.
+ *
+ * The switch used to send the whole pack back from this till's copy. Offline,
+ * or a second after the other till changed the price, that copy was stale, and
+ * the queued write put the old price and the old articles back over the edit.
+ * Likewise an edit (updatePack) no longer carries `active`, so it cannot undo
+ * a switch made on the other till.
+ */
+export async function setPackActive(id: string, active: boolean) {
+  void track(
+    updateDoc(doc(db, shopPath(COL), id), { active, updatedAt: Date.now() }),
   ).catch(() => {
     /* replayed by the SDK; a refusal surfaces on the sync badge */
   })
@@ -185,6 +202,12 @@ export interface PackLine {
  * A member whose units end up at two different prices becomes two lines (the
  * dearer first). That is the honest way to show it, and it is the only way a
  * single unit price per line can total exactly.
+ *
+ * Worked out per MEMBER, never per unit. All units of one member share a
+ * weight, so they share a floor price and a remainder; only how many of them
+ * get the extra millime differs. It used to build one array entry per
+ * physical unit, and a barcode typed into the pack's Qté (6 191 234 000 158
+ * units) froze the tab — here and at the till, which runs this on every sale.
  */
 export function packToLines(pack: Pack, products: Product[], count = 1): PackLine[] {
   const { members } = resolvePack(pack, products)
@@ -193,50 +216,42 @@ export function packToLines(pack: Pack, products: Product[], count = 1): PackLin
   )
   if (sellable.length === 0 || count < 1) return []
 
-  // One entry per physical unit, each weighted by what it sells for alone.
-  const owner: number[] = []
-  const weight: number[] = []
-  sellable.forEach((m, memberIndex) => {
-    for (let u = 0; u < m.item.qty; u += 1) {
-      owner.push(memberIndex)
-      weight.push(m.product.salePrice)
-    }
-  })
-
-  // Every member free of charge would make a proportional split meaningless;
-  // fall back to an equal share per unit.
-  let total = weight.reduce((a, b) => a + b, 0)
+  // Each unit is weighted by what it sells for alone. Every member free of
+  // charge would make a proportional split meaningless; fall back to an equal
+  // share per unit.
+  let weight = sellable.map((m) => m.product.salePrice)
+  let total = sellable.reduce((sum, m, i) => sum + weight[i] * m.item.qty, 0)
   if (total <= 0) {
-    weight.fill(1)
-    total = weight.length
+    weight = sellable.map(() => 1)
+    total = sellable.reduce((sum, m) => sum + m.item.qty, 0)
   }
 
-  const price = weight.map((w) => Math.floor((pack.price * w) / total))
-  const remainder = weight.map((w, i) => pack.price * w - price[i] * total)
-  let left = pack.price - price.reduce((a, b) => a + b, 0)
+  const floor = weight.map((w) => Math.floor((pack.price * w) / total))
+  const remainder = weight.map((w, i) => pack.price * w - floor[i] * total)
+  let left = pack.price - sellable.reduce((sum, m, i) => sum + floor[i] * m.item.qty, 0)
 
   // Largest remainder first; ties go to the dearer unit, then to the earlier
-  // one, so the same pack always splits the same way.
-  const order = price
+  // member, so the same pack always splits the same way.
+  const order = sellable
     .map((_, i) => i)
     .sort((a, b) => remainder[b] - remainder[a] || weight[b] - weight[a] || a - b)
-  for (let i = 0; i < order.length && left > 0; i += 1) {
-    price[order[i]] += 1
-    left -= 1
+  const bumped = sellable.map(() => 0)
+  for (const i of order) {
+    if (left <= 0) break
+    const take = Math.min(sellable[i].item.qty, left)
+    bumped[i] = take
+    left -= take
   }
 
-  // Units of one member share a weight, so they can only land on two adjacent
-  // prices. Group them, dearer first.
+  // Dearer line first when a member's units land on two adjacent prices.
   const lines: PackLine[] = []
-  sellable.forEach((m, memberIndex) => {
-    const prices = price.filter((_, i) => owner[i] === memberIndex)
-    const distinct = [...new Set(prices)].sort((a, b) => b - a)
-    for (const value of distinct) {
-      lines.push({
-        product: m.product,
-        qty: prices.filter((p) => p === value).length * count,
-        unitPrice: Math.max(0, value),
-      })
+  sellable.forEach((m, i) => {
+    const plain = m.item.qty - bumped[i]
+    if (bumped[i] > 0) {
+      lines.push({ product: m.product, qty: bumped[i] * count, unitPrice: Math.max(0, floor[i] + 1) })
+    }
+    if (plain > 0) {
+      lines.push({ product: m.product, qty: plain * count, unitPrice: Math.max(0, floor[i]) })
     }
   })
   return lines

@@ -39,6 +39,19 @@ import type { Purchase } from '@/types/models'
 
 const ALL = '__all__'
 
+/**
+ * The actions column stays on screen when the table scrolls sideways: at
+ * 1024 px (and even 1366) "Payer le fournisseur" sat past the right edge.
+ * The striped rows paint their cells, so odd rows repeat that colour here.
+ */
+const STICKY_END = {
+  position: 'sticky',
+  insetInlineEnd: 0,
+  zIndex: 1,
+  bg: 'inherit',
+  css: { 'tbody tr:nth-of-type(odd) > &': { bg: 'bg.muted' } },
+} as const
+
 /** `as const` keeps the palettes as literals, which is what colorPalette expects. */
 const STATUS_STYLE = {
   paid: { palette: 'green', key: 'purchases.paidFull' },
@@ -61,7 +74,7 @@ export function PurchasesTab() {
    */
   const [settlingId, setSettlingId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [supplier, setSupplier] = useSessionState('purchases.supplier', ALL)
+  const [storedSupplier, setSupplier] = useSessionState('purchases.supplier', ALL)
   const [status, setStatus] = useSessionState<PurchaseStatus | typeof ALL>(
     'purchases.status',
     ALL,
@@ -93,6 +106,12 @@ export function PurchasesTab() {
     for (const p of purchases) if (p.supplier) names.add(p.supplier)
     return Array.from(names).sort((a, b) => a.localeCompare(b))
   }, [purchases])
+  // A remembered filter naming a supplier that has since been renamed or lost
+  // its last invoice showed an empty list under a drop-down reading "Tous".
+  const supplier =
+    storedSupplier === ALL || loading || supplierNames.includes(storedSupplier)
+      ? storedSupplier
+      : ALL
 
   // The table follows the box at low priority, so typing never waits for it.
   const q = fold(useDeferredValue(search))
@@ -355,18 +374,22 @@ export function PurchasesTab() {
               <Table.Row>
                 <Table.ColumnHeader>{t('common.date')}</Table.ColumnHeader>
                 <Table.ColumnHeader>{t('purchases.supplier')}</Table.ColumnHeader>
-                <Table.ColumnHeader display={{ base: 'none', lg: 'table-cell' }}>
+                <Table.ColumnHeader display={{ base: 'none', '2xl': 'table-cell' }}>
                   {t('purchases.reference')}
                 </Table.ColumnHeader>
                 <Table.ColumnHeader textAlign="end">{t('common.total')}</Table.ColumnHeader>
-                <Table.ColumnHeader textAlign="end" display={{ base: 'none', md: 'table-cell' }}>
+                <Table.ColumnHeader textAlign="end" display={{ base: 'none', xl: 'table-cell' }}>
                   {t('sales.paid')}
                 </Table.ColumnHeader>
                 <Table.ColumnHeader textAlign="end">
                   {t('purchases.owedToSupplier')}
                 </Table.ColumnHeader>
-                <Table.ColumnHeader>{t('purchases.status')}</Table.ColumnHeader>
-                <Table.ColumnHeader textAlign="end">
+                {/* Below xl the red "reste à payer" already says it, and the
+                    badge was what pushed the actions off screen. */}
+                <Table.ColumnHeader display={{ base: 'none', xl: 'table-cell' }}>
+                  {t('purchases.status')}
+                </Table.ColumnHeader>
+                <Table.ColumnHeader textAlign="end" {...STICKY_END}>
                   {t('common.actions')}
                 </Table.ColumnHeader>
               </Table.Row>
@@ -432,7 +455,7 @@ const PurchaseRows = memo(function PurchaseRows({
                 {itemCount} {t('purchases.items')}
               </Text>
             </Table.Cell>
-            <Table.Cell display={{ base: 'none', lg: 'table-cell' }}>
+            <Table.Cell display={{ base: 'none', '2xl': 'table-cell' }}>
               <Text>{p.reference || '—'}</Text>
               {p.note && (
                 <Text fontSize="sm" color="fg.muted" truncate maxW="14rem">
@@ -446,7 +469,7 @@ const PurchaseRows = memo(function PurchaseRows({
             <Table.Cell
               textAlign="end"
               whiteSpace="nowrap"
-              display={{ base: 'none', md: 'table-cell' }}
+              display={{ base: 'none', xl: 'table-cell' }}
             >
               {money(p.paid ?? 0)}
             </Table.Cell>
@@ -458,17 +481,26 @@ const PurchaseRows = memo(function PurchaseRows({
             >
               {money(owed)}
             </Table.Cell>
-            <Table.Cell>
+            <Table.Cell display={{ base: 'none', xl: 'table-cell' }}>
               <Badge colorPalette={style.palette} size="lg">
                 {t(style.key)}
               </Badge>
             </Table.Cell>
-            <Table.Cell textAlign="end">
+            <Table.Cell textAlign="end" {...STICKY_END}>
               <Flex gap={1} justify="flex-end">
                 {owed > 0 && (
-                  <Button size="lg" colorPalette="brand" onClick={() => onSettle(p.id)}>
+                  <Button
+                    size="lg"
+                    colorPalette="brand"
+                    onClick={() => onSettle(p.id)}
+                    aria-label={t('purchases.settle')}
+                    title={t('purchases.settle')}
+                  >
                     <Wallet size={20} />
-                    {t('purchases.settle')}
+                    {/* The words only where there is room for them. */}
+                    <Box as="span" display={{ base: 'none', '2xl': 'inline' }}>
+                      {t('purchases.settle')}
+                    </Box>
                   </Button>
                 )}
                 <IconButton

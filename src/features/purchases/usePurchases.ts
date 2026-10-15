@@ -6,8 +6,9 @@ import {
   orderBy,
   doc,
   writeBatch,
+  setDoc,
   updateDoc,
-  deleteDoc,
+  deleteField,
   increment,
 } from 'firebase/firestore'
 import { db } from '@/lib/firebase'
@@ -81,10 +82,11 @@ export function usePurchases() {
 }
 
 /**
- * Records a purchase atomically: writes the purchase and, for each line linked
- * to a product, increments its stock and refreshes its cost price.
+ * Records a purchase: writes the purchase and, for each line linked to a
+ * product, increments its stock and refreshes its cost price — each as its
+ * own queued write (see the note in the body for why not one batch).
  *
- * The commit is deliberately NOT awaited. Firestore resolves a write only when
+ * The writes are deliberately NOT awaited. Firestore resolves a write only when
  * the server acknowledges it, so with the line down `await batch.commit()` never
  * settled — and it never rejected either, so the try/catch in NewPurchase.save
  * could not help and its `finally setBusy(false)` never ran. The owner watched a
@@ -152,7 +154,7 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
   /*
     THE ONE FAILURE THIS FUNCTION CANNOT TAKE BACK.
 
-    The invoice and the stock it brings in go in one batch, and the stock arrives
+    The invoice is written with the stock it brings in, and the stock arrives
     as increment(). Written twice, the shop has two invoices for one delivery and
     twice the cartons — an inventory error that looks exactly like theft when the
     shelves are counted, and there is nothing in the data that says which of the
@@ -183,10 +185,8 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
   }
 
   const now = Date.now()
-  const batch = writeBatch(db)
-
   const purchaseRef = doc(collection(db, shopPath(PURCHASES)))
-  batch.set(purchaseRef, {
+  const invoice = {
     supplier: input.supplier || undefined,
     reference: input.reference || undefined,
     note: input.note || undefined,
@@ -202,7 +202,7 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
     date: input.date ?? now,
     createdAt: now,
     updatedAt: now,
-  })
+  }
 
   // Merge duplicate lines for the same product: one write per document.
   const perProduct = new Map<string, { qty: number; cost: number; unitCost: number }>()
@@ -215,31 +215,52 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
     perProduct.set(it.productId, agg)
   }
 
-  // The invoice and the stock it brings in must land together, so this stays
-  // one batch — which means it is bounded. Refuse loudly rather than have
-  // Firestore reject a 600-line invoice with an opaque error.
+  // Bounded so that removePurchase can still undo the whole invoice in ONE
+  // batch (see there). Refuse loudly rather than fail later.
   if (perProduct.size >= BATCH_LIMIT) {
     throw new Error(
       `recordPurchase: ${perProduct.size} produits distincts — divisez la facture`,
     )
   }
 
+  /*
+    THE INVOICE IS ITS OWN WRITE, AND EACH ARTICLE'S STOCK IS ANOTHER.
+
+    They used to be one batch. A batch is all or nothing, and an update to a
+    document that no longer exists is refused — so an article deleted on the
+    other till while this one was offline (isLiveProduct still saw it in the
+    stale cache) got the whole batch refused on reconnect: the facture
+    vanished from the list and none of its lines reached the stock. Queued
+    separately, the writes still replay in order; a refused one drops only
+    that article's increment, and the invoice and every other line land.
+  */
+  void track(setDoc(purchaseRef, invoice)).catch(() => {
+    /* replayed by the SDK; a refusal surfaces through the sync badge */
+  })
+
   for (const [productId, agg] of perProduct) {
-    // An article deleted (on the other machine, say) while this invoice was
-    // being typed cannot take an update, and one refused update refuses the
-    // whole batch — the invoice included. The invoice keeps the line; only the
-    // stock of an article that no longer exists is left alone.
+    // An article already known to be deleted is not even tried: its refusal
+    // would only raise the red badge.
     if (isLiveProduct(productId) === false) continue
-    batch.update(doc(db, shopPath(PRODUCTS), productId), {
-      quantity: increment(agg.qty),
-      // Only a real price refreshes the cost. A blank or zero cost field would
-      // otherwise wipe it permanently, and every later sale would snapshot
-      // unitCost 0 — making the product look like 100% pure profit forever.
-      ...(agg.unitCost > 0 ? { costPrice: agg.unitCost } : {}),
-      // Lifetime "bought" totals, for the profitability report.
-      boughtQty: increment(agg.qty),
-      boughtCost: increment(agg.cost),
-      updatedAt: now,
+    void track(
+      updateDoc(doc(db, shopPath(PRODUCTS), productId), {
+        quantity: increment(agg.qty),
+        // Only a real price refreshes the cost. A blank or zero cost field would
+        // otherwise wipe it permanently, and every later sale would snapshot
+        // unitCost 0 — making the product look like 100% pure profit forever.
+        // The stored HT cost and margin described the OLD cost; left behind,
+        // the product form showed HT 840 next to TTC 1200 and two margins. The
+        // form derives both again from the prices when they are absent.
+        ...(agg.unitCost > 0
+          ? { costPrice: agg.unitCost, costPriceHT: deleteField(), margin: deleteField() }
+          : {}),
+        // Lifetime "bought" totals, for the profitability report.
+        boughtQty: increment(agg.qty),
+        boughtCost: increment(agg.cost),
+        updatedAt: now,
+      }),
+    ).catch(() => {
+      /* replayed by the SDK; a refusal surfaces through the sync badge */
     })
   }
 
@@ -250,10 +271,6 @@ export async function recordPurchase(input: RecordPurchaseInput, force = false) 
   // A day at the counter is a handful of deliveries; this is only ever trimmed
   // so a tab left open for a fortnight cannot grow it without bound.
   if (recentPurchases.length > 50) recentPurchases.splice(0, recentPurchases.length - 50)
-
-  void track(batch.commit()).catch(() => {
-    /* replayed by the SDK; a refusal surfaces through the sync badge */
-  })
 }
 
 /**
@@ -310,28 +327,37 @@ export async function removePurchase(purchase: Purchase) {
     perProduct.set(it.productId, agg)
   }
 
-  const entries = [...perProduct]
-  for (let i = 0; i < entries.length; i += BATCH_LIMIT) {
-    const batch = writeBatch(db)
-    for (const [productId, agg] of entries.slice(i, i + BATCH_LIMIT)) {
-      // Same guard as voidSale: one article deleted since the delivery would
-      // get the whole reversal refused, while the invoice's own delete (a
-      // separate write) still went through — every other article on it then
-      // kept the stock and the bought cost of a delivery that no longer exists.
-      if (isLiveProduct(productId) === false) continue
-      batch.update(doc(db, shopPath(PRODUCTS), productId), {
-        quantity: increment(-agg.qty),
-        boughtQty: increment(-agg.qty),
-        boughtCost: increment(-agg.cost),
-        updatedAt: now,
-      })
-    }
-    void track(batch.commit()).catch(() => {
-      /* replayed by the SDK; a refusal surfaces through the sync badge */
+  /*
+    THE REVERSAL ONLY HAPPENS IF THE INVOICE IS STILL THERE TO DELETE.
+
+    Two tills deleting the same invoice (one offline, or simply before the
+    other's snapshot arrived) each queued increment(-qty): on reconnect the
+    stock and the bought cost were taken off twice, with no invoice left to
+    explain it. So the batch now opens with an update of the invoice itself —
+    an update is refused when the document is gone — and ends with its
+    delete. If the other till got there first, the whole batch is refused and
+    nothing is reversed a second time. It also means an article deleted
+    meanwhile can no longer leave the invoice gone and the stock half-undone:
+    the batch is refused, the invoice comes back on the list, and deleting it
+    again (now that this till knows) goes through.
+
+    One batch always suffices: recordPurchase refuses BATCH_LIMIT products.
+  */
+  const purchaseRef = doc(db, shopPath(PURCHASES), purchase.id)
+  const batch = writeBatch(db)
+  batch.update(purchaseRef, { updatedAt: now })
+  for (const [productId, agg] of perProduct) {
+    // An article this till already knows is deleted is left out.
+    if (isLiveProduct(productId) === false) continue
+    batch.update(doc(db, shopPath(PRODUCTS), productId), {
+      quantity: increment(-agg.qty),
+      boughtQty: increment(-agg.qty),
+      boughtCost: increment(-agg.cost),
+      updatedAt: now,
     })
   }
-
-  void track(deleteDoc(doc(db, shopPath(PURCHASES), purchase.id))).catch(() => {
+  batch.delete(purchaseRef)
+  void track(batch.commit()).catch(() => {
     /* replayed by the SDK; a refusal surfaces through the sync badge */
   })
 }

@@ -20,10 +20,13 @@ import {
 } from '@chakra-ui/react'
 import { Layers, Plus, Trash2, X } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import { parseMoney, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
 import { createProducts, findProductsByBarcodes } from './useProducts'
 import { composeName } from './naming'
-import { codeOf, loose } from './barcode'
+import { codeOf, loose, normalizeScannedCode } from './barcode'
+import { readCount, countMessage } from './quantity'
+import type { CountProblem } from './quantity'
+import { BarcodeInput } from './ScanWedge'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { ProductInput } from '@/types/models'
@@ -88,6 +91,12 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
    */
   const [sharedWarning, setSharedWarning] = useState('')
   const sharedOk = sharedWarning !== ''
+  /**
+   * The codes the owner was warned about and went on with, each on its own.
+   * One flag for all of them let a second clash — with an article already in
+   * stock — through without a word once a first, in-dialog one was accepted.
+   */
+  const [accepted, setAccepted] = useState<string[]>([])
   const [busy, setBusy] = useState(false)
   const [newCategory, setNewCategory] = useState(false)
   const [newSupplier, setNewSupplier] = useState(false)
@@ -105,6 +114,8 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     setRows([blankRow(), blankRow()])
     setFamilyError('')
     setSaveError('')
+    setSharedWarning('')
+    setAccepted([])
     setBusy(false)
     setNewCategory(false)
     setNewSupplier(false)
@@ -120,8 +131,8 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
 
   const sharedCost = parseMoney(costPrice) ?? 0
   const sharedSale = parseMoney(salePrice) ?? 0
-  const sharedQty = parseQuantity(quantity) ?? 0
-  const sharedThreshold = parseQuantity(threshold) ?? 0
+  const sharedQty = readCount(quantity).value ?? 0
+  const sharedThreshold = readCount(threshold).value ?? 0
 
   const filledRows = rows.filter((r) => r.variant.trim() !== '')
   const belowCost =
@@ -155,6 +166,10 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
   const onVariantKeyDown = (e: KeyboardEvent<HTMLInputElement>, index: number) => {
     if (e.key !== 'Enter') return
     e.preventDefault()
+    nextRow(index)
+  }
+
+  const nextRow = (index: number) => {
     const isLast = index === rows.length - 1
     if (isLast) addRow()
     setTimeout(() => variantRefs.current[index + 1]?.focus(), 30)
@@ -219,8 +234,21 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
       setFamilyError(t('stock.nameRequired'))
       return
     }
+    // A row with a code, a price or a count but no kind was dropped without a
+    // word: "2 déclinaisons enregistrées" while the third scanned pen was lost.
+    const nameless = rows.findIndex(
+      (r) =>
+        r.variant.trim() === '' &&
+        (r.barcode.trim() !== '' || r.salePrice.trim() !== '' || r.quantity.trim() !== ''),
+    )
+    if (nameless >= 0) {
+      setSaveError(t('backFix.variantRowNoName'))
+      variantRefs.current[nameless]?.focus()
+      return
+    }
     if (filledRows.length === 0) {
-      setSaveError(t('stock.nameRequired'))
+      setSaveError(t('backFix.variantsRequired'))
+      variantRefs.current[0]?.focus()
       return
     }
 
@@ -232,11 +260,12 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     for (const row of filledRows) {
       // Compared the way the till matches them: 978-2-07-036822-8 on one row
       // and 9782070368228 on the next are the same book.
-      const code = loose(codeOf(row.barcode))
+      const code = loose(codeOf(normalizeScannedCode(row.barcode)))
       if (code === '') continue
       const other = seen.get(code)
-      if (other && !sharedOk) {
+      if (other && !accepted.includes(code)) {
         setSharedWarning(t('stock.barcodeShared', { name: other }))
+        setAccepted((a) => [...a, code])
         return
       }
       seen.set(code, composeName(familyName, row.variant))
@@ -252,20 +281,30 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
       text.trim() !== '' && parse(text) === null
     if (
       [costPrice, salePrice].some((v) => unreadable(v, parseMoney)) ||
-      [quantity, threshold].some((v) => unreadable(v, parseQuantity)) ||
-      filledRows.some(
-        (r) => unreadable(r.salePrice, parseMoney) || unreadable(r.quantity, parseQuantity),
-      )
+      filledRows.some((r) => unreadable(r.salePrice, parseMoney))
     ) {
       setSaveError(t('common.invalidNumber'))
+      return
+    }
+    // Counts are bounded as well: a code scanned into Quantité is not stock.
+    const countProblem: CountProblem | undefined = [
+      quantity,
+      threshold,
+      ...filledRows.map((r) => r.quantity),
+    ]
+      .map((v) => readCount(v).problem)
+      .find((p) => p !== undefined)
+    if (countProblem) {
+      const [key, options] = countMessage(countProblem)
+      setSaveError(t(key, options))
       return
     }
 
     const inputs: ProductInput[] = filledRows.map((row) => {
       const rowSale = row.salePrice.trim() === '' ? null : parseMoney(row.salePrice)
-      const rowQty = row.quantity.trim() === '' ? null : parseQuantity(row.quantity)
+      const rowQty = row.quantity.trim() === '' ? null : (readCount(row.quantity).value ?? null)
       return {
-        barcode: row.barcode.trim() || null,
+        barcode: normalizeScannedCode(row.barcode).trim() || null,
         name: composeName(familyName, row.variant),
         family: familyName,
         variant: row.variant.trim(),
@@ -290,14 +329,15 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
     setBusy(true)
     try {
       const codes = inputs.map((i) => i.barcode ?? '').filter((c) => c !== '')
-      if (codes.length > 0 && !sharedOk) {
+      if (codes.length > 0) {
         const owners = await findProductsByBarcodes(codes)
         if (!alive.current) return
-        const clash = codes.find((c) => owners.has(c))
+        const clash = codes.find((c) => owners.has(c) && !accepted.includes(loose(codeOf(c))))
         if (clash) {
           setSharedWarning(
             t('stock.barcodeShared', { name: owners.get(clash)?.name ?? clash }),
           )
+          setAccepted((a) => [...a, loose(codeOf(clash))])
           return
         }
       }
@@ -330,6 +370,8 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
       onOpenChange={(e) => {
         if (!e.open) onClose()
       }}
+      // A stray click on the backdrop threw ten typed kinds away.
+      closeOnInteractOutside={false}
       size="xl"
     >
       <Portal>
@@ -351,7 +393,7 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
             </Dialog.Header>
 
             <Dialog.Body>
-              <form id="variants-form" onSubmit={submit}>
+              <form id="variants-form" noValidate onSubmit={submit}>
                 <Stack gap={5}>
                   <Text color="fg.muted">{t('stock.addVariantsHint')}</Text>
 
@@ -528,14 +570,20 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                                 />
                               </Table.Cell>
                               <Table.Cell minW="11rem">
-                                <Input
+                                <BarcodeInput
                                   size="lg"
                                   value={row.barcode}
-                                  onChange={(e) =>
-                                    patchRow(row.key, { barcode: e.target.value })
-                                  }
-                                  inputMode="numeric"
+                                  onChange={(v) => patchRow(row.key, { barcode: v })}
+                                  // A scan (or Enter) is "next kind", not "save
+                                  // the family with only the rows so far".
+                                  onScanned={() => nextRow(index)}
+                                  onKeyDown={(e) => {
+                                    if (e.key !== 'Enter') return
+                                    e.preventDefault()
+                                    nextRow(index)
+                                  }}
                                   placeholder={t('stock.barcodePlaceholder')}
+                                  aria-label={`${t('stock.barcode')} ${index + 1}`}
                                 />
                               </Table.Cell>
                               <Table.Cell minW="8rem">
@@ -546,7 +594,7 @@ export function VariantsDialog({ open, onClose, onSaved }: VariantsDialogProps) 
                                     patchRow(row.key, { salePrice: e.target.value })
                                   }
                                   inputMode="decimal"
-                                  placeholder={salePrice || '0.000'}
+                                  placeholder={salePrice || moneyPlaceholder()}
                                 />
                               </Table.Cell>
                               <Table.Cell minW="7rem">

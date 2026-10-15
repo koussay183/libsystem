@@ -24,14 +24,14 @@ import { Pager } from '@/components/Pager'
 import { SearchInput } from '@/components/SearchInput'
 import { NoResults } from '@/components/ActiveFilters'
 import { useSuppliers, removeSupplier } from './useSuppliers'
-import { usePurchases } from '@/features/purchases/usePurchases'
+import { usePurchases, purchaseOwed } from '@/features/purchases/usePurchases'
 import { SupplierForm } from './SupplierForm'
 import type { Supplier } from '@/types/models'
 
 export function SuppliersPage() {
   const { t } = useTranslation()
   const { suppliers, loading, error } = useSuppliers()
-  const { purchases } = usePurchases()
+  const { purchases, loading: purchasesLoading } = usePurchases()
 
   const [search, setSearch] = useState('')
   const [formOpen, setFormOpen] = useState(false)
@@ -39,26 +39,42 @@ export function SuppliersPage() {
 
   const symbol = t(moneySymbolKey())
   // Summed once per snapshot: each row used to walk every purchase on every render.
-  const { bySupplier, totalAll } = useMemo(() => {
+  const { bySupplier, owedBySupplier, totalAll } = useMemo(() => {
     const bySupplier = new Map<string, number>()
+    const owedBySupplier = new Map<string, number>()
     let totalAll = 0
     for (const p of purchases) {
       totalAll += p.total
       if (p.supplier !== undefined) {
         bySupplier.set(p.supplier, (bySupplier.get(p.supplier) ?? 0) + p.total)
+        owedBySupplier.set(p.supplier, (owedBySupplier.get(p.supplier) ?? 0) + purchaseOwed(p))
       }
     }
-    return { bySupplier, totalAll }
+    return { bySupplier, owedBySupplier, totalAll }
   }, [purchases])
   const totalFor = (name: string) => bySupplier.get(name) ?? 0
+  const owedTo = (name: string) => owedBySupplier.get(name) ?? 0
+
+  /**
+   * Phones are saved grouped ("98 123 456", "+216 98 …") since the phone
+   * field normalises them, so "98123456" typed in the search no longer
+   * matched anything. Compared on digits only, as the credit page does.
+   */
+  const phoneDigits = useMemo(
+    () => new Map(suppliers.map((s) => [s.id, (s.phone ?? '').replace(/\D/g, '')])),
+    [suppliers],
+  )
   const listTop = useRef<HTMLDivElement>(null)
 
   const q = fold(search)
+  const qDigits = search.replace(/\D/g, '')
   const filtered =
     q === ''
       ? suppliers
       : suppliers.filter(
-          (s) => fold(s.name).includes(q) || fold(s.phone ?? '').includes(q),
+          (s) =>
+            fold(s.name).includes(q) ||
+            (qDigits.length >= 3 && (phoneDigits.get(s.id) ?? '').includes(qDigits)),
         )
   const paged = usePaged(filtered, q, { persist: 'suppliers' })
 
@@ -71,7 +87,14 @@ export function SuppliersPage() {
     setFormOpen(true)
   }
   const onDelete = async (s: Supplier) => {
-    if (window.confirm(t('supplier.deleteConfirm'))) await removeSupplier(s.id)
+    // Money still owed is said before he deletes: the invoices and the debt
+    // stay in Achats under a supplier who is no longer listed.
+    const owed = owedTo(s.name)
+    const question =
+      owed > 0
+        ? t('backFix.supplierOwedDelete', { amount: formatMoney(owed, { symbol }) })
+        : t('supplier.deleteConfirm')
+    if (window.confirm(question)) await removeSupplier(s.id)
   }
 
   return (
@@ -173,7 +196,9 @@ export function SuppliersPage() {
                       {s.name}
                     </Text>
                     <Text fontSize="sm" color="fg.muted">
-                      {s.phone && <span>{s.phone}</span>}
+                      {/* Isolated LTR: in Arabic the digit groups of
+                          "98 123 456" otherwise come out in reverse order. */}
+                      {s.phone && <bdi dir="ltr">{s.phone}</bdi>}
                       {s.phone && s.note && <span> · </span>}
                       {s.note && <span>{s.note}</span>}
                     </Text>
@@ -185,6 +210,11 @@ export function SuppliersPage() {
                     <Text fontSize="sm" color="fg.muted">
                       {t('supplier.totalPurchased')}
                     </Text>
+                    {owedTo(s.name) > 0 && (
+                      <Text fontSize="sm" fontWeight="semibold" color="red.fg">
+                        {`${t('supplier.owed')}: ${formatMoney(owedTo(s.name), { symbol })}`}
+                      </Text>
+                    )}
                   </Box>
                   <Flex gap={1} flexShrink={0}>
                     <IconButton
@@ -232,6 +262,7 @@ export function SuppliersPage() {
           onClose={() => setFormOpen(false)}
           supplier={editing}
           purchases={purchases}
+          purchasesLoading={purchasesLoading}
           suppliers={suppliers}
           onPickExisting={(s) => setEditing(s)}
         />

@@ -21,11 +21,12 @@ import {
 } from '@chakra-ui/react'
 import { Check, Copy, Package, ScanLine, X, Zap } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { toInput, parseMoney, parseQuantity, moneySymbolKey } from '@/lib/money'
+import { toInput, parseMoney, moneySymbolKey } from '@/lib/money'
+import { fold } from '@/lib/textIndex'
 import { MoneyInput } from '@/components/MoneyInput'
 import { QuantityInput } from '@/components/QuantityInput'
 import { formatPercent } from '@/lib/format'
-import { createProduct, updateProduct, findProductByBarcode } from './useProducts'
+import { useProducts, createProduct, updateProduct, findProductByBarcode } from './useProducts'
 import {
   VAT_RATES,
   ttcFromHt,
@@ -38,7 +39,10 @@ import {
 } from './pricing'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { composeName } from './naming'
-import { sameCode } from './barcode'
+import { sameCode, normalizeScannedCode } from './barcode'
+import { readCount, countMessage } from './quantity'
+import type { CountReading } from './quantity'
+import { BarcodeInput } from './ScanWedge'
 import { useCategories, createCategory } from '@/features/categories/useCategories'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import type { Product, ProductInput } from '@/types/models'
@@ -66,6 +70,22 @@ interface ProductFormProps {
   template?: Product | null
   /** Opens on the short path: only the name and the sale price are asked for. */
   quick?: boolean
+  /**
+   * Told what was saved, once the write is queued. The stock page uses it to
+   * hand the focus back to its scan box; a purchase puts the new article
+   * straight into its cart.
+   */
+  onSaved?: (saved: { id: string; input: ProductInput; created: boolean }) => void
+  /**
+   * Created from a purchase: the delivery brings the stock in, so this form
+   * must not ask for a quantity too — typed in both places it was counted twice.
+   */
+  noStock?: boolean
+  /**
+   * Unit, category and — for a state-priced manuel — the official prices, as
+   * the catalogue knows them. Read when the form opens; a new article only.
+   */
+  seed?: { unit?: string; category?: string; salePrice?: number; costPrice?: number }
 }
 
 /** Sentinel option value meaning "type a new one". */
@@ -80,13 +100,18 @@ export function ProductForm({
   seededName,
   template,
   quick = false,
+  onSaved,
+  noStock = false,
+  seed,
 }: ProductFormProps) {
   const { t } = useTranslation()
   const alive = useAlive()
   const nameRef = useRef<HTMLInputElement>(null)
+  const saleRef = useRef<HTMLInputElement>(null)
   const { categories } = useCategories()
   const { suppliers } = useSuppliers()
   const { shop, loading: shopLoading } = useShopSettings()
+  const { products } = useProducts()
 
   const [barcode, setBarcode] = useState('')
   const [name, setName] = useState('')
@@ -141,6 +166,8 @@ export function ProductForm({
    * not a refusal. The till asks him which one when such a code is scanned.
    */
   const [twin, setTwin] = useState<{ code: string; name: string } | null>(null)
+  /** The (folded) name the owner was told is already taken, and went on with. */
+  const [sameNameOk, setSameNameOk] = useState('')
   const [saveError, setSaveError] = useState('')
   const [busy, setBusy] = useState(false)
   const [short, setShort] = useState(false)
@@ -150,20 +177,42 @@ export function ProductForm({
   /** Last name we composed ourselves — lets us stop overwriting a typed one. */
   const autoName = useRef('')
 
+  /**
+   * Set by any change the owner makes in the form (onChangeCapture below).
+   * The shop document can land a second after the form opened, and the pass
+   * that applies its defaults used to reset every field — the name and price
+   * typed meanwhile vanished on a slow PC.
+   */
+  const dirty = useRef(false)
+  /** What the form was last opened for, to tell a re-open from that late pass. */
+  const openedFor = useRef<unknown[]>([])
+
   useEffect(() => {
-    if (!open) return
+    if (!open) {
+      openedFor.current = []
+      return
+    }
+    const key = [product, template, initialBarcode, initialName, seededName, quick]
+    const sameOpening =
+      openedFor.current.length === key.length && key.every((v, i) => v === openedFor.current[i])
+    openedFor.current = key
+    if (sameOpening && dirty.current) return
+    dirty.current = false
     // Editing works on the product; "Dupliquer" copies everything but the code.
     const source = product ?? template ?? null
     setBarcode(product?.barcode ?? initialBarcode ?? '')
     setTwin(null)
+    setSameNameOk('')
     setName(source?.name ?? initialName ?? '')
     setFamily(source?.family ?? '')
     setVariant(product?.variant ?? '')
-    setUnit(source?.unit ?? '')
-    setCategory(source?.category ?? '')
+    // What the shared catalogue already knows, for a new article only.
+    const fromSeed = source ? undefined : seed
+    setUnit(source?.unit ?? fromSeed?.unit ?? '')
+    setCategory(source?.category ?? fromSeed?.category ?? '')
     setSupplier(source?.supplier ?? '')
-    const cost = source?.costPrice ?? 0
-    const sale = source?.salePrice ?? 0
+    const cost = source?.costPrice ?? fromSeed?.costPrice ?? 0
+    const sale = source?.salePrice ?? fromSeed?.salePrice ?? 0
     const rate = source?.vatRate ?? defaultVatFor(shop)
     setVat(rate)
     setCostPrice(toInput(cost))
@@ -174,7 +223,7 @@ export function ProductForm({
     const known =
       source?.margin ??
       (cost > 0 && sale > 0 ? marginFromPrices(cost, sale) : null) ??
-      defaultMarginFor(source?.category, shop)
+      defaultMarginFor(source?.category ?? fromSeed?.category, shop)
     setMarginText(known === null ? '' : String(Math.round(known * 10) / 10))
     marginTouched.current = source?.margin !== undefined
     setQuantity(product ? String(product.quantity) : '')
@@ -187,7 +236,10 @@ export function ProductForm({
     setShort(product ? false : quick)
     setNewCategory(false)
     setNewSupplier(false)
-    autoName.current = source?.name ?? ''
+    // The name counts as composed only when it IS family + kind. A duplicate of
+    // "Stylo — Bleu" then follows the new kind; a hand-written name is kept.
+    autoName.current = source ? composeName(source.family ?? '', source.variant ?? '') : ''
+    if (sameOpening) return
     setTimeout(() => nameRef.current?.focus(), 50)
 
     /*
@@ -234,6 +286,7 @@ export function ProductForm({
     // `shopLoading`, not `shop`: the defaults are worth one more pass when the
     // shop document first arrives, but any LATER snapshot — the other machine
     // saving its settings — re-ran this and wiped everything already typed.
+    // That one extra pass is skipped too once the owner has typed (`dirty`).
   }, [open, product, template, initialBarcode, initialName, seededName, quick, shopLoading])
 
   const symbol = t(moneySymbolKey())
@@ -335,9 +388,10 @@ export function ProductForm({
   /** Keeps `name` in step with family/variant until the owner types his own. */
   const syncName = (nextFamily: string, nextVariant: string) => {
     const composed = composeName(nextFamily, nextVariant)
-    setName((current) =>
-      current.trim() === '' || current === autoName.current ? composed : current,
-    )
+    // Read NOW, not inside the updater: React runs that later, after the line
+    // below has already overwritten the ref, so the name stuck at "C".
+    const previous = autoName.current
+    setName((current) => (current.trim() === '' || current === previous ? composed : current))
     autoName.current = composed
   }
 
@@ -392,6 +446,36 @@ export function ProductForm({
     }
   }
 
+  /**
+   * A code has just arrived in the barcode field (a scan, or Enter after typing
+   * it). Says now what Save would only have said later — the article already
+   * carrying it — and, for a new article with no name yet, asks the shared
+   * catalogue, which used to be asked only when the form OPENED with a code.
+   */
+  const checkCode = (code: string, nameNow: string) => {
+    const clean = code.trim()
+    if (clean === '') return
+    if (!(product && sameCode(product.barcode, clean))) {
+      void findProductByBarcode(clean).then((owner) => {
+        if (alive.current && owner && owner.id !== product?.id) {
+          setTwin({ code: clean, name: owner.name })
+        }
+      })
+    }
+    if (product || template || nameNow.trim() !== '') return
+    void lookupCatalog(clean).then((hit) => {
+      if (!hit || !alive.current) return
+      setRecognised(hit)
+      setOffered(hit.name)
+    })
+  }
+
+  /** After a code: on to the next thing the article still needs. */
+  const focusNextEmpty = (nameNow: string) => {
+    if (nameNow.trim() === '') nameRef.current?.focus()
+    else if ((parseMoney(salePrice) ?? 0) <= 0) saleRef.current?.focus()
+  }
+
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setNameError('')
@@ -399,8 +483,42 @@ export function ProductForm({
     setBarcodeError('')
     setSaveError('')
 
+    // The form opens with the cursor in Name, so a scan made straight away
+    // lands there, and the scanner's own Enter presses Save. A name that is
+    // nothing but a code was that scan: it moves to the barcode field.
+    const codeInName = normalizeScannedCode(name).trim()
+    if (
+      /^\d{8,14}$/.test(codeInName) &&
+      (barcode.trim() === '' || sameCode(barcode, codeInName))
+    ) {
+      setBarcode(codeInName)
+      setName('')
+      setNameError(t('backFix.nameWasCode'))
+      checkCode(codeInName, '')
+      nameRef.current?.focus()
+      return
+    }
     if (name.trim() === '') {
       setNameError(t('stock.nameRequired'))
+      return
+    }
+    // A price that cannot be read is refused, never saved as 0: "O,5O" (letter
+    // O) in the sale price rang the article up free on every till, and an
+    // unreadable cost made it pure profit. MoneyInput already says "illisible"
+    // under the field; this stops the save behind it, as VariantsDialog does.
+    const unreadable = (s: string) => s.trim() !== '' && parseMoney(s) === null
+    if (
+      [costHT, costPrice, salePrice].some(unreadable) ||
+      (!short && marginText.trim() !== '' && parsePercent(marginText) === null)
+    ) {
+      setSaveError(t('backFix.priceUnreadable'))
+      return
+    }
+    // Editing must not turn a priced article into one that rings up 0,000 DT.
+    // One already saved at 0 can still be opened and repaired.
+    if (product && product.salePrice > 0 && saleMinor <= 0) {
+      setPriceError(t('backFix.salePriceCleared'))
+      saleRef.current?.focus()
       return
     }
     /*
@@ -422,15 +540,29 @@ export function ProductForm({
     }
     // A count that cannot be read is refused, not saved as zero: "12a" used to
     // create the article out of stock, and the first sale took it negative.
-    const qty = parseQuantity(quantity)
-    const low = parseQuantity(threshold)
-    if ((!product && qty === null) || low === null) {
-      setSaveError(t('common.invalidNumber'))
+    // Bounded too: a code scanned into Quantité is not 6 billion pièces.
+    const qty: CountReading = product || noStock ? { value: 0 } : readCount(quantity)
+    const low = readCount(threshold)
+    const countProblem = qty.problem ?? low.problem
+    if (countProblem) {
+      const [key, options] = countMessage(countProblem)
+      setSaveError(t(key, options))
       return
     }
 
+    const code = normalizeScannedCode(barcode).trim()
+    // A second article under exactly the same name is usually "Dupliquer"
+    // saved without changing the kind. Said once; the next press goes ahead.
+    if (!product && sameNameOk !== fold(name)) {
+      const taken = products.find((p) => fold(p.name) === fold(name))
+      if (taken) {
+        setSameNameOk(fold(name))
+        return
+      }
+    }
+
     const input: ProductInput = {
-      barcode: barcode.trim() || null,
+      barcode: code || null,
       name: name.trim(),
       family: family.trim() || undefined,
       variant: variant.trim() || undefined,
@@ -440,10 +572,12 @@ export function ProductForm({
       costPriceHT: parseMoney(costHT) ?? undefined,
       vatRate: vat,
       costPrice: costMinor,
-      margin: parsePercent(marginText) ?? undefined,
+      // With no cost there is no margin: a stored 35 % next to a cost of 0
+      // came back on the next edit and contradicted the readout.
+      margin: costMinor > 0 ? (parsePercent(marginText) ?? undefined) : undefined,
       salePrice: saleMinor,
-      quantity: qty ?? 0,
-      lowStockThreshold: low,
+      quantity: qty.value ?? 0,
+      lowStockThreshold: low.value ?? 0,
     }
 
     setBusy(true)
@@ -466,8 +600,11 @@ export function ProductForm({
       }
       await ensureCategory(input.category ?? '')
       await ensureSupplier(input.supplier ?? '')
-      if (product) await updateProduct(product.id, input)
-      else await createProduct(input)
+      let id: string
+      if (product) {
+        await updateProduct(product.id, input)
+        id = product.id
+      } else id = createProduct(input)
       // Only a NEW article is offered to the shared catalogue. An edit is very
       // often the owner correcting a name for his own shelf — "Cahier 96p (bleu)"
       // — and a local correction is not a better answer for everybody else.
@@ -481,6 +618,7 @@ export function ProductForm({
           unit: input.unit ?? undefined,
           category: input.category ?? undefined,
         })
+      onSaved?.({ id, input, created: !product })
       if (alive.current) onClose()
     } catch (err) {
       if (alive.current) {
@@ -490,6 +628,8 @@ export function ProductForm({
       if (alive.current) setBusy(false)
     }
   }
+
+  const sameNameWarn = !product && sameNameOk !== '' && sameNameOk === fold(name)
 
   const title = product
     ? t('stock.editProduct')
@@ -505,6 +645,8 @@ export function ProductForm({
       onOpenChange={(e) => {
         if (!e.open) onClose()
       }}
+      // A stray click on the backdrop threw a half-typed article away.
+      closeOnInteractOutside={false}
       size="lg"
     >
       <Portal>
@@ -532,7 +674,16 @@ export function ProductForm({
             </Dialog.Header>
 
             <Dialog.Body>
-              <form id="product-form" onSubmit={submit}>
+              {/* noValidate: our own translated messages, not the browser's
+                  English "Please fill out this field" bubble. */}
+              <form
+                id="product-form"
+                noValidate
+                onSubmit={submit}
+                onChangeCapture={() => {
+                  dirty.current = true
+                }}
+              >
                 <Stack gap={4}>
                   {/*
                     THE POINT OF THE WHOLE SHARED CATALOGUE, SAID OUT LOUD.
@@ -623,7 +774,10 @@ export function ProductForm({
                         ref={nameRef}
                         size="lg"
                         value={name}
-                        onChange={(e) => setName(e.target.value)}
+                        onChange={(e) => {
+                          setName(e.target.value)
+                          setNameError('')
+                        }}
                         placeholder={t('stock.namePlaceholder')}
                       />
                       <Field.ErrorText>{nameError}</Field.ErrorText>
@@ -638,16 +792,31 @@ export function ProductForm({
                           </Box>
                         }
                       >
-                        <Input
+                        <BarcodeInput
                           size="lg"
                           value={barcode}
-                          onChange={(e) => {
-                            setBarcode(e.target.value)
+                          onChange={(v) => {
+                            setBarcode(v)
                             setBarcodeError('')
                             setTwin(null)
                           }}
+                          onScanned={(code) => {
+                            checkCode(code, name)
+                            focusNextEmpty(name)
+                          }}
+                          onKeyDown={(e) => {
+                            // Enter after typing a code means "that is the code",
+                            // not "save": until the name and price are there.
+                            if (e.key !== 'Enter') return
+                            const code = normalizeScannedCode(barcode).trim()
+                            if (code !== barcode) setBarcode(code)
+                            checkCode(code, name)
+                            if (name.trim() === '' || (parseMoney(salePrice) ?? 0) <= 0) {
+                              e.preventDefault()
+                              focusNextEmpty(name)
+                            }
+                          }}
                           placeholder={t('stock.barcodePlaceholder')}
-                          inputMode="numeric"
                         />
                       </InputGroup>
                       <Field.ErrorText>{barcodeError}</Field.ErrorText>
@@ -819,15 +988,22 @@ export function ProductForm({
                         <Field.HelperText>{t('stock.marginHint')}</Field.HelperText>
                       </Field.Root>
                     )}
-                    <Field.Root required={short} invalid={!!priceError}>
+                    {/* Asked for on every new article (see submit), so marked so. */}
+                    <Field.Root required={!product} invalid={!!priceError}>
                       <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
                       <MoneyInput
+                        ref={saleRef}
                         size="lg"
                         fontWeight="bold"
                         value={salePrice}
                         onChange={applySale}
                       />
                       <Field.ErrorText>{priceError}</Field.ErrorText>
+                      {/* The short path asks no cost: say what that means for
+                          the profit figures, as the till's quick-create does. */}
+                      {short && !noStock && !priceError && (
+                        <Field.HelperText>{t('stock.costBlankWarn')}</Field.HelperText>
+                      )}
                     </Field.Root>
                   </SimpleGrid>
 
@@ -855,7 +1031,7 @@ export function ProductForm({
                         quantity captured when it opened, so saving would undo
                         any sale rung up meanwhile. Restocking and inventory
                         corrections go through the dedicated stock dialog. */}
-                    {!product && (
+                    {!product && !noStock && (
                       <Field.Root>
                         <Field.Label>{t('stock.quantity')}</Field.Label>
                         <QuantityInput
@@ -869,7 +1045,7 @@ export function ProductForm({
                       <Field.Root>
                         <Field.Label>{t('stock.quantity')}</Field.Label>
                         <Input size="lg" value={product.quantity} readOnly disabled />
-                        <Field.HelperText>{t('stock.restock')}</Field.HelperText>
+                        <Field.HelperText>{t('backFix.qtyEditHint')}</Field.HelperText>
                       </Field.Root>
                     )}
                     {!short && (
@@ -898,6 +1074,15 @@ export function ProductForm({
                     </Alert.Root>
                   )}
 
+                  {sameNameWarn && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{t('backFix.sameName')}</Alert.Title>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   {saveError && (
                     <Alert.Root status="error">
                       <Alert.Indicator />
@@ -918,11 +1103,11 @@ export function ProductForm({
                 size="lg"
                 type="submit"
                 form="product-form"
-                colorPalette={twin ? 'orange' : 'brand'}
+                colorPalette={twin || sameNameWarn ? 'orange' : 'brand'}
                 loading={busy}
                 loadingText={t('common.saving')}
               >
-                {twin ? t('stock.saveAnyway') : t('common.save')}
+                {twin || sameNameWarn ? t('stock.saveAnyway') : t('common.save')}
               </Button>
             </Dialog.Footer>
           </Dialog.Content>
