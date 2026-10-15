@@ -2,8 +2,31 @@
 <html lang="fr" dir="ltr">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/png" href="/favicon.png" />
-    <link rel="apple-touch-icon" href="/brand/icon-192.png" />
+    <!--
+      A prospect on the bare domain goes to the light, prerendered landing page
+      BEFORE the till's code starts downloading; a till (anybody ever signed in
+      here, or the installed app) carries on to the app. This runs ahead of
+      every module, so it repeats src/features/landing/shopMachine.ts by hand:
+      keep the storage keys in step. The query string is kept, or an ad's
+      gclid/utm tags would be lost on the way.
+    -->
+    <script>
+      try {
+        if (location.pathname === '/' && !matchMedia('(display-mode: standalone)').matches) {
+          var ls = localStorage
+          var signedIn = ls.getItem('mk:shopMachine') === '1' || !!ls.getItem('lib.uid.v1')
+          for (var i = 0; !signedIn && i < ls.length; i++) {
+            signedIn = String(ls.key(i)).indexOf('firebase:authUser:') === 0
+          }
+          if (!signedIn) location.replace('/decouvrir' + location.search + location.hash)
+        }
+      } catch (e) {
+        /* storage blocked: the app's own redirect (RequireAuth) still applies */
+      }
+    </script>
+    <link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="/brand/favicon-16.png" />
+    <link rel="apple-touch-icon" href="/brand/apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0" />
     <meta name="theme-color" content="#1800ac" />
     <link rel="manifest" href="/manifest.webmanifest" />
@@ -17,6 +40,23 @@
 
     <title>Mektebti — Caisse et gestion pour librairies</title>
     <meta name="description" content="Caisse au scanner, stock, packs scolaires, factures et carnet clients pour les librairies en Tunisie. Marche même sans internet." />
+
+    <!--
+      This document is the till: every app route (/login, /caisse, …) is served
+      from it, behind a login. Search engines get the prerendered /decouvrir
+      instead, so the shell stays out of the index. The preview tags are only
+      for people sharing the bare domain on WhatsApp or Facebook.
+    -->
+    <meta name="robots" content="noindex" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Mektebti.tn" />
+    <meta property="og:title" content="Mektebti.tn, la caisse des librairies tunisiennes" />
+    <meta property="og:description" content="Caisse au scanner, packs scolaires, carnet de crédit et stock, au millime près. On installe, on charge votre stock, vous vendez." />
+    <meta property="og:url" content="%MK_SITE_URL%/decouvrir" />
+    <meta property="og:image" content="%MK_SITE_URL%/brand/og-image-fr.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
 
     <!--
       A plain white screen until React boots reads as "it is broken" to someone
