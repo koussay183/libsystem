@@ -4,7 +4,7 @@ import type { Dict } from './fr'
 // keys — a missing or extra key is a compile error.
 export const ar: Dict = {
   app: {
-    name: 'المكتبة',
+    name: 'مكتبتي',
     tagline: 'إدارة المكتبة',
   },
   common: {

@@ -55,17 +55,42 @@ const config = defineConfig({
     },
     tokens: {
       colors: {
+        // Mektebti ultramarine. The logo's own blue (#1800AC) sits at 800: it
+        // is too dark to carry a button on its own and vanishes on black, so
+        // the scale is built around it on the same hue and buttons use 700,
+        // which still reads as "the logo" while passing contrast with white.
         brand: {
-          50: { value: '#f0f9f8' },
-          100: { value: '#d9efec' },
-          200: { value: '#b4dfda' },
-          300: { value: '#85c8c1' },
-          400: { value: '#52aaa3' },
-          500: { value: '#348e88' },
-          600: { value: '#287a76' },
-          700: { value: '#236462' },
-          800: { value: '#204f4e' },
-          900: { value: '#1e4241' },
+          50: { value: '#f1f0ff' },
+          100: { value: '#e3e0ff' },
+          200: { value: '#c9c3ff' },
+          300: { value: '#a69cff' },
+          400: { value: '#7d6dff' },
+          500: { value: '#5b4bff' },
+          600: { value: '#4029f2' },
+          700: { value: '#2a12cf' },
+          800: { value: '#1800ac' },
+          900: { value: '#140a85' },
+          950: { value: '#0c0652' },
+        },
+        // The warm note against the blue: growth, the call to action, the
+        // highlight in a chart. Used sparingly so it keeps meaning something.
+        accent: {
+          50: { value: '#fff8eb' },
+          100: { value: '#ffedc6' },
+          200: { value: '#ffd988' },
+          300: { value: '#ffc24a' },
+          400: { value: '#ffad20' },
+          500: { value: '#f98d07' },
+          600: { value: '#dd6702' },
+          700: { value: '#b74606' },
+          800: { value: '#94350c' },
+          900: { value: '#7a2d0d' },
+          950: { value: '#461502' },
+        },
+        // Near-black with a drop of the brand hue — what the logo's black
+        // background becomes on screen. Pure #000 looks like a dead display.
+        ink: {
+          value: '#0b0a1f',
         },
       },
       fonts: {
@@ -76,13 +101,22 @@ const config = defineConfig({
     semanticTokens: {
       colors: {
         brand: {
-          solid: { value: '{colors.brand.600}' },
+          solid: { value: '{colors.brand.700}' },
           contrast: { value: 'white' },
           fg: { value: '{colors.brand.700}' },
           muted: { value: '{colors.brand.100}' },
           subtle: { value: '{colors.brand.50}' },
           emphasized: { value: '{colors.brand.200}' },
           focusRing: { value: '{colors.brand.500}' },
+        },
+        accent: {
+          solid: { value: '{colors.accent.400}' },
+          contrast: { value: '{colors.ink}' },
+          fg: { value: '{colors.accent.700}' },
+          muted: { value: '{colors.accent.100}' },
+          subtle: { value: '{colors.accent.50}' },
+          emphasized: { value: '{colors.accent.200}' },
+          focusRing: { value: '{colors.accent.500}' },
         },
       },
     },

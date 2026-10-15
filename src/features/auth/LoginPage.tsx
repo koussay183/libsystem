@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -14,7 +14,8 @@ import {
   Field,
   Alert,
 } from '@chakra-ui/react'
-import { BookMarked } from 'lucide-react'
+import { BrandLogo } from '@/components/BrandLogo'
+import { markShopMachine } from '@/features/landing/shopMachine'
 import { useAuth } from '@/auth/AuthContext'
 import { LanguageToggle } from '@/components/LanguageToggle'
 
@@ -42,6 +43,7 @@ export function LoginPage() {
     setBusy(true)
     try {
       await login(email, password)
+      markShopMachine()
       navigate('/', { replace: true })
     } catch (err) {
       // Firebase's codes, said in words a shopkeeper can act on. Wrong email
@@ -65,17 +67,14 @@ export function LoginPage() {
       justify="center"
       p={4}
       bgGradient="to-b"
-      gradientFrom="brand.subtle"
+      gradientFrom="brand.muted"
       gradientTo="gray.100"
     >
       <Box w="full" maxW="md">
         <Flex align="center" justify="space-between" mb={6}>
-          <Flex align="center" gap={2} color="brand.fg">
-            <BookMarked size={32} />
-            <Text fontSize="2xl" fontWeight="bold">
-              {t('app.name')}
-            </Text>
-          </Flex>
+          <Link to="/decouvrir" aria-label={t('app.name')} style={{ color: '#0b0a1f' }}>
+            <BrandLogo size={36} />
+          </Link>
           <LanguageToggle />
         </Flex>
 

@@ -40,3 +40,4 @@ cli/service-account*.json
 
 # frozen config of the pre-SaaS project, for the one-time pull
 .env.legacy
+.claude/worktrees/

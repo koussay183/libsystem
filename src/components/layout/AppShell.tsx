@@ -33,6 +33,7 @@ import type { NavItemDef } from '@/lib/navItems'
 import { getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
+import { BrandLogo } from '@/components/BrandLogo'
 import { SyncStatus, UpdateBanner, StaleBuildBanner, UnprotectedBanner } from '@/components/SyncStatus'
 import { syncStore, clearDenied } from '@/lib/syncStatus'
 import { retryLiveCollections } from '@/lib/liveCollection'
@@ -383,12 +384,9 @@ export function AppShell() {
   )
 
   const brand = (
-    <HStack asChild gap={2} color="brand.fg" px={4} py={4} minH="4.5rem">
-      <Link to="/">
-        <BookMarked size={28} />
-        <Text fontSize="xl" fontWeight="bold" truncate>
-          {t('app.name')}
-        </Text>
+    <HStack asChild gap={2} color="ink" px={4} py={4} minH="4.5rem">
+      <Link to="/" aria-label={t('app.name')}>
+        <BrandLogo size={30} />
       </Link>
     </HStack>
   )

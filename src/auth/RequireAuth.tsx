@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react'
-import { Navigate } from 'react-router-dom'
+import { Navigate, useLocation } from 'react-router-dom'
 import { Alert, Box, Button, Card, Flex, Heading, Spinner, Stack, Text } from '@chakra-ui/react'
 import { useTranslation } from 'react-i18next'
 import { ShieldAlert, LogOut } from 'lucide-react'
 import { useAuth } from './AuthContext'
+import { isShopMachine } from '@/features/landing/shopMachine'
 
 /**
  * Nothing renders until we know WHICH shop this is.
@@ -16,6 +17,7 @@ import { useAuth } from './AuthContext'
 export function RequireAuth({ children }: { children: ReactNode }) {
   const { t } = useTranslation()
   const { user, loading, shopId, logout } = useAuth()
+  const { pathname } = useLocation()
 
   if (loading && !user) {
     return (
@@ -25,7 +27,11 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     )
   }
 
-  if (!user) return <Navigate to="/login" replace />
+  // A visitor on the bare domain sees what the product is; a till sees login.
+  if (!user) {
+    const to = pathname === '/' && !isShopMachine() ? '/decouvrir' : '/login'
+    return <Navigate to={to} replace />
+  }
 
   // Signed in, but this account was never attached to a shop. Waiting would be
   // wrong: no amount of waiting attaches it. Only the CLI can.

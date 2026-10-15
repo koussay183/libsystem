@@ -50,6 +50,9 @@ const ReportsPage = lazy(() =>
 const BackupPage = lazy(() =>
   import('@/features/backup/BackupPage').then((m) => ({ default: m.BackupPage })),
 )
+const LandingPage = lazy(() =>
+  import('@/features/landing/LandingPage').then((m) => ({ default: m.LandingPage })),
+)
 const SettingsPage = lazy(() =>
   import('@/features/settings/SettingsPage').then((m) => ({ default: m.SettingsPage })),
 )
@@ -122,6 +125,14 @@ export function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          <Route
+            path="/decouvrir"
+            element={
+              <Suspense fallback={<PageFallback />}>
+                <LandingPage />
+              </Suspense>
+            }
+          />
           <Route
             element={
               <RequireAuth>

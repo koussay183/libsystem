@@ -1,6 +1,6 @@
 export const fr = {
   app: {
-    name: 'Librairie',
+    name: 'Mektebti',
     tagline: 'Gestion de librairie',
   },
   common: {
