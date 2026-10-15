@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { Box, Field, Flex, Input, NativeSelect } from '@chakra-ui/react'
 import { HISTORY_PERIODS } from '@/lib/dateRange'
 import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
+import type { ActiveFilter } from './ActiveFilters'
 
 const LABEL_KEY: Record<HistoryPeriod, string> = {
   all: 'filters.periodAll',
@@ -14,6 +15,31 @@ const LABEL_KEY: Record<HistoryPeriod, string> = {
   year: 'filters.periodYear',
   custom: 'filters.periodCustom',
 }
+
+/**
+ * The chip ActiveFilters shows for a period other than "all dates": the
+ * menu's own words, or the two dates themselves for a custom window.
+ */
+export function periodChip(
+  t: (key: string) => string,
+  period: HistoryPeriod,
+  custom: CustomDates,
+  onRemove: () => void,
+): ActiveFilter[] {
+  if (period === 'all') return []
+  const label =
+    period === 'custom'
+      ? [custom.from, custom.to].filter(Boolean).join(' → ') || t(LABEL_KEY.custom)
+      : t(LABEL_KEY[period])
+  return [{ key: 'period', label, onRemove }]
+}
+
+/** For useSessionState: a stored custom window must still be two strings. */
+export const isCustomDates = (v: unknown): boolean =>
+  typeof v === 'object' &&
+  v !== null &&
+  typeof (v as CustomDates).from === 'string' &&
+  typeof (v as CustomDates).to === 'string'
 
 /**
  * "Quand ?" for a history list: a short menu of the windows people actually

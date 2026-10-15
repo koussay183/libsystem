@@ -9,8 +9,6 @@ import {
   Text,
   Button,
   IconButton,
-  Input,
-  InputGroup,
   NativeSelect,
   Table,
   Badge,
@@ -20,15 +18,18 @@ import {
   Alert,
   EmptyState,
 } from '@chakra-ui/react'
-import { Plus, Truck, Wallet, Search, Trash2 } from 'lucide-react'
+import { Plus, Truck, Wallet, Trash2 } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
 import { fold } from '@/lib/textIndex'
-import { inSpan, spanOf } from '@/lib/dateRange'
+import { HISTORY_PERIODS, inSpan, spanOf } from '@/lib/dateRange'
 import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
-import { PeriodFilter } from '@/components/PeriodFilter'
+import { PeriodFilter, isCustomDates, periodChip } from '@/components/PeriodFilter'
+import { SearchInput } from '@/components/SearchInput'
+import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts } from '@/features/stock/useProducts'
 import { usePurchases, purchaseOwed, purchaseStatus, removePurchase } from './usePurchases'
 import type { PurchaseStatus } from './usePurchases'
@@ -60,10 +61,22 @@ export function PurchasesTab() {
    */
   const [settlingId, setSettlingId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [supplier, setSupplier] = useState(ALL)
-  const [status, setStatus] = useState<PurchaseStatus | typeof ALL>(ALL)
-  const [period, setPeriod] = useState<HistoryPeriod>('all')
-  const [custom, setCustom] = useState<CustomDates>({ from: '', to: '' })
+  const [supplier, setSupplier] = useSessionState('purchases.supplier', ALL)
+  const [status, setStatus] = useSessionState<PurchaseStatus | typeof ALL>(
+    'purchases.status',
+    ALL,
+    oneOf([ALL, 'unpaid', 'partial', 'paid']),
+  )
+  const [period, setPeriod] = useSessionState<HistoryPeriod>(
+    'purchases.period',
+    'all',
+    oneOf(HISTORY_PERIODS),
+  )
+  const [custom, setCustom] = useSessionState<CustomDates>(
+    'purchases.custom',
+    { from: '', to: '' },
+    isCustomDates,
+  )
   const [actionError, setActionError] = useState('')
   const listTop = useRef<HTMLDivElement>(null)
   const settling = settlingId ? (purchases.find((p) => p.id === settlingId) ?? null) : null
@@ -109,10 +122,10 @@ export function PurchasesTab() {
     // `span` is rebuilt each render; its two bounds are what it means.
     [purchases, span.from, span.to, status, supplier, q, haystack],
   )
-  const narrowed = q !== '' || supplier !== ALL || status !== ALL || period !== 'all'
   const paged = usePaged(
     filtered,
     `${q}|${supplier}|${status}|${span.from ?? ''}|${span.to ?? ''}`,
+    { persist: 'purchases' },
   )
   const filteredTotal = filtered.reduce((s, p) => s + p.total, 0)
   const filteredOwed = filtered.reduce((s, p) => s + purchaseOwed(p), 0)
@@ -124,6 +137,26 @@ export function PurchasesTab() {
     setPeriod('all')
     setCustom({ from: '', to: '' })
   }
+  const STATUS_LABEL: Record<PurchaseStatus, string> = {
+    unpaid: t('purchases.unpaid'),
+    partial: t('purchases.paidPartial'),
+    paid: t('purchases.paidFull'),
+  }
+  const activeFilters = [
+    ...(supplier !== ALL
+      ? [
+          {
+            key: 'supplier',
+            label: t('smart.filterChip', { name: t('purchases.supplier'), value: supplier }),
+            onRemove: () => setSupplier(ALL),
+          },
+        ]
+      : []),
+    ...(status !== ALL
+      ? [{ key: 'status', label: STATUS_LABEL[status], onRemove: () => setStatus(ALL) }]
+      : []),
+    ...periodChip(t, period, custom, () => setPeriod('all')),
+  ]
 
   /**
    * removePurchase enqueues the stock reversal and the delete and returns, so the
@@ -198,14 +231,12 @@ export function PurchasesTab() {
 
       {/* ---------------- Filters ---------------- */}
       <Stack gap={3} mb={4}>
-        <InputGroup startElement={<Search size={22} />}>
-          <Input
-            size="lg"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('supplier.searchPlaceholder')}
-          />
-        </InputGroup>
+        <SearchInput
+          shortcut
+          value={search}
+          onChange={setSearch}
+          placeholder={t('supplier.searchPlaceholder')}
+        />
         <Flex gap={3} wrap="wrap">
           <Box flex="1" minW="12rem">
             <NativeSelect.Root size="lg">
@@ -277,13 +308,9 @@ export function PurchasesTab() {
               </>
             )}
           </Text>
-          {narrowed && (
-            <Button size="xs" variant="ghost" onClick={resetFilters}>
-              {t('filters.clear')}
-            </Button>
-          )}
         </Flex>
       )}
+      <ActiveFilters filters={activeFilters} onReset={resetFilters} />
 
       {actionError && (
         <Alert.Root status="error" mb={4}>
@@ -320,11 +347,7 @@ export function PurchasesTab() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : filtered.length === 0 ? (
-        <Card.Root>
-          <Card.Body>
-            <Text color="fg.muted">{t('stock.noResults')}</Text>
-          </Card.Body>
-        </Card.Root>
+        <NoResults search={search} filtered={activeFilters.length > 0} onReset={resetFilters} />
       ) : (
         <Box overflowX="auto">
           <Table.Root size="lg" striped>

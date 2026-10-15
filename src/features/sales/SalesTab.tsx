@@ -11,8 +11,6 @@ import {
   Portal,
   Flex,
   HStack,
-  Input,
-  InputGroup,
   NativeSelect,
   Stack,
   Text,
@@ -23,7 +21,6 @@ import {
 import {
   ShoppingCart,
   Receipt,
-  Search,
   Printer,
   FileText,
   Plus,
@@ -34,11 +31,14 @@ import {
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
 import { fold } from '@/lib/textIndex'
-import { spanOf } from '@/lib/dateRange'
+import { HISTORY_PERIODS, spanOf } from '@/lib/dateRange'
 import type { CustomDates, HistoryPeriod } from '@/lib/dateRange'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
-import { PeriodFilter } from '@/components/PeriodFilter'
+import { PeriodFilter, isCustomDates, periodChip } from '@/components/PeriodFilter'
+import { SearchInput } from '@/components/SearchInput'
+import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useSalesHistory, useSalesCount } from './useSales'
 import { NewSaleInvoice } from './NewSaleInvoice'
 import { SaleEditor } from './SaleEditor'
@@ -78,10 +78,27 @@ export function SalesTab() {
   const { shop } = useShopSettings()
 
   const [search, setSearch] = useState('')
-  const [period, setPeriod] = useState<HistoryPeriod>('all')
-  const [custom, setCustom] = useState<CustomDates>({ from: '', to: '' })
-  const [kind, setKind] = useState<KindFilter>('all')
-  const [status, setStatus] = useState<StatusFilter>('all')
+  // Kept for the tab, so a ticket opened and closed does not lose the filters.
+  const [period, setPeriod] = useSessionState<HistoryPeriod>(
+    'sales.period',
+    'all',
+    oneOf(HISTORY_PERIODS),
+  )
+  const [custom, setCustom] = useSessionState<CustomDates>(
+    'sales.custom',
+    { from: '', to: '' },
+    isCustomDates,
+  )
+  const [kind, setKind] = useSessionState<KindFilter>(
+    'sales.kind',
+    'all',
+    oneOf(['all', 'ticket', 'invoice']),
+  )
+  const [status, setStatus] = useSessionState<StatusFilter>(
+    'sales.status',
+    'all',
+    oneOf(['all', 'paid', 'credit', 'partial', 'return']),
+  )
   const [invoiceOpen, setInvoiceOpen] = useState(false)
   const listTop = useRef<HTMLDivElement>(null)
 
@@ -238,6 +255,28 @@ export function SalesTab() {
   }
   const neverSold = !loading && !error && sales.length === 0 && period === 'all' && !narrowed
 
+  const KIND_LABEL: Record<KindFilter, string> = {
+    all: t('filters.kindAll'),
+    ticket: t('filters.kindTicket'),
+    invoice: t('filters.kindInvoice'),
+  }
+  const STATUS_LABEL: Record<StatusFilter, string> = {
+    all: t('filters.paymentAll'),
+    paid: t('sales.paid'),
+    credit: t('sales.credit'),
+    partial: t('pos.partial'),
+    return: t('filters.withReturn'),
+  }
+  const activeFilters = [
+    ...periodChip(t, period, custom, () => setPeriod('all')),
+    ...(kind !== 'all'
+      ? [{ key: 'kind', label: KIND_LABEL[kind], onRemove: () => setKind('all') }]
+      : []),
+    ...(status !== 'all'
+      ? [{ key: 'status', label: STATUS_LABEL[status], onRemove: () => setStatus('all') }]
+      : []),
+  ]
+
   return (
     <Box>
       <Flex justify="flex-end" gap={3} mb={4} wrap="wrap">
@@ -255,14 +294,12 @@ export function SalesTab() {
 
       {/* ---------------- Find a ticket ---------------- */}
       <Stack gap={3} mb={4}>
-        <InputGroup startElement={<Search size={22} />}>
-          <Input
-            size="lg"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('sales.searchTicket')}
-          />
-        </InputGroup>
+        <SearchInput
+          shortcut
+          value={search}
+          onChange={setSearch}
+          placeholder={t('sales.searchTicket')}
+        />
         <Flex gap={3} wrap="wrap" align="flex-end">
           <PeriodFilter
             period={period}
@@ -329,13 +366,9 @@ export function SalesTab() {
               </>
             )}
           </Text>
-          {(narrowed || period !== 'all') && (
-            <Button size="xs" variant="ghost" onClick={resetFilters}>
-              {t('filters.clear')}
-            </Button>
-          )}
         </Flex>
       )}
+      <ActiveFilters filters={activeFilters} onReset={resetFilters} />
 
       {loading ? (
         <Flex align="center" justify="center" py={16}>
@@ -370,11 +403,11 @@ export function SalesTab() {
           <Spinner size="xl" colorPalette="brand" />
         </Flex>
       ) : filtered.length === 0 ? (
-        <Card.Root>
-          <Card.Body>
-            <Text color="fg.muted">{t('stock.noResults')}</Text>
-          </Card.Body>
-        </Card.Root>
+        <NoResults
+          search={search}
+          filtered={activeFilters.length > 0}
+          onReset={resetFilters}
+        />
       ) : (
         <SaleCards
           sales={paged.pageItems}

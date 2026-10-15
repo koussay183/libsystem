@@ -21,7 +21,9 @@ import {
 } from '@chakra-ui/react'
 import { Check, Copy, Package, ScanLine, X, Zap } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { toInput, parseMoney, parseQuantity, moneySymbolKey, moneyPlaceholder } from '@/lib/money'
+import { toInput, parseMoney, parseQuantity, moneySymbolKey } from '@/lib/money'
+import { MoneyInput } from '@/components/MoneyInput'
+import { QuantityInput } from '@/components/QuantityInput'
 import { formatPercent } from '@/lib/format'
 import { createProduct, updateProduct, findProductByBarcode } from './useProducts'
 import {
@@ -760,12 +762,11 @@ export function ProductForm({
                     <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
                       <Field.Root>
                         <Field.Label>{`${t('stock.costPriceHT')} (${symbol})`}</Field.Label>
-                        <Input
+                        <MoneyInput
                           size="lg"
+                          preview={false}
                           value={costHT}
-                          onChange={(e) => applyHt(e.target.value)}
-                          inputMode="decimal"
-                          placeholder={moneyPlaceholder()}
+                          onChange={applyHt}
                         />
                         <Field.HelperText>{t('stock.costPriceHtHint')}</Field.HelperText>
                       </Field.Root>
@@ -796,12 +797,11 @@ export function ProductForm({
                     {!short && (
                       <Field.Root>
                         <Field.Label>{`${t('stock.costPrice')} (${symbol})`}</Field.Label>
-                        <Input
+                        <MoneyInput
                           size="lg"
+                          preview={false}
                           value={costPrice}
-                          onChange={(e) => applyTtc(e.target.value)}
-                          inputMode="decimal"
-                          placeholder={moneyPlaceholder()}
+                          onChange={applyTtc}
                         />
                         <Field.HelperText>{t('stock.costPriceHint')}</Field.HelperText>
                       </Field.Root>
@@ -821,13 +821,11 @@ export function ProductForm({
                     )}
                     <Field.Root required={short} invalid={!!priceError}>
                       <Field.Label>{`${t('stock.salePrice')} (${symbol})`}</Field.Label>
-                      <Input
+                      <MoneyInput
                         size="lg"
                         fontWeight="bold"
                         value={salePrice}
-                        onChange={(e) => applySale(e.target.value)}
-                        inputMode="decimal"
-                        placeholder={moneyPlaceholder()}
+                        onChange={applySale}
                       />
                       <Field.ErrorText>{priceError}</Field.ErrorText>
                     </Field.Root>
@@ -860,11 +858,9 @@ export function ProductForm({
                     {!product && (
                       <Field.Root>
                         <Field.Label>{t('stock.quantity')}</Field.Label>
-                        <Input
-                          size="lg"
+                        <QuantityInput
                           value={quantity}
-                          onChange={(e) => setQuantity(e.target.value)}
-                          inputMode="numeric"
+                          onChange={setQuantity}
                           placeholder="0"
                         />
                       </Field.Root>
@@ -879,11 +875,9 @@ export function ProductForm({
                     {!short && (
                       <Field.Root>
                         <Field.Label>{t('stock.lowStockThreshold')}</Field.Label>
-                        <Input
-                          size="lg"
+                        <QuantityInput
                           value={threshold}
-                          onChange={(e) => setThreshold(e.target.value)}
-                          inputMode="numeric"
+                          onChange={setThreshold}
                           placeholder="0"
                         />
                         <Field.HelperText>{t('common.optional')}</Field.HelperText>

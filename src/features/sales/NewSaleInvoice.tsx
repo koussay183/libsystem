@@ -10,7 +10,6 @@ import {
   Text,
   Button,
   IconButton,
-  Input,
   Field,
   NativeSelect,
   Dialog,
@@ -24,6 +23,7 @@ import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useCustomers } from '@/features/customers/useCustomers'
+import { MoneyInput } from '@/components/MoneyInput'
 import { recordSale, paymentModeOf } from './useSales'
 import type { TicketData } from '@/features/pos/Ticket'
 import type { PaymentMode, Product } from '@/types/models'
@@ -296,15 +296,17 @@ export function NewSaleInvoice({
                           </Text>
                         </Box>
 
-                        <Input
-                          size="lg"
-                          w="7rem"
-                          textAlign="center"
-                          value={l.priceStr}
-                          onChange={(e) => setPrice(l.productId, e.target.value)}
-                          inputMode="decimal"
-                          aria-label={t('sales.unitPrice')}
-                        />
+                        <Box w="7rem">
+                          <MoneyInput
+                            size="lg"
+                            preview={false}
+                            textAlign="center"
+                            placeholder=""
+                            value={l.priceStr}
+                            onChange={(v) => setPrice(l.productId, v)}
+                            aria-label={t('sales.unitPrice')}
+                          />
+                        </Box>
 
                         <HStack gap={0} borderWidth="2px" borderColor="border" borderRadius="xl">
                           <IconButton
@@ -352,13 +354,12 @@ export function NewSaleInvoice({
                   <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4} alignItems="end">
                     <Field.Root>
                       <Field.Label fontSize="lg">{t('sales.amountPaidNow')}</Field.Label>
-                      <Input
+                      <MoneyInput
                         size="xl"
-                        inputMode="decimal"
                         value={paidValue}
-                        onChange={(e) => {
+                        onChange={(v) => {
                           setPaidTouched(true)
-                          setPaidStr(e.target.value)
+                          setPaidStr(v)
                           setError('')
                         }}
                       />

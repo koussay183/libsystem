@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Box,
@@ -7,7 +7,6 @@ import {
   Field,
   Flex,
   HStack,
-  Input,
   Portal,
   Stack,
   Text,
@@ -17,6 +16,7 @@ import { Wallet } from 'lucide-react'
 import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
 import { formatDate } from '@/lib/format'
 import { useAlive } from '@/lib/useAlive'
+import { MoneyInput } from '@/components/MoneyInput'
 import { settlePurchase, purchaseOwed } from './usePurchases'
 import type { Purchase } from '@/types/models'
 
@@ -43,6 +43,7 @@ export function SettlePurchase({
   const [amountStr, setAmountStr] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const submitting = useRef(false)
 
   useEffect(() => {
     if (!open) return
@@ -65,10 +66,14 @@ export function SettlePurchase({
    * increment() applied both amounts on reconnect.
    */
   const save = async () => {
+    // A latch, not `busy`: Enter held down fires twice before `busy` renders,
+    // and increment() would pay the supplier twice.
+    if (submitting.current) return
     if (parsed === null || parsed <= 0) {
       setError(t('credit.amountRequired'))
       return
     }
+    submitting.current = true
     setError('')
     setBusy(true)
     try {
@@ -77,6 +82,7 @@ export function SettlePurchase({
     } catch (e) {
       if (alive.current) setError(e instanceof Error ? e.message : t('common.error'))
     } finally {
+      submitting.current = false
       if (alive.current) setBusy(false)
     }
   }
@@ -122,14 +128,22 @@ export function SettlePurchase({
 
                 <Field.Root invalid={!!error}>
                   <Field.Label fontSize="lg">{t('purchases.settleAmount')}</Field.Label>
-                  <Input
+                  {/* No echo: the button below already says the amount. Enter
+                      pays, as in every other dialog. */}
+                  <MoneyInput
                     size="xl"
                     autoFocus
-                    inputMode="decimal"
+                    preview={false}
                     value={amountStr}
-                    onChange={(e) => {
-                      setAmountStr(e.target.value)
+                    onChange={(v) => {
+                      setAmountStr(v)
                       setError('')
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void save()
+                      }
                     }}
                   />
                   {error ? (

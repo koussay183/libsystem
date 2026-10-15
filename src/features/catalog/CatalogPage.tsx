@@ -9,8 +9,6 @@ import {
   EmptyState,
   Flex,
   HStack,
-  Input,
-  InputGroup,
   NativeSelect,
   SimpleGrid,
   Spinner,
@@ -18,7 +16,7 @@ import {
   Table,
   Text,
 } from '@chakra-ui/react'
-import { BookMarked, Check, Library, Plus, Search, X } from 'lucide-react'
+import { BookMarked, Check, Library, Plus } from 'lucide-react'
 import { formatMoney, moneySymbolKey, parseQuantity } from '@/lib/money'
 import { useDebounced } from '@/lib/useDebounced'
 import { useCatalog } from './useCatalog'
@@ -29,6 +27,10 @@ import { useShopSettings } from '@/features/settings/useShopSettings'
 import { ProductForm } from '@/features/stock/ProductForm'
 import { codeOf, loose } from '@/features/stock/barcode'
 import { marginFromPrices } from '@/features/stock/pricing'
+import { SearchInput } from '@/components/SearchInput'
+import { QuantityInput } from '@/components/QuantityInput'
+import { NoResults } from '@/components/ActiveFilters'
+import { useSessionState } from '@/lib/useSessionState'
 
 /** base1…base9 then sec1…sec4, in the order a Tunisian parent asks for them. */
 const LEVELS = [
@@ -88,9 +90,15 @@ export function CatalogPage() {
   const { shop } = useShopSettings()
 
   const [search, setSearch] = useState('')
-  const [category, setCategory] = useState('')
+  const [category, setCategory] = useSessionState('catalog.category', '')
   const [level, setLevel] = useState('')
-  const [officialOnly, setOfficialOnly] = useState(false)
+  const [officialOnly, setOfficialOnly] = useSessionState('catalog.official', false)
+  const browseFiltered = category !== '' || officialOnly
+  const resetBrowse = () => {
+    setSearch('')
+    setCategory('')
+    setOfficialOnly(false)
+  }
 
   // Each search is a server query: wait for a pause in the typing, but let a
   // cleared box through at once.
@@ -126,7 +134,7 @@ export function CatalogPage() {
 
   // --- the school books -----------------------------------------------------
 
-  const [bookLevel, setBookLevel] = useState('')
+  const [bookLevel, setBookLevel] = useSessionState('catalog.bookLevel', '')
   const [qty, setQty] = useState<Record<string, string>>({})
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkDone, setBulkDone] = useState(0)
@@ -355,14 +363,15 @@ export function CatalogPage() {
                         {t('catalog.add')}
                       </Button>
                     ) : (
-                      <Input
-                        size="lg"
-                        w="7rem"
-                        inputMode="numeric"
-                        placeholder={t('catalog.qty')}
-                        value={qty[b.id] ?? ''}
-                        onChange={(e) => setQty((q) => ({ ...q, [b.id]: e.target.value }))}
-                      />
+                      <Box w="10rem">
+                        <QuantityInput
+                          size="md"
+                          placeholder={t('catalog.qty')}
+                          aria-label={t('catalog.qty')}
+                          value={qty[b.id] ?? ''}
+                          onChange={(v) => setQty((q) => ({ ...q, [b.id]: v }))}
+                        />
+                      </Box>
                     )}
                   </Flex>
                 )
@@ -383,20 +392,12 @@ export function CatalogPage() {
       </Text>
 
       <SimpleGrid columns={{ base: 1, md: 3 }} gap={3} mb={4}>
-        <InputGroup startElement={<Search size={18} />} endElement={
-          search !== '' ? (
-            <Box as="button" onClick={() => setSearch('')} aria-label={t('common.reset')}>
-              <X size={16} />
-            </Box>
-          ) : undefined
-        }>
-          <Input
-            size="lg"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('catalog.searchPlaceholder')}
-          />
-        </InputGroup>
+        <SearchInput
+          shortcut
+          value={search}
+          onChange={setSearch}
+          placeholder={t('catalog.searchPlaceholder')}
+        />
         <NativeSelect.Root size="lg" disabled={search !== ''}>
           <NativeSelect.Field
             value={category}
@@ -416,7 +417,7 @@ export function CatalogPage() {
           variant={officialOnly ? 'solid' : 'outline'}
           colorPalette="brand"
           disabled={search !== ''}
-          onClick={() => setOfficialOnly((v) => !v)}
+          onClick={() => setOfficialOnly(!officialOnly)}
         >
           <BookMarked size={18} />
           {t('catalog.officialOnly')}
@@ -446,6 +447,8 @@ export function CatalogPage() {
         <Flex justify="center" py={16}>
           <Spinner size="xl" colorPalette="brand" />
         </Flex>
+      ) : items.length === 0 && (search !== '' || browseFiltered) ? (
+        <NoResults search={search} filtered={search === '' && browseFiltered} onReset={resetBrowse} />
       ) : items.length === 0 ? (
         <EmptyState.Root size="lg">
           <EmptyState.Content>

@@ -10,19 +10,19 @@ import {
   Text,
   Button,
   IconButton,
-  Input,
-  InputGroup,
   Card,
   Stat,
   Alert,
   EmptyState,
   Spinner,
 } from '@chakra-ui/react'
-import { Plus, Search, Truck, Pencil, Trash2, Wallet } from 'lucide-react'
+import { Plus, Truck, Pencil, Trash2, Wallet } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { fold } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { SearchInput } from '@/components/SearchInput'
+import { NoResults } from '@/components/ActiveFilters'
 import { useSuppliers, removeSupplier } from './useSuppliers'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { SupplierForm } from './SupplierForm'
@@ -60,7 +60,7 @@ export function SuppliersPage() {
       : suppliers.filter(
           (s) => fold(s.name).includes(q) || fold(s.phone ?? '').includes(q),
         )
-  const paged = usePaged(filtered, q)
+  const paged = usePaged(filtered, q, { persist: 'suppliers' })
 
   const openAdd = () => {
     setEditing(null)
@@ -73,7 +73,6 @@ export function SuppliersPage() {
   const onDelete = async (s: Supplier) => {
     if (window.confirm(t('supplier.deleteConfirm'))) await removeSupplier(s.id)
   }
-  const onSearchSubmit = (e: FormEvent<HTMLFormElement>) => e.preventDefault()
 
   return (
     <Box>
@@ -121,16 +120,13 @@ export function SuppliersPage() {
 
       {/* ---------------- Search ---------------- */}
       <Box mb={4} ref={listTop}>
-        <form onSubmit={onSearchSubmit}>
-          <InputGroup startElement={<Search size={22} />}>
-            <Input
-              size="lg"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder={t('supplier.searchPlaceholder')}
-            />
-          </InputGroup>
-        </form>
+        <SearchInput
+          shortcut
+          value={search}
+          onChange={setSearch}
+          count={q !== '' ? filtered.length : undefined}
+          placeholder={t('supplier.searchPlaceholder')}
+        />
       </Box>
 
       {/* ---------------- List ---------------- */}
@@ -160,11 +156,12 @@ export function SuppliersPage() {
           </EmptyState.Content>
         </EmptyState.Root>
       ) : filtered.length === 0 ? (
-        <Card.Root>
-          <Card.Body>
-            <Text color="fg.muted">{t('stock.noResults')}</Text>
-          </Card.Body>
-        </Card.Root>
+        <NoResults search={search} onReset={() => setSearch('')}>
+          <Button size="lg" colorPalette="brand" onClick={openAdd}>
+            <Plus size={18} />
+            {t('supplier.add')}
+          </Button>
+        </NoResults>
       ) : (
         <Stack gap={3}>
           {paged.pageItems.map((s) => (
@@ -235,6 +232,8 @@ export function SuppliersPage() {
           onClose={() => setFormOpen(false)}
           supplier={editing}
           purchases={purchases}
+          suppliers={suppliers}
+          onPickExisting={(s) => setEditing(s)}
         />
       )}
     </Box>

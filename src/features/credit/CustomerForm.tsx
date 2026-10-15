@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -14,8 +14,14 @@ import {
 } from '@chakra-ui/react'
 import { UserPlus, UserCog } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
-import { moneyPlaceholder, moneySymbolKey, parseMoney } from '@/lib/money'
+import { moneySymbolKey, parseMoney } from '@/lib/money'
+import { findSimilar } from '@/lib/similar'
+import { formatPhoneTyping, normalizePhone } from '@/lib/phone'
+import { PhoneInput } from '@/components/PhoneInput'
+import { MoneyInput } from '@/components/MoneyInput'
+import { SimilarRecords } from '@/components/SimilarRecords'
 import {
+  useCustomers,
   createCustomer,
   updateCustomer,
   addCreditEntry,
@@ -28,6 +34,9 @@ export function CustomerForm({
   customer,
   onCreated,
   withOpeningDebt = false,
+  onPickExisting,
+  initialName,
+  initialPhone,
 }: {
   open: boolean
   onClose: () => void
@@ -45,6 +54,11 @@ export function CustomerForm({
    * "Il a pris" to write the number he already had in front of him.
    */
   withOpeningDebt?: boolean
+  /** Opens a client the owner recognised in the "already exists" list. */
+  onPickExisting?: (id: string) => void
+  /** Pre-fills a NEW client from what was typed in the search box. */
+  initialName?: string
+  initialPhone?: string
 }) {
   const { t } = useTranslation()
   const alive = useAlive()
@@ -72,6 +86,14 @@ export function CustomerForm({
    */
   const submitting = useRef(false)
 
+  // Only while creating: the carnet that holds the same client twice splits
+  // his debt in two, and neither half is chased in full.
+  const { customers } = useCustomers()
+  const similar = useMemo(
+    () => (customer ? [] : findSimilar(customers, name, phone)),
+    [customer, customers, name, phone],
+  )
+
   /**
    * Keyed on the customer's ID, not the customer object.
    *
@@ -84,8 +106,8 @@ export function CustomerForm({
   const customerId = customer?.id
   useEffect(() => {
     if (!open) return
-    setName(customer?.name ?? '')
-    setPhone(customer?.phone ?? '')
+    setName(customer?.name ?? initialName ?? '')
+    setPhone(customer?.phone ?? (initialPhone ? formatPhoneTyping(initialPhone) : ''))
     setCin(customer?.cin ?? '')
     setNote(customer?.note ?? '')
     setOpening('')
@@ -124,7 +146,7 @@ export function CustomerForm({
     try {
       const input = {
         name: name.trim(),
-        phone: phone.trim() || undefined,
+        phone: normalizePhone(phone) || undefined,
         cin: cin.trim() || undefined,
         note: note.trim() || undefined,
       }
@@ -192,22 +214,21 @@ export function CustomerForm({
                       value={name}
                       onChange={(e: ChangeEvent<HTMLInputElement>) => {
                         setName(e.target.value)
+                        setNameError('')
                       }}
                       placeholder={t('customer.namePlaceholder')}
                     />
                     <Field.ErrorText>{nameError}</Field.ErrorText>
                   </Field.Root>
 
+                  <SimilarRecords
+                    matches={similar}
+                    onPick={onPickExisting ? (c) => onPickExisting(c.id) : undefined}
+                  />
+
                   <Field.Root>
                     <Field.Label>{t('customer.phone')}</Field.Label>
-                    <Input
-                      size="lg"
-                      inputMode="tel"
-                      value={phone}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                        setPhone(e.target.value)
-                      }}
-                    />
+                    <PhoneInput size="lg" value={phone} onChange={setPhone} />
                     <Field.HelperText>{t('common.optional')}</Field.HelperText>
                   </Field.Root>
 
@@ -240,15 +261,13 @@ export function CustomerForm({
                   {withOpeningDebt && !customer && (
                     <Field.Root invalid={!!openingError}>
                       <Field.Label>{`${t('credit.openingDebt')} (${symbol})`}</Field.Label>
-                      <Input
+                      <MoneyInput
                         size="lg"
-                        inputMode="decimal"
                         value={opening}
-                        onChange={(e: ChangeEvent<HTMLInputElement>) => {
-                          setOpening(e.target.value)
+                        onChange={(v) => {
+                          setOpening(v)
                           setOpeningError('')
                         }}
-                        placeholder={moneyPlaceholder()}
                       />
                       <Field.ErrorText>{openingError}</Field.ErrorText>
                       {!openingError && (

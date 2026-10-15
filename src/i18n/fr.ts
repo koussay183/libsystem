@@ -1002,6 +1002,24 @@ export const fr = {
     millimeMode: 'Millimes',
     example: 'Par exemple',
   },
+  // Champs « intelligents » et filtres partagés (src/components/).
+  smart: {
+    resultCount: 'Trouvés : {{count}}',
+    clearSearch: 'Effacer la recherche',
+    searchShortcut: 'Appuyez sur / ou Ctrl+K pour chercher',
+    activeFilters: 'Filtres actifs',
+    removeFilter: 'Retirer ce filtre',
+    showAll: 'Tout afficher',
+    filterChip: '{{name}} : {{value}}',
+    noMatchFor: 'Rien ne correspond à « {{term}} »',
+    noMatchFiltered: 'Des filtres sont actifs : ils cachent peut-être ce que vous cherchez.',
+    moneyUnreadable: 'Montant illisible : vérifiez les chiffres.',
+    phoneOdd: 'Ce n’est pas un numéro tunisien à 8 chiffres. Il sera quand même enregistré.',
+    duplicateWarn: 'Attention : une fiche avec ce nom ou ce numéro existe déjà.',
+    similarExisting: 'Fiches qui se ressemblent :',
+    openExisting: 'Ouvrir cette fiche',
+    supplierPicked: 'Ce fournisseur existe déjà : modifiez-le plutôt que d’en créer un second.',
+  },
 } as const
 
 export type Dict = {

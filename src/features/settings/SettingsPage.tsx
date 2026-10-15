@@ -49,6 +49,7 @@ import {
 } from '@/features/stock/pricing'
 import { setMoneyMode } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
+import { PhoneInput } from '@/components/PhoneInput'
 import { ROUTE_PALETTE } from '@/lib/navColors'
 import {
   NAV_FOOTER,
@@ -227,7 +228,11 @@ function IdentitySection({ f }: { f: ShopForm }) {
             <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4}>
               <Field.Root>
                 <Field.Label>{t('settings.phone')}</Field.Label>
-                <Input size="lg" value={form.phone ?? ''} onChange={f.field('phone')} />
+                <PhoneInput
+                  size="lg"
+                  value={form.phone ?? ''}
+                  onChange={(v) => f.field('phone')({ target: { value: v } })}
+                />
               </Field.Root>
               <Field.Root>
                 <Field.Label>{t('settings.taxId')}</Field.Label>
