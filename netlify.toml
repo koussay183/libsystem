@@ -1,4 +1,15 @@
-# Netlify configuration for the librairie manager (a Vite single-page app).
+# Netlify configuration for the librairie manager (a Vite single-page app,
+# plus prerendered public pages).
+#
+# ALL routing lives here. There must be no public/_redirects: Netlify reads it
+# BEFORE this file, so its catch-all used to shadow every rule below.
+#
+# NEVER add a rule that redirects libsystem-tn.netlify.app as a whole to
+# another domain (mektebti.tn included). Every till keeps its offline sales
+# queue, its session and its parked tickets in browser storage that belongs to
+# this exact origin; a host-wide 301 strands them and freezes the service worker
+# on its last build. See docs/launch/07-web-launch-notes.md before any domain
+# change.
 [build]
   command = "npm run build"
   publish = "dist"
@@ -7,30 +18,127 @@
 # without a commit saying so.
 #
 # The six VITE_FIREBASE_* values are NOT here, and must be set in the Netlify
-# UI instead: .env.local is gitignored, so a build without them succeeds. It
-# does not crash — src/lib/firebase.ts checks isFirebaseConfigured and shows a
-# "setup needed" screen — and that is exactly what makes it easy to miss. The
-# deploy log is green and the till simply cannot reach any data.
+# UI instead (.env.local is gitignored). vite.config.ts now fails the build when
+# one is missing on Netlify: before, the deploy went green and every till opened
+# on the "setup needed" screen. The optional tracking and site variables are
+# listed in docs/launch/07-web-launch-notes.md.
 [build.environment]
   NODE_VERSION = "22"
+
+# ---------------------------------------------------------------- routing ---
+# First match wins, so the order matters: specific rules, then the 404 guards,
+# then the app's catch-all, last.
+
+# The public pages, prerendered by scripts/landing.ts. Forced, so they win over
+# anything else at these paths. They are plain HTML with no app code: a prospect
+# no longer downloads the till to read about it. Each route here must also be in
+# PUBLIC_ROUTES (scripts/landing.ts) and PUBLIC_PATHS (shopMachine.ts); the
+# build checks it.
+[[redirects]]
+  from = "/decouvrir"
+  to = "/_m/decouvrir-fr.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/ar/decouvrir"
+  to = "/_m/decouvrir-ar.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/mentions-legales"
+  to = "/_m/mentions-legales.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/confidentialite"
+  to = "/_m/confidentialite.html"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/cgv"
+  to = "/_m/cgv.html"
+  status = 200
+  force = true
+
+# Browsers ask for /favicon.ico on their own.
+[[redirects]]
+  from = "/favicon.ico"
+  to = "/brand/favicon.ico"
+  status = 200
+
+# A file that does not exist under these folders is a real 404, never the app's
+# index.html. The catch-all below used to answer a missing chunk with HTML, a
+# 200 and the one-year immutable header, which browsers and the service worker
+# then kept. Not forced: files that exist are still served as they are.
+[[redirects]]
+  from = "/assets/*"
+  to = "/404.html"
+  status = 404
+
+[[redirects]]
+  from = "/brand/*"
+  to = "/404.html"
+  status = 404
+
+[[redirects]]
+  from = "/_m/*"
+  to = "/404.html"
+  status = 404
 
 # A single-page app owns its routing. Without this, opening or refreshing any
 # deep link (e.g. /caisse, /credit/abc) would hit Netlify's file server, find
 # no such file, and return 404. Rewrite everything to index.html so React
 # Router handles it. Status 200 (rewrite), not 301 (redirect), keeps the URL.
+# Keep it LAST.
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
 
+# ---------------------------------------------------------------- headers ---
+
+# For every response. No Cache-Control in here: it would overlap the per-path
+# rules below. HSTS is set explicitly because Netlify adds it on *.netlify.app
+# but not necessarily on a custom domain. Framing is limited to our own pages
+# (clickjacking a till). Permissions-Policy turns off what the app never uses —
+# the scanner is a keyboard and printing is window.print(); loosen usb/serial
+# to (self) if direct printer access is ever added.
+#
+# No script policy (CSP) yet: see docs/launch/07-web-launch-notes.md for the
+# report-only rollout. The service worker copies these headers onto every page
+# it serves (scripts/pwa.ts, shellResponse), or they would only protect a
+# till's very first visit.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Strict-Transport-Security = "max-age=31536000"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    X-Frame-Options = "SAMEORIGIN"
+    Content-Security-Policy = "frame-ancestors 'self'"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), hid=(), bluetooth=(), browsing-topics=()"
+
 # Vite fingerprints every file under /assets, so its contents can never change
 # behind a given URL — the browser may keep them for a year and reopen the shop
 # with no downloads at all. Deliberately NOT widened past /assets: public/ holds
-# favicon.svg and manifest.webmanifest, whose names never change.
+# the manifest and the brand images, whose names never change.
 [[headers]]
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# The brand images keep their names, so not immutable: a day fresh, then
+# refreshed in the background. The till does not depend on this — its service
+# worker precaches them (scripts/pwa.ts) — it saves prospects a revalidation per
+# image on every visit.
+[[headers]]
+  for = "/brand/*"
+  [headers.values]
+    Cache-Control = "public, max-age=86400, stale-while-revalidate=604800"
 
 # The entry document must be rechecked on every visit, or a deploy would never
 # reach the shop.
@@ -46,7 +154,10 @@
   [headers.values]
     Cache-Control = "no-cache"
 
+# Netlify serves .webmanifest as application/octet-stream by default, which
+# validators reject (more so behind nosniff).
 [[headers]]
   for = "/manifest.webmanifest"
   [headers.values]
     Cache-Control = "no-cache"
+    Content-Type = "application/manifest+json; charset=utf-8"

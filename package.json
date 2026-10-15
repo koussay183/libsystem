@@ -3,10 +3,10 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Gestion de librairie — stock, factures, credit clients, sante financiere",
+  "description": "Gestion de librairie \u2014 stock, factures, credit clients, sante financiere",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "node api.js && vite",
+    "build": "node api.js && tsc -b && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "deploy": "npm run build && firebase deploy"

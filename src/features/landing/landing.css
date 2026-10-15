@@ -96,12 +96,42 @@ html:has(.mk) {
 .mk-btn:hover {
   transform: translateY(-1px);
 }
-.mk-btn:focus-visible,
-.mk-lang:focus-visible,
-.mk-nav-links a:focus-visible,
-.mk-wa-float:focus-visible {
-  outline: 3px solid var(--amber);
+/* One focus ring for every control. Ink blue on the light sections (amber on
+   white is 1.9:1, nearly invisible); amber only where the ground is dark. */
+.mk a:focus-visible,
+.mk button:focus-visible,
+.mk summary:focus-visible {
+  outline: 3px solid var(--blue-logo);
   outline-offset: 2px;
+}
+.mk .mk-hero :focus-visible,
+.mk .mk-section-dark :focus-visible,
+.mk .mk-final :focus-visible {
+  outline-color: var(--amber);
+}
+
+/* Visually hidden, still read aloud. */
+.mk-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.mk-skip {
+  position: absolute;
+  z-index: 50;
+  inset-inline-start: 1rem;
+  top: -4rem;
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  background: var(--blue-logo);
+  color: #fff !important;
+  font-weight: 700;
+}
+.mk-skip:focus {
+  top: 0.75rem;
 }
 .mk-btn-sm {
   min-height: 2.4rem;
@@ -166,11 +196,11 @@ html:has(.mk) {
   font-weight: 600;
   font-size: 0.97rem;
 }
-.mk-nav-links > a:not(.mk-btn) {
+.mk-nav-links > a:not(.mk-btn):not(.mk-lang) {
   padding: 0.5rem 0.8rem;
   border-radius: 0.5rem;
 }
-.mk-nav-links > a:not(.mk-btn):hover,
+.mk-nav-links > a:not(.mk-btn):not(.mk-lang):hover,
 .mk-lang:hover {
   color: var(--blue-logo);
 }
@@ -196,7 +226,7 @@ html:has(.mk) {
   cursor: pointer;
 }
 @media (max-width: 44rem) {
-  .mk-nav-links > a:not(.mk-btn) {
+  .mk-nav-links > a:not(.mk-btn):not(.mk-lang) {
     display: none;
   }
   .mk-logo img {
@@ -285,23 +315,14 @@ html:has(.mk) {
   font-size: 0.92rem;
   font-weight: 600;
 }
-.mk-trust-dots {
-  display: inline-flex;
-}
-.mk-trust-dots i {
-  width: 1.6rem;
-  height: 1.6rem;
+.mk-trust-ic {
+  display: inline-grid;
+  place-items: center;
+  width: 1.5rem;
+  height: 1.5rem;
   border-radius: 50%;
-  border: 2px solid var(--ink);
-  background: linear-gradient(135deg, var(--blue-bright), var(--blue-logo));
-  margin-inline-start: -0.45rem;
-}
-.mk-trust-dots i:first-child {
-  margin-inline-start: 0;
-  background: linear-gradient(135deg, var(--amber-hi), #ff8a3d);
-}
-.mk-trust-dots i:last-child {
-  background: linear-gradient(135deg, #34d399, var(--green));
+  background: rgba(37, 211, 102, 0.16);
+  color: var(--wa);
 }
 
 /* ---------------- product shot ---------------- */
@@ -463,7 +484,7 @@ html:has(.mk) {
   text-align: center;
   padding: 0.75rem;
   border-radius: 0.6rem;
-  background: var(--green);
+  background: #0b7a3b;
   color: #fff;
   font-weight: 800;
 }
@@ -953,7 +974,7 @@ html:has(.mk) {
 }
 .mk-no {
   background: #f1f1f5;
-  color: #a5a3b8;
+  color: #75738c;
 }
 @media (max-width: 36rem) {
   .mk-cmp-row {
@@ -1009,7 +1030,7 @@ html:has(.mk) {
 .mk-step-n {
   font-size: 0.8rem;
   font-weight: 800;
-  color: #dd6702;
+  color: #b74606;
   letter-spacing: 0.05em;
 }
 .mk-steps b {
@@ -1106,6 +1127,61 @@ html:has(.mk) {
   color: #a69cff;
   min-height: 1.3em;
 }
+.mk-plan-hot .mk-plan-note {
+  color: #c9c3ff;
+}
+.mk-plans-terms {
+  margin-top: 2rem;
+  text-align: center;
+  color: #c3bff0;
+  font-size: 0.92rem;
+}
+.mk-plans-terms a {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  color: #fff;
+}
+
+/* ---------------- FAQ ---------------- */
+.mk-faq {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 48rem;
+  margin-inline: auto;
+}
+.mk-faq details {
+  border: 1px solid var(--line);
+  border-radius: 0.9rem;
+  background: var(--paper);
+}
+.mk-faq summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.2rem;
+  font-weight: 700;
+  font-size: 1.02rem;
+  cursor: pointer;
+  list-style: none;
+  border-radius: 0.9rem;
+}
+.mk-faq summary::-webkit-details-marker {
+  display: none;
+}
+.mk-faq summary svg {
+  flex-shrink: 0;
+  color: var(--blue-logo);
+  transition: transform 0.15s ease;
+}
+.mk-faq details[open] summary svg {
+  transform: rotate(180deg);
+}
+.mk-faq details p {
+  padding: 0 1.2rem 1.1rem;
+  color: var(--muted);
+  line-height: 1.65;
+}
 .mk-badge {
   position: absolute;
   top: -0.8rem;
@@ -1139,10 +1215,16 @@ html:has(.mk) {
   letter-spacing: -0.03em;
 }
 .mk-final-phone {
-  color: #d6d2ff;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  color: #fff;
   font-weight: 700;
   font-size: 1.1rem;
-  letter-spacing: 0.04em;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  text-underline-offset: 4px;
 }
 
 .mk-footer {
@@ -1164,21 +1246,45 @@ html:has(.mk) {
   align-items: center;
   justify-content: space-between;
 }
+.mk-footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.1rem;
+}
+.mk-footer-links a,
+.mk-footer-link {
+  padding: 0.35rem 0;
+  color: var(--muted);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line);
+}
+.mk-footer-link {
+  background: none;
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+.mk-footer-link[hidden] {
+  display: none;
+}
 
 /* ---------------- WhatsApp float ---------------- */
 .mk-wa-float {
   position: fixed;
   z-index: 30;
   inset-inline-end: 1rem;
-  bottom: 1rem;
+  /* lifted above the cookie banner while it is open (consent.ts) */
+  bottom: calc(1rem + var(--mk-consent-offset, 0px));
   display: grid;
   place-items: center;
   width: 3.5rem;
   height: 3.5rem;
   border-radius: 50%;
-  background: var(--wa);
+  /* WhatsApp's dark teal: white on the light green is under 2:1 */
+  background: #128c7e;
   color: #fff !important;
-  box-shadow: 0 12px 28px -8px rgba(37, 211, 102, 0.7);
+  box-shadow: 0 12px 28px -8px rgba(18, 140, 126, 0.7);
   transition: transform 0.12s ease;
 }
 .mk-wa-float:hover {
@@ -1195,4 +1301,167 @@ html:has(.mk) {
   html:has(.mk) {
     scroll-behavior: auto;
   }
+}
+
+/* ---------------- cookie banner (consent.ts) ---------------- */
+.mkc {
+  position: fixed;
+  z-index: 40;
+  inset-inline: 1rem;
+  bottom: 1rem;
+  max-width: 40rem;
+  margin-inline: auto;
+  padding: 1.1rem 1.2rem;
+  border-radius: 1rem;
+  background: #fff;
+  color: var(--ink, #0b0a1f);
+  border: 1px solid #e7e5f5;
+  box-shadow: 0 24px 60px -20px rgba(11, 10, 31, 0.45);
+  font-family: 'Segoe UI', 'Noto Kufi Arabic', system-ui, -apple-system, sans-serif;
+  line-height: 1.5;
+}
+.mkc h2 {
+  margin: 0 0 0.4rem;
+  font-size: 1.05rem;
+}
+.mkc p {
+  margin: 0;
+  font-size: 0.92rem;
+  color: #46445f;
+}
+.mkc a {
+  color: #1800ac;
+  text-decoration: underline;
+}
+.mkc-opts {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.9rem;
+}
+.mkc-opts label {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.6rem;
+  align-items: start;
+  font-weight: 600;
+  font-size: 0.95rem;
+  cursor: pointer;
+}
+.mkc-opts input {
+  width: 1.15rem;
+  height: 1.15rem;
+  margin: 0.15rem 0 0;
+  accent-color: #1800ac;
+}
+.mkc-opts small {
+  grid-column: 2;
+  font-weight: 400;
+  color: #5d5b7a;
+}
+.mkc-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+}
+@media (max-width: 24rem) {
+  .mkc-actions {
+    flex-direction: column;
+  }
+}
+/* Three choices, one style and one size: refusing must be as easy to see as
+   accepting. Stacked on the narrowest phones rather than squeezed. */
+.mkc-btn {
+  flex: 1 1 0;
+  min-height: 2.75rem;
+  padding: 0.4rem 0.75rem;
+  border-radius: 0.6rem;
+  border: 1px solid #1800ac;
+  background: #fff;
+  color: #1800ac;
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.88rem;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.mkc-btn:hover {
+  background: #f1f0ff;
+}
+.mkc-btn:focus-visible,
+.mkc a:focus-visible,
+.mkc input:focus-visible {
+  outline: 3px solid #1800ac;
+  outline-offset: 2px;
+}
+
+/* ---------------- legal pages ---------------- */
+.mk-legal {
+  max-width: 46rem;
+  margin-inline: auto;
+  padding: 2.5rem 1rem 4rem;
+}
+.mk-legal h1 {
+  font-size: clamp(1.7rem, 4vw, 2.3rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--blue-logo);
+}
+.mk-legal h2 {
+  margin-top: 2rem;
+  margin-bottom: 0.6rem;
+  font-size: 1.2rem;
+}
+.mk-legal p,
+.mk-legal li {
+  line-height: 1.7;
+  color: #2b2945;
+}
+.mk-legal p + p {
+  margin-top: 0.6rem;
+}
+.mk-legal ul {
+  list-style: disc;
+  padding-inline-start: 1.3rem;
+}
+.mk-legal a {
+  color: var(--blue-logo);
+  text-decoration: underline;
+}
+.mk-legal table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.6rem;
+  font-size: 0.92rem;
+}
+.mk-legal th,
+.mk-legal td {
+  padding: 0.5rem;
+  border: 1px solid var(--line);
+  text-align: start;
+  vertical-align: top;
+}
+.mk-legal .mk-legal-draft {
+  margin: 1rem 0 1.5rem;
+  padding: 0.8rem 1rem;
+  border-radius: 0.7rem;
+  background: #fff4dc;
+  border: 1px solid #ffd27a;
+  color: #6b3a00;
+  font-weight: 600;
+}
+.mk-legal .mk-legal-updated {
+  margin-top: 2.5rem;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+/* What a lawyer and the founder still have to fill in. */
+.mk-todo {
+  padding: 0 0.2rem;
+  border-radius: 0.25rem;
+  background: #fff4dc;
+  color: #8a4b00;
+}
+.mk-legal .mk-btn-ghost {
+  border-color: var(--line);
+  color: var(--blue-logo);
 }

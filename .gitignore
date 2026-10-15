@@ -24,11 +24,10 @@ firestore-debug.log
 firebase-export-*/
 
 # local QA harness (scripts/qa): its own deps; run state lives in /tmp/qa
+temp_auto_push.bat
 scripts/qa/node_modules/
 
 # editor / OS
-.vscode/*
-!.vscode/extensions.json
 .idea
 .DS_Store
 Thumbs.db
@@ -53,3 +52,5 @@ cli/service-account*.json
 service-account.json
 **/service-account*.json
 *-firebase-adminsdk-*.json
+.gitignore
+branch_structure.json

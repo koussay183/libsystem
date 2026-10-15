@@ -1,5 +1,10 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth, setPersistence, browserLocalPersistence, connectAuthEmulator } from 'firebase/auth'
+import {
+  initializeAuth,
+  browserLocalPersistence,
+  indexedDBLocalPersistence,
+  connectAuthEmulator,
+} from 'firebase/auth'
 import {
   initializeFirestore,
   connectFirestoreEmulator,
@@ -41,10 +46,20 @@ export const app = initializeApp(
  * lets them do it before the line is up. See src/auth/AuthContext.tsx for why
  * nothing in the startup path is allowed to wait on the network.
  *
- * setPersistence is not awaited: it resolves against IndexedDB, and the default
- * is already local, so awaiting it would only delay the first paint.
+ * initializeAuth rather than getAuth, for what it leaves out: getAuth also
+ * wires the popup/redirect resolver, which on phones and Safari loads Google's
+ * sign-in iframe (~140 KB from apis.google.com and the auth domain) and makes
+ * auth start-up wait for it. The app only ever signs in with email and
+ * password, so that is pure delay in front of the first screen.
+ *
+ * browserLocalPersistence comes first because that is where every existing
+ * session lives (the app used to move it there with setPersistence on each
+ * start). Firebase looks for a saved user across the whole list and moves one
+ * it finds in IndexedDB to the first entry, so no till is signed out by this.
  */
-export const auth = getAuth(app)
+export const auth = initializeAuth(app, {
+  persistence: [browserLocalPersistence, indexedDBLocalPersistence],
+})
 
 /**
  * LOCAL QA ONLY — the Firebase emulators started by scripts/qa/up.sh.
@@ -59,13 +74,11 @@ export const auth = getAuth(app)
  * on the minifier inlining a variable.
  *
  * The auth emulator has to be connected before the auth instance is used for
- * anything, setPersistence included.
+ * anything.
  */
 if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === '1') {
   connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true })
 }
-
-void setPersistence(auth, browserLocalPersistence).catch(() => {})
 
 // ignoreUndefinedProperties lets us pass optional fields as `undefined`
 // (e.g. an empty "category") without Firestore throwing.

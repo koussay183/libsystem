@@ -1,5 +1,4 @@
-import { Link } from 'react-router-dom'
-import { useTranslation } from 'react-i18next'
+import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   ScanBarcode,
@@ -20,10 +19,12 @@ import {
   FileText,
   Settings,
   WifiOff,
+  Phone,
+  ChevronDown,
 } from 'lucide-react'
 import { BrandLogo, BrandMark } from '@/components/BrandLogo'
-import { CONTACT, LANDING_COPY } from './copy'
-import type { LandingCopy, Mark } from './copy'
+import { CONTACT, LANDING_COPY, LANDING_PATH } from './copy'
+import type { Lang, LandingCopy, Mark } from './copy'
 import './landing.css'
 
 /**
@@ -32,6 +33,15 @@ import './landing.css'
  * Plain HTML + one scoped stylesheet rather than Chakra: it is the first thing
  * a prospect opens, often on a phone over 3G. The only images are the logo
  * PNGs; every product visual is drawn in CSS/SVG so nothing waits on a download.
+ *
+ * Rendered twice, from the same component:
+ *  · at build time, to static HTML (prerender.tsx), which is what Netlify
+ *    serves at /decouvrir and /ar/decouvrir — no React, Firebase or Chakra on
+ *    the visitor's phone, and real text for crawlers and WhatsApp previews;
+ *  · inside the app, at the SPA's /decouvrir route, which a shop machine only
+ *    reaches offline (the service worker answers with the cached app).
+ * So nothing here may depend on JavaScript: every control is a real link, and
+ * the `data-mk` attributes are hooks for static.ts (tracking), not behaviour.
  */
 
 const FEATURE_ICONS: Record<string, LucideIcon> = {
@@ -45,9 +55,14 @@ const FEATURE_ICONS: Record<string, LucideIcon> = {
 
 const STEP_ICONS: LucideIcon[] = [Wrench, Database, ShoppingCart]
 
-function waLink(text: string) {
+const ext = { target: '_blank', rel: 'noopener noreferrer' }
+
+export function waLink(text: string) {
   return `https://wa.me/216${CONTACT.whatsapp}?text=${encodeURIComponent(text)}`
 }
+
+const TEL = `tel:+216${CONTACT.whatsapp}`
+const PHONE_LABEL = `+216 ${CONTACT.whatsapp.replace(/(\d{2})(\d{3})(\d{3})/, '$1 $2 $3')}`
 
 function WhatsAppIcon({ size = 20 }: { size?: number }) {
   return (
@@ -57,22 +72,14 @@ function WhatsAppIcon({ size = 20 }: { size?: number }) {
   )
 }
 
-function MarkCell({ mark }: { mark: Mark }) {
-  if (mark === 'yes')
-    return (
-      <span className="mk-mark mk-yes" aria-label="✓">
-        <Check size={16} strokeWidth={3} />
-      </span>
-    )
-  if (mark === 'part')
-    return (
-      <span className="mk-mark mk-part" aria-label="~">
-        <Minus size={16} strokeWidth={3} />
-      </span>
-    )
+const MARK_ICONS: Record<Mark, LucideIcon> = { yes: Check, part: Minus, no: X }
+
+/** One comparison cell. role="img" so the label is actually announced. */
+function MarkCell({ mark, label }: { mark: Mark; label: string }) {
+  const Icon = MARK_ICONS[mark]
   return (
-    <span className="mk-mark mk-no" aria-label="✗">
-      <X size={16} strokeWidth={3} />
+    <span className={`mk-mark mk-${mark}`} role="img" aria-label={label}>
+      <Icon size={16} strokeWidth={3} aria-hidden="true" />
     </span>
   )
 }
@@ -212,224 +219,293 @@ function FeatureVisual({ kind }: { kind: string }) {
   }
 }
 
-export function LandingPage() {
-  const { i18n } = useTranslation()
-  const lang = i18n.language === 'ar' ? 'ar' : 'fr'
+/** Logo + "back to the page" bar, shared with the legal pages. */
+export function SiteHeader({ lang, children }: { lang: Lang; children?: ReactNode }) {
+  return (
+    <header className="mk-nav">
+      <div className="mk-wrap mk-nav-in">
+        <a href={LANDING_PATH[lang]} className="mk-logo">
+          <BrandLogo height={34} />
+        </a>
+        {children}
+      </div>
+    </header>
+  )
+}
+
+/**
+ * Footer with the legal links, shared with the legal pages. The cookie button
+ * stays hidden unless static.ts finds tracking switched on: with no tags there
+ * is nothing to manage.
+ */
+export function SiteFooter({ lang }: { lang: Lang }) {
+  const f = LANDING_COPY[lang].footer
+  return (
+    <footer className="mk-footer">
+      <div className="mk-wrap mk-footer-in">
+        <BrandLogo height={26} />
+        <span>{f.made}</span>
+        <nav className="mk-footer-links" aria-label={f.nav}>
+          <a href="/mentions-legales">{f.legal}</a>
+          <a href="/cgv">{f.cgv}</a>
+          <a href="/confidentialite">{f.privacy}</a>
+          <button type="button" className="mk-footer-link" data-mk="consent" hidden>
+            {f.cookies}
+          </button>
+        </nav>
+      </div>
+    </footer>
+  )
+}
+
+/** The page language: given at build time, read from <html lang> inside the app. */
+function currentLang(): Lang {
+  if (typeof document === 'undefined') return 'fr'
+  return document.documentElement.lang === 'ar' ? 'ar' : 'fr'
+}
+
+export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
+  const lang = given ?? currentLang()
+  const other: Lang = lang === 'ar' ? 'fr' : 'ar'
   const c = LANDING_COPY[lang]
-  const ext = { target: '_blank', rel: 'noopener noreferrer' }
-  const cta = waLink(c.waText)
+  const cta = waLink(c.wa.text)
 
   return (
     <div className="mk" lang={lang}>
+      <a className="mk-skip" href="#contenu">
+        {c.skip}
+      </a>
+
       {/* ---------------- nav ---------------- */}
-      <header className="mk-nav">
-        <div className="mk-wrap mk-nav-in">
-          <a href="#top" className="mk-logo">
-            <BrandLogo height={34} />
+      <SiteHeader lang={lang}>
+        <nav className="mk-nav-links">
+          <a href="#fonctions">{c.nav.features}</a>
+          <a href="#tarifs">{c.nav.pricing}</a>
+          <a href="#faq">{c.nav.faq}</a>
+          <a
+            href={LANDING_PATH[other]}
+            hrefLang={other}
+            className="mk-lang"
+            data-mk="lang"
+            data-lang={other}
+          >
+            <Languages size={16} aria-hidden="true" />
+            <span lang={other}>{c.nav.otherLang}</span>
           </a>
-          <nav className="mk-nav-links">
-            <a href="#pourquoi">{c.nav.why}</a>
-            <a href="#tarifs">{c.nav.pricing}</a>
-            <button
-              type="button"
-              className="mk-lang"
-              onClick={() => void i18n.changeLanguage(lang === 'ar' ? 'fr' : 'ar')}
-            >
-              <Languages size={16} />
-              {lang === 'ar' ? 'FR' : 'عربي'}
-            </button>
-            <Link to="/login" className="mk-btn mk-btn-ghost mk-btn-sm">
-              {c.nav.login}
-            </Link>
-          </nav>
-        </div>
-      </header>
+          <a href="/login" className="mk-btn mk-btn-ghost mk-btn-sm" data-mk="login">
+            {c.nav.login}
+          </a>
+        </nav>
+      </SiteHeader>
 
-      {/* ---------------- hero ---------------- */}
-      <section className="mk-hero" id="top">
-        <div className="mk-grid-bg" />
-        <div className="mk-wrap mk-hero-in">
-          <div className="mk-hero-text">
-            <p className="mk-kicker">
-              <span className="mk-kicker-dot" />
-              {c.hero.kicker}
-            </p>
-            <h1>
-              {c.hero.title1}
-              <br />
-              <span className="mk-grad">{c.hero.title2}</span>
-            </h1>
-            <p className="mk-sub">{c.hero.sub}</p>
-            <div className="mk-ctas">
-              <a href={cta} className="mk-btn mk-btn-accent mk-btn-lg" {...ext}>
-                <WhatsAppIcon />
-                {c.hero.cta}
-              </a>
-              <a href="#tarifs" className="mk-btn mk-btn-ghost mk-btn-lg">
-                {c.hero.cta2}
-                <ArrowRight size={18} className="mk-flip" />
-              </a>
-            </div>
-            <p className="mk-trust">
-              <span className="mk-trust-dots">
-                <i />
-                <i />
-                <i />
-              </span>
-              {c.trust}
-            </p>
-          </div>
-          <ProductShot c={c.mock} />
-        </div>
-      </section>
-
-      {/* ---------------- facts band ---------------- */}
-      <section className="mk-facts">
-        <div className="mk-wrap mk-facts-in">
-          {c.facts.map(([big, small], i) => (
-            <div key={i} className="mk-fact">
-              {i === 0 ? <WifiOff size={18} /> : null}
-              <strong>{big}</strong>
-              <span>{small}</span>
-            </div>
-          ))}
-        </div>
-      </section>
-
-      {/* ---------------- features (bento) ---------------- */}
-      <section className="mk-section" id="fonctions">
-        <div className="mk-wrap">
-          <h2 className="mk-h2">{c.features.title}</h2>
-          <div className="mk-bento">
-            {c.features.items.map(([key, title, body]) => {
-              const Icon = FEATURE_ICONS[key] ?? Boxes
-              return (
-                <article className={`mk-card mk-c-${key}`} key={key}>
-                  <FeatureVisual kind={key} />
-                  <div className="mk-card-text">
-                    <span className="mk-card-icon">
-                      <Icon size={20} />
-                    </span>
-                    <h3>{title}</h3>
-                    <p>{body}</p>
-                  </div>
-                </article>
-              )
-            })}
-          </div>
-        </div>
-      </section>
-
-      {/* ---------------- comparison ---------------- */}
-      <section className="mk-section mk-section-white" id="pourquoi">
-        <div className="mk-wrap">
-          <h2 className="mk-h2">{c.why.title}</h2>
-          <div className="mk-compare" role="table">
-            <div className="mk-cmp-row mk-cmp-head" role="row">
-              <span role="columnheader" />
-              {c.why.cols.map((col, i) => (
-                <span role="columnheader" key={col} className={i === 0 ? 'mk-cmp-us' : ''}>
-                  {i === 0 ? <BrandLogo height={18} /> : col}
+      <main id="contenu">
+        {/* ---------------- hero ---------------- */}
+        <section className="mk-hero" id="top">
+          <div className="mk-grid-bg" />
+          <div className="mk-wrap mk-hero-in">
+            <div className="mk-hero-text">
+              <p className="mk-kicker">
+                <span className="mk-kicker-dot" />
+                {c.hero.kicker}
+              </p>
+              <h1>
+                {c.hero.title1}
+                <br />
+                <span className="mk-grad">{c.hero.title2}</span>
+              </h1>
+              <p className="mk-sub">{c.hero.sub}</p>
+              <div className="mk-ctas">
+                <a href={cta} className="mk-btn mk-btn-accent mk-btn-lg" data-mk="wa" data-loc="hero" {...ext}>
+                  <WhatsAppIcon />
+                  {c.hero.cta}
+                </a>
+                <a href="#tarifs" className="mk-btn mk-btn-ghost mk-btn-lg">
+                  {c.hero.cta2}
+                  <ArrowRight size={18} className="mk-flip" />
+                </a>
+              </div>
+              <p className="mk-trust">
+                <span className="mk-trust-ic">
+                  <Check size={14} strokeWidth={3} aria-hidden="true" />
                 </span>
-              ))}
+                {c.trust}
+              </p>
             </div>
-            {c.why.rows.map(([label, marks]) => (
-              <div className="mk-cmp-row" role="row" key={label}>
-                <span role="rowheader" className="mk-cmp-label">
-                  {label}
-                </span>
-                {marks.map((m, i) => (
-                  <span role="cell" key={i} className={i === 0 ? 'mk-cmp-us' : ''}>
-                    <MarkCell mark={m} />
-                  </span>
-                ))}
+            <ProductShot c={c.mock} />
+          </div>
+        </section>
+
+        {/* ---------------- facts band ---------------- */}
+        <section className="mk-facts">
+          <div className="mk-wrap mk-facts-in">
+            {c.facts.map(([big, small], i) => (
+              <div key={i} className="mk-fact">
+                {i === 0 ? <WifiOff size={18} /> : null}
+                <strong>{big}</strong>
+                <span>{small}</span>
               </div>
             ))}
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ---------------- steps ---------------- */}
-      <section className="mk-section">
-        <div className="mk-wrap">
-          <h2 className="mk-h2">{c.steps.title}</h2>
-          <ol className="mk-steps">
-            {c.steps.items.map((s, i) => {
-              const Icon = STEP_ICONS[i]
-              return (
-                <li key={s}>
-                  <span className="mk-step-ic">
-                    <Icon size={24} />
-                  </span>
-                  <span className="mk-step-n">0{i + 1}</span>
-                  <b>{s}</b>
-                </li>
-              )
-            })}
-          </ol>
-        </div>
-      </section>
-
-      {/* ---------------- pricing ---------------- */}
-      <section className="mk-section mk-section-dark" id="tarifs">
-        <div className="mk-grid-bg" />
-        <div className="mk-wrap">
-          <h2 className="mk-h2">{c.pricing.title}</h2>
-          <div className="mk-plans">
-            {c.pricing.plans.map((p) => (
-              <article className={`mk-plan${p.id === 'life' ? ' mk-plan-hot' : ''}`} key={p.id}>
-                {p.badge ? <span className="mk-badge">{p.badge}</span> : null}
-                <h3>{p.name}</h3>
-                <p className="mk-price">
-                  <strong>{p.price}</strong>
-                  <span>{p.unit}</span>
-                </p>
-                <p className="mk-plan-note">{p.note || ' '}</p>
-                <hr />
-                <ul>
-                  {p.perks.map((perk) => (
-                    <li key={perk}>
-                      <Check size={16} strokeWidth={3} />
-                      {perk}
-                    </li>
-                  ))}
-                </ul>
-                <a
-                  href={waLink(c.wa.plan.replace('{{plan}}', p.name))}
-                  className={`mk-btn ${p.id === 'life' ? 'mk-btn-accent' : 'mk-btn-light'}`}
-                  {...ext}
-                >
-                  {c.pricing.choose}
-                  <ArrowRight size={18} className="mk-flip" />
-                </a>
-              </article>
-            ))}
+        {/* ---------------- features (bento) ---------------- */}
+        <section className="mk-section" id="fonctions">
+          <div className="mk-wrap">
+            <h2 className="mk-h2">{c.features.title}</h2>
+            <div className="mk-bento">
+              {c.features.items.map(([key, title, body]) => {
+                const Icon = FEATURE_ICONS[key] ?? Boxes
+                return (
+                  <article className={`mk-card mk-c-${key}`} key={key}>
+                    <FeatureVisual kind={key} />
+                    <div className="mk-card-text">
+                      <span className="mk-card-icon">
+                        <Icon size={20} />
+                      </span>
+                      <h3>{title}</h3>
+                      <p>{body}</p>
+                    </div>
+                  </article>
+                )
+              })}
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
 
-      {/* ---------------- final CTA ---------------- */}
-      <section className="mk-final" id="contact">
-        <div className="mk-wrap mk-final-in">
-          <h2>{c.final.title}</h2>
-          <a href={cta} className="mk-btn mk-btn-accent mk-btn-lg" {...ext}>
-            <WhatsAppIcon />
-            {c.final.cta}
-          </a>
-          <a href={cta} className="mk-final-phone" {...ext} dir="ltr">
-            +216 {CONTACT.whatsapp.replace(/(\d{2})(\d{3})(\d{3})/, '$1 $2 $3')}
-          </a>
-        </div>
-      </section>
+        {/* ---------------- comparison ---------------- */}
+        <section className="mk-section mk-section-white" id="pourquoi">
+          <div className="mk-wrap">
+            <h2 className="mk-h2">{c.why.title}</h2>
+            <div className="mk-compare" role="table" aria-label={c.why.title}>
+              <div className="mk-cmp-row mk-cmp-head" role="row">
+                <span role="columnheader">
+                  <span className="mk-sr">{c.why.featureCol}</span>
+                </span>
+                {c.why.cols.map((col, i) => (
+                  <span role="columnheader" key={col} className={i === 0 ? 'mk-cmp-us' : ''}>
+                    {i === 0 ? <BrandLogo height={18} /> : col}
+                  </span>
+                ))}
+              </div>
+              {c.why.rows.map(([label, marks]) => (
+                <div className="mk-cmp-row" role="row" key={label}>
+                  <span role="rowheader" className="mk-cmp-label">
+                    {label}
+                  </span>
+                  {marks.map((m, i) => (
+                    <span role="cell" key={i} className={i === 0 ? 'mk-cmp-us' : ''}>
+                      <MarkCell mark={m} label={c.why.marks[m]} />
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
 
-      <footer className="mk-footer">
-        <div className="mk-wrap mk-footer-in">
-          <BrandLogo height={26} />
-          <span>{c.footer}</span>
-        </div>
-      </footer>
+        {/* ---------------- steps ---------------- */}
+        <section className="mk-section">
+          <div className="mk-wrap">
+            <h2 className="mk-h2">{c.steps.title}</h2>
+            <ol className="mk-steps">
+              {c.steps.items.map((s, i) => {
+                const Icon = STEP_ICONS[i]
+                return (
+                  <li key={s}>
+                    <span className="mk-step-ic">
+                      <Icon size={24} />
+                    </span>
+                    <span className="mk-step-n">0{i + 1}</span>
+                    <b>{s}</b>
+                  </li>
+                )
+              })}
+            </ol>
+          </div>
+        </section>
 
-      <a href={cta} className="mk-wa-float" aria-label={c.wa.label} {...ext}>
+        {/* ---------------- pricing ---------------- */}
+        <section className="mk-section mk-section-dark" id="tarifs">
+          <div className="mk-grid-bg" />
+          <div className="mk-wrap">
+            <h2 className="mk-h2">{c.pricing.title}</h2>
+            <div className="mk-plans">
+              {c.pricing.plans.map((p) => (
+                <article className={`mk-plan${p.id === 'life' ? ' mk-plan-hot' : ''}`} key={p.id}>
+                  {p.badge ? <span className="mk-badge">{p.badge}</span> : null}
+                  <h3>{p.name}</h3>
+                  <p className="mk-price">
+                    <strong>{p.price}</strong>
+                    <span>{p.unit}</span>
+                  </p>
+                  <p className="mk-plan-note">{p.note || ' '}</p>
+                  <hr />
+                  <ul>
+                    {p.perks.map((perk) => (
+                      <li key={perk}>
+                        <Check size={16} strokeWidth={3} />
+                        {perk}
+                      </li>
+                    ))}
+                  </ul>
+                  <a
+                    href={waLink(c.wa.plan.replace('{{plan}}', p.name))}
+                    className={`mk-btn ${p.id === 'life' ? 'mk-btn-accent' : 'mk-btn-light'}`}
+                    aria-label={c.pricing.chooseLabel.replace('{{plan}}', p.name)}
+                    data-mk="wa"
+                    data-loc="pricing"
+                    data-plan={p.id}
+                    {...ext}
+                  >
+                    {c.pricing.choose}
+                    <ArrowRight size={18} className="mk-flip" />
+                  </a>
+                </article>
+              ))}
+            </div>
+            <p className="mk-plans-terms">
+              {c.pricing.terms} <a href="/cgv">{c.pricing.termsLink}</a>.
+            </p>
+          </div>
+        </section>
+
+        {/* ---------------- FAQ ---------------- */}
+        <section className="mk-section mk-section-white" id="faq">
+          <div className="mk-wrap">
+            <h2 className="mk-h2">{c.faq.title}</h2>
+            <div className="mk-faq">
+              {c.faq.items.map(([q, a]) => (
+                <details key={q}>
+                  <summary>
+                    {q}
+                    <ChevronDown size={18} aria-hidden="true" />
+                  </summary>
+                  <p>{a}</p>
+                </details>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ---------------- final CTA ---------------- */}
+        <section className="mk-final" id="contact">
+          <div className="mk-wrap mk-final-in">
+            <h2>{c.final.title}</h2>
+            <a href={cta} className="mk-btn mk-btn-accent mk-btn-lg" data-mk="wa" data-loc="final" {...ext}>
+              <WhatsAppIcon />
+              {c.final.cta}
+            </a>
+            <a href={TEL} className="mk-final-phone" data-mk="call" data-loc="final">
+              <Phone size={18} aria-hidden="true" />
+              {c.final.call} <span dir="ltr">{PHONE_LABEL}</span>
+            </a>
+          </div>
+        </section>
+      </main>
+
+      <SiteFooter lang={lang} />
+
+      <a href={cta} className="mk-wa-float" aria-label={c.wa.label} data-mk="wa" data-loc="float" {...ext}>
         <WhatsAppIcon size={28} />
       </a>
     </div>
