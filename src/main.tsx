@@ -7,10 +7,27 @@ import { system } from './theme'
 import { App } from './App'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { registerServiceWorker } from '@/lib/serviceWorker'
+import { hasSessionHere, isPublicPath, isShopMachine, markShopMachine } from '@/features/landing/shopMachine'
+
+/**
+ * A browser with a session is a till, whether or not it signed in through the
+ * login page. Tills signed in before the shop-machine flag existed were never
+ * marked, so their first logout sent the cashier to the sales page instead of
+ * the login form.
+ */
+if (hasSessionHere()) markShopMachine()
+
+/**
+ * Belt and braces: the prerendered /decouvrir never loads this file, but if the
+ * app itself is ever opened at a public page by a visitor, that is still not a
+ * till — no worker, no 2 MB offline copy of the app on their phone, no
+ * persistent-storage prompt.
+ */
+const visitorOnPublicPage = isPublicPath(location.pathname) && !isShopMachine()
 
 // Makes the app open with no internet at all. Registered before render so a
 // cold start on a dead line still has a worker to serve the shell next time.
-registerServiceWorker()
+if (!visitorOnPublicPage) registerServiceWorker()
 
 /**
  * Ask the browser not to throw our storage away.
@@ -26,7 +43,7 @@ registerServiceWorker()
  * purpose: the answer changes nothing we would do differently, and awaiting it
  * would put an IndexedDB round trip in front of the first paint.
  */
-void navigator.storage?.persist?.().catch(() => {})
+if (!visitorOnPublicPage) void navigator.storage?.persist?.().catch(() => {})
 
 /**
  * The black box recorder, and the only forensic record this app has.
