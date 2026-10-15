@@ -1,7 +1,8 @@
 import { initializeApp } from 'firebase/app'
-import { getAuth, setPersistence, browserLocalPersistence } from 'firebase/auth'
+import { getAuth, setPersistence, browserLocalPersistence, connectAuthEmulator } from 'firebase/auth'
 import {
   initializeFirestore,
+  connectFirestoreEmulator,
   memoryLocalCache,
   persistentLocalCache,
   persistentMultipleTabManager,
@@ -44,6 +45,26 @@ export const app = initializeApp(
  * is already local, so awaiting it would only delay the first paint.
  */
 export const auth = getAuth(app)
+
+/**
+ * LOCAL QA ONLY — the Firebase emulators started by scripts/qa/up.sh.
+ *
+ * `import.meta.env.DEV` is replaced by the literal `false` in a production build
+ * (`npm run build`, which is what Netlify runs), so both emulator branches in
+ * this file are constant-false there and are dropped from the bundle, host
+ * strings included. Setting
+ * VITE_USE_EMULATORS on Netlify, or in a .env file, can therefore never point a
+ * shop's till at a local emulator. The condition is written out in full at each
+ * site, not hoisted into a const, so the dead-code elimination does not depend
+ * on the minifier inlining a variable.
+ *
+ * The auth emulator has to be connected before the auth instance is used for
+ * anything, setPersistence included.
+ */
+if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === '1') {
+  connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true })
+}
+
 void setPersistence(auth, browserLocalPersistence).catch(() => {})
 
 // ignoreUndefinedProperties lets us pass optional fields as `undefined`
@@ -119,3 +140,9 @@ export const db = initializeFirestore(app, {
       })
     : memoryLocalCache(),
 })
+
+// LOCAL QA ONLY — see the note on connectAuthEmulator above. Must run before
+// the first read or write, which it does: nothing has used `db` yet.
+if (import.meta.env.DEV && import.meta.env.VITE_USE_EMULATORS === '1') {
+  connectFirestoreEmulator(db, '127.0.0.1', 8080)
+}

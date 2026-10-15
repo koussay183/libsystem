@@ -18,6 +18,13 @@ dist-ssr
 .firebaserc
 firebase-debug.log
 firestore-debug.log
+# emulator logs, if the emulators are ever started from the repo instead of
+# through scripts/qa/up.sh (which keeps them in /tmp/qa)
+*-debug.log
+firebase-export-*/
+
+# local QA harness (scripts/qa): its own deps; run state lives in /tmp/qa
+scripts/qa/node_modules/
 
 # editor / OS
 .vscode/*
@@ -41,3 +48,8 @@ cli/service-account*.json
 # frozen config of the pre-SaaS project, for the one-time pull
 .env.legacy
 .claude/worktrees/
+
+# admin CLI credentials — never commit, wherever they are saved
+service-account.json
+**/service-account*.json
+*-firebase-adminsdk-*.json

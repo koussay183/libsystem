@@ -1,0 +1,18 @@
+{
+  "name": "lib-manager-qa",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Local QA harness: Firebase emulators + seeded demo shop + Playwright login. Never touches production, never shipped to the browser.",
+  "scripts": {
+    "up": "bash ./up.sh",
+    "down": "bash ./down.sh",
+    "seed": "node ./seed.mjs",
+    "smoke": "node ./smoke.mjs"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.2",
+    "firebase-tools": "^15.34.0",
+    "playwright-core": "1.56.1"
+  }
+}
