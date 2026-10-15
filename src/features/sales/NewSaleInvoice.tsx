@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -17,25 +17,31 @@ import {
   Alert,
   EmptyState,
   Badge,
+  Input,
 } from '@chakra-ui/react'
 import { Trash2, Plus, Minus, PackageOpen, FileText } from 'lucide-react'
-import { formatMoney, parseMoney, fromMinor, moneySymbolKey } from '@/lib/money'
+import { formatMoney, parseMoney, parseQuantity, fromMinor, moneySymbolKey } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
-import { useCustomers } from '@/features/customers/useCustomers'
+import { useCustomers, isLiveCustomer } from '@/features/customers/useCustomers'
+import { useProducts } from '@/features/stock/useProducts'
 import { MoneyInput } from '@/components/MoneyInput'
-import { recordSale, paymentModeOf } from './useSales'
+import { recordSale, paymentModeOf, CustomerMissingError } from './useSales'
 import type { TicketData } from '@/features/pos/Ticket'
 import type { PaymentMode, Product } from '@/types/models'
 
 interface InvoiceLine {
   productId: string
   name: string
-  qty: number
+  /** Typed, like the editor's: 200 cahiers for a school was 199 clicks on +. */
+  qtyStr: string
   /** Dinars, editable — a wholesale price is usually negotiated down. */
   priceStr: string
   unitCost: number
 }
+
+/** A wholesale order runs to the hundreds; past this it is a typo. */
+const MAX_INVOICE_QTY = 9999
 
 /**
  * A proper facture de vente for a bulk sale: pick the client, add the lines at
@@ -72,6 +78,10 @@ export function NewSaleInvoice({
   const { t } = useTranslation()
   const alive = useAlive()
   const { customers } = useCustomers()
+  // Subscribed so a deletion on the other till re-renders the form: a line on
+  // a deleted article would make the server refuse the whole invoice, after it
+  // had already been printed.
+  const { products, loading: productsLoading } = useProducts()
   const symbol = t(moneySymbolKey())
 
   const [customerId, setCustomerId] = useState('')
@@ -98,28 +108,45 @@ export function NewSaleInvoice({
     setLines((prev) => {
       const existing = prev.find((l) => l.productId === p.id)
       if (existing)
-        return prev.map((l) => (l.productId === p.id ? { ...l, qty: l.qty + 1 } : l))
+        return prev.map((l) =>
+          l.productId === p.id
+            ? { ...l, qtyStr: String((parseQuantity(l.qtyStr) ?? 0) + 1) }
+            : l,
+        )
       return [
         ...prev,
         {
           productId: p.id,
           name: p.name,
-          qty: 1,
+          qtyStr: '1',
           priceStr: String(fromMinor(p.salePrice)),
           unitCost: p.costPrice,
         },
       ]
     })
   }
-  const setQty = (id: string, qty: number) =>
-    setLines((prev) => prev.map((l) => (l.productId === id ? { ...l, qty } : l)))
-  const setPrice = (id: string, priceStr: string) =>
+  // Whole units only: parseQuantity reads "2,5" as 2, and an invoice must not
+  // say something other than what was typed.
+  const qtyOf = (l: InvoiceLine) =>
+    /^\d+$/.test(l.qtyStr.replace(/\s/g, '')) ? parseQuantity(l.qtyStr) : null
+  const setQtyStr = (id: string, qtyStr: string) => {
+    setError('')
+    setLines((prev) => prev.map((l) => (l.productId === id ? { ...l, qtyStr } : l)))
+  }
+  const bump = (l: InvoiceLine, d: number) =>
+    setQtyStr(l.productId, String(Math.max(1, Math.min(MAX_INVOICE_QTY, (qtyOf(l) ?? 0) + d))))
+  const setPrice = (id: string, priceStr: string) => {
+    setError('')
     setLines((prev) => prev.map((l) => (l.productId === id ? { ...l, priceStr } : l)))
+  }
   const removeLine = (id: string) =>
     setLines((prev) => prev.filter((l) => l.productId !== id))
 
   const unitPriceOf = (l: InvoiceLine) => parseMoney(l.priceStr) ?? 0
-  const lineMinor = (l: InvoiceLine) => l.qty * unitPriceOf(l)
+  const lineMinor = (l: InvoiceLine) => (qtyOf(l) ?? 0) * unitPriceOf(l)
+
+  const live = useMemo(() => new Set(products.map((p) => p.id)), [products])
+  const isGone = (l: InvoiceLine) => !productsLoading && !live.has(l.productId)
   const total = lines.reduce((s, l) => s + lineMinor(l), 0)
 
   // Untouched, the field follows the total: a fully-paid invoice is one click.
@@ -133,6 +160,25 @@ export function NewSaleInvoice({
   const save = async () => {
     if (lines.length === 0) {
       setError(t('sales.emptyCartError'))
+      return
+    }
+    if (lines.some((l) => (qtyOf(l) ?? 0) < 1)) {
+      setError(t('sales.qtyInvalid'))
+      return
+    }
+    if (lines.some((l) => (qtyOf(l) ?? 0) > MAX_INVOICE_QTY)) {
+      setError(t('tillFix.qtyTooBig', { max: MAX_INVOICE_QTY }))
+      return
+    }
+    // An emptied price box used to save a free 0,000 DT line and take the
+    // goods out of stock. A real zero has to be typed.
+    if (lines.some((l) => l.priceStr.trim() === '')) {
+      setError(t('tillFix.priceMissing'))
+      return
+    }
+    const gone = lines.filter(isGone)
+    if (gone.length > 0) {
+      setError(`${t('pos.productDeleted')} : ${gone.map((l) => l.name).join(', ')}`)
       return
     }
     // Text that is not an amount is refused, never read as zero — the rule
@@ -151,13 +197,17 @@ export function NewSaleInvoice({
       setError(t('sales.needCustomer'))
       return
     }
+    if (remaining > 0 && customerId && isLiveCustomer(customerId) === false) {
+      setError(t('sales.customerGone'))
+      return
+    }
     setError('')
     setBusy(true)
     try {
       const items = lines.map((l) => ({
         productId: l.productId,
         name: l.name,
-        qty: l.qty,
+        qty: qtyOf(l) ?? 1,
         unitPrice: unitPriceOf(l),
         unitCost: l.unitCost,
       }))
@@ -182,7 +232,7 @@ export function NewSaleInvoice({
           productId: l.productId,
           barcode: null,
           name: l.name,
-          qty: l.qty,
+          qty: qtyOf(l) ?? 1,
           unitPrice: unitPriceOf(l),
           unitCost: l.unitCost,
           stock: 0,
@@ -198,7 +248,15 @@ export function NewSaleInvoice({
       onClose()
     } catch (e) {
       // Nothing was written — the form stays as it is so nothing is retyped.
-      if (alive.current) setError(e instanceof Error ? e.message : t('pos.saveFailed'))
+      if (alive.current) {
+        setError(
+          e instanceof CustomerMissingError
+            ? t('sales.customerGone')
+            : e instanceof Error
+              ? e.message
+              : t('pos.saveFailed'),
+        )
+      }
     } finally {
       if (alive.current) setBusy(false)
     }
@@ -288,9 +346,16 @@ export function NewSaleInvoice({
                         borderRadius="xl"
                       >
                         <Box flex="1" minW="8rem">
-                          <Text fontWeight="semibold" truncate>
-                            {l.name}
-                          </Text>
+                          <HStack gap={2} minW={0}>
+                            <Text fontWeight="semibold" truncate>
+                              {l.name}
+                            </Text>
+                            {isGone(l) && (
+                              <Badge colorPalette="red" size="sm" flexShrink={0}>
+                                {t('pos.deletedBadge')}
+                              </Badge>
+                            )}
+                          </HStack>
                           <Text fontSize="sm" color="fg.muted">
                             {formatMoney(lineMinor(l), { symbol })}
                           </Text>
@@ -313,23 +378,28 @@ export function NewSaleInvoice({
                             aria-label={t('common.decrease')}
                             variant="ghost"
                             size="lg"
-                            onClick={() => setQty(l.productId, Math.max(1, l.qty - 1))}
+                            onClick={() => bump(l, -1)}
                           >
                             <Minus size={18} />
                           </IconButton>
-                          <Text
-                            minW="2.5rem"
+                          <Input
+                            w="4.5rem"
+                            size="lg"
+                            variant="subtle"
                             textAlign="center"
-                            fontSize="lg"
                             fontWeight="semibold"
-                          >
-                            {l.qty}
-                          </Text>
+                            inputMode="numeric"
+                            autoComplete="off"
+                            value={l.qtyStr}
+                            onChange={(e) => setQtyStr(l.productId, e.target.value.replace(/-/g, ''))}
+                            onFocus={(e) => e.currentTarget.select()}
+                            aria-label={t('stock.quantity')}
+                          />
                           <IconButton
                             aria-label={t('common.increase')}
                             variant="ghost"
                             size="lg"
-                            onClick={() => setQty(l.productId, l.qty + 1)}
+                            onClick={() => bump(l, 1)}
                           >
                             <Plus size={18} />
                           </IconButton>

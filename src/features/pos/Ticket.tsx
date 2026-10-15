@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { createPortal } from 'react-dom'
-import { formatMoney } from '@/lib/money'
+import i18n from 'i18next'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatDateTime } from '@/lib/format'
 import type { PosLine } from './usePosCart'
 import type { PaymentMode, ShopSettings } from '@/types/models'
@@ -31,27 +32,85 @@ export interface TicketData {
 
 const row: CSSProperties = { display: 'flex', justifyContent: 'space-between' }
 
+/** One printed line: an article, or a whole pack with what is in it. */
+type PrintRow =
+  | { kind: 'line'; line: PosLine }
+  | {
+      kind: 'pack'
+      key: string
+      name: string
+      /** What the group came to: the pack price, negative on a return. */
+      total: number
+      returned: boolean
+      members: { name: string; qty: number }[]
+    }
+
+/**
+ * A pack prints as the pack.
+ *
+ * Its lines carry prices apportioned so the group adds up to the pack price —
+ * right for the profit report, meaningless on paper: a parent read "Cahier 48
+ * pages 1 x 0,517" and "3 x 0,516" and could not find the 24,000 DT pack he
+ * had paid for anywhere. Only the till knows a line came from a pack (a stored
+ * sale does not), so a reprint from the sales list still prints the lines.
+ */
+function printRows(lines: PosLine[]): PrintRow[] {
+  const rows: PrintRow[] = []
+  for (const l of lines) {
+    const last = rows[rows.length - 1]
+    if (!l.packUid) {
+      rows.push({ kind: 'line', line: l })
+      continue
+    }
+    if (last?.kind === 'pack' && last.key === l.packUid) {
+      last.total += l.qty * l.unitPrice
+      const same = last.members.find((m) => m.name === l.name)
+      if (same) same.qty += Math.abs(l.qty)
+      else last.members.push({ name: l.name, qty: Math.abs(l.qty) })
+      continue
+    }
+    rows.push({
+      kind: 'pack',
+      key: l.packUid,
+      name: l.packName ?? l.name,
+      total: l.qty * l.unitPrice,
+      returned: l.qty < 0,
+      members: [{ name: l.name, qty: Math.abs(l.qty) }],
+    })
+  }
+  return rows
+}
+
 /**
  * The printable receipt. Rendered into #print-area, which is hidden on screen
  * and revealed by the print stylesheet (80mm thermal or A4). Chakra styling
  * does not reach the print sheet, so this component uses plain inline styles.
+ *
+ * It is a French document whatever language the till is in: every label below
+ * is French, so the sheet is pinned left-to-right and prints the French unit.
+ * Inheriting the Arabic UI's rtl mirrored every row, printed the date as
+ * "16:35 15/10/2026", moved the minus sign of a return, and put د.ت next to
+ * "TOTAL".
  */
 export function Ticket({
   data,
   shop,
-  symbol,
   paper,
 }: {
   data: TicketData
   shop: ShopSettings
-  symbol: string
   paper: 'thermal' | 'a4'
 }) {
   const remaining = data.total - data.paid
-  const change = Math.max(0, data.received - data.total)
+  // A ticket that still owes money gave no change. A corrected ticket can
+  // carry the cash of its first version; printing "Rendu" next to "Reste
+  // (crédit)" contradicted itself.
+  const change = remaining > 0 ? 0 : Math.max(0, data.received - data.total)
+  const symbol = i18n.t(moneySymbolKey(), { lng: 'fr' })
   const money = (m: number) => formatMoney(m, { symbol })
 
   const a4 = paper === 'a4'
+  const rows = printRows(data.lines)
 
   /*
     ONE SHEET, WHICH IS WHAT THE CUSTOMER IS HANDED.
@@ -67,7 +126,10 @@ export function Ticket({
     sheet break properly, with the table header repeating (src/index.css). An
     invoice nobody can read is worse than an invoice on two pages.
   */
-  const density = !a4 ? '' : data.lines.length > 40 ? ' dense' : data.lines.length > 22 ? ' tight' : ''
+  const density = !a4 ? '' : rows.length > 40 ? ' dense' : rows.length > 22 ? ' tight' : ''
+
+  const memberList = (members: { name: string; qty: number }[]) =>
+    members.map((m) => `${m.qty} x ${m.name}`).join(', ')
 
   /*
     TWO LAYOUTS, BECAUSE THEY ARE TWO DIFFERENT OBJECTS.
@@ -94,20 +156,34 @@ export function Ticket({
         </tr>
       </thead>
       <tbody>
-        {data.lines.map((l, i) => (
-          <tr key={l.id}>
-            <td>{i + 1}</td>
-            <td>
-              {l.name}
-              {l.qty < 0 && <strong> (RETOUR)</strong>}
-            </td>
-            <td style={{ textAlign: 'end' }}>{l.qty}</td>
-            <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>{money(l.unitPrice)}</td>
-            <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>
-              {money(l.qty * l.unitPrice)}
-            </td>
-          </tr>
-        ))}
+        {rows.map((r, i) =>
+          r.kind === 'line' ? (
+            <tr key={r.line.id}>
+              <td>{i + 1}</td>
+              <td>
+                {r.line.name}
+                {r.line.qty < 0 && <strong> (RETOUR)</strong>}
+              </td>
+              <td style={{ textAlign: 'end' }}>{r.line.qty}</td>
+              <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>{money(r.line.unitPrice)}</td>
+              <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>
+                {money(r.line.qty * r.line.unitPrice)}
+              </td>
+            </tr>
+          ) : (
+            <tr key={r.key}>
+              <td>{i + 1}</td>
+              <td>
+                <strong>{r.name}</strong>
+                {r.returned && <strong> (RETOUR)</strong>}
+                <div style={{ fontSize: '0.85em' }}>{memberList(r.members)}</div>
+              </td>
+              <td style={{ textAlign: 'end' }}>{r.returned ? -1 : 1}</td>
+              <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>{money(Math.abs(r.total))}</td>
+              <td style={{ textAlign: 'end', whiteSpace: 'nowrap' }}>{money(r.total)}</td>
+            </tr>
+          ),
+        )}
       </tbody>
     </table>
   ) : (
@@ -118,20 +194,37 @@ export function Ticket({
         padding: '4px 0',
       }}
     >
-      {data.lines.map((l) => (
-        <div key={l.id} className="print-row" style={{ marginBottom: 4 }}>
-          <div>
-            {l.name}
-            {l.qty < 0 && <strong> (RETOUR)</strong>}
+      {rows.map((r) =>
+        r.kind === 'line' ? (
+          <div key={r.line.id} className="print-row" style={{ marginBottom: 4 }}>
+            <div>
+              {r.line.name}
+              {r.line.qty < 0 && <strong> (RETOUR)</strong>}
+            </div>
+            <div style={row}>
+              <span>
+                {r.line.qty} x {money(r.line.unitPrice)}
+              </span>
+              <span>{money(r.line.qty * r.line.unitPrice)}</span>
+            </div>
           </div>
-          <div style={row}>
-            <span>
-              {l.qty} x {money(l.unitPrice)}
-            </span>
-            <span>{money(l.qty * l.unitPrice)}</span>
+        ) : (
+          <div key={r.key} className="print-row" style={{ marginBottom: 4 }}>
+            <div style={{ ...row, fontWeight: 700 }}>
+              <span>
+                {r.name}
+                {r.returned && ' (RETOUR)'}
+              </span>
+              <span>{money(r.total)}</span>
+            </div>
+            {r.members.map((m) => (
+              <div key={m.name} style={{ paddingInlineStart: 8 }}>
+                {m.qty} x {m.name}
+              </div>
+            ))}
           </div>
-        </div>
-      ))}
+        ),
+      )}
     </div>
   )
 
@@ -189,14 +282,14 @@ export function Ticket({
           {data.clientName || 'Comptoir'}
         </div>
         <div>
-          {data.lines.length} article{data.lines.length > 1 ? 's' : ''}
+          {rows.length} article{rows.length > 1 ? 's' : ''}
         </div>
       </div>
     </div>
   )
 
   return createPortal(
-    <div id="print-area" className={paper + density}>
+    <div id="print-area" dir="ltr" lang="fr" className={paper + density}>
       {a4 ? (
         a4Head
       ) : (

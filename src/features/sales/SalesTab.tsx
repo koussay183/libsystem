@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Link as RouterLink } from 'react-router-dom'
@@ -240,11 +240,24 @@ export function SalesTab() {
     ? (sales.find((s) => s.id === editing.sale.id) ?? editing.sale)
     : null
 
+  /*
+    The paper class has to be on #print-area before the dialog opens. A 50 ms
+    timer usually won that race and on a slow PC lost it, printing the 80mm
+    layout on A4. Driven by the render instead, as the till does.
+  */
+  const [printRequest, setPrintRequest] = useState(0)
+  // The request already answered: a new invoice also sets the paper (to A4),
+  // and that alone must not open the print dialog.
+  const printed = useRef(0)
   const doPrint = (which: 'thermal' | 'a4') => {
     setPaper(which)
-    // Let the paper class land on #print-area before the print dialog opens.
-    setTimeout(() => window.print(), 50)
+    setPrintRequest((n) => n + 1)
   }
+  useEffect(() => {
+    if (printRequest === printed.current) return
+    printed.current = printRequest
+    window.print()
+  }, [printRequest, paper])
 
   const resetFilters = () => {
     setSearch('')
@@ -611,7 +624,7 @@ export function SalesTab() {
 
       {/* Hidden on screen; revealed by the print stylesheet */}
       {preview && (
-        <Ticket data={preview} shop={shop} symbol={symbol} paper={paper} />
+        <Ticket data={preview} shop={shop} paper={paper} />
       )}
     </Box>
   )
@@ -637,15 +650,30 @@ const SaleCards = memo(function SaleCards({
   return (
     <Stack gap={3}>
       {sales.map((s) => {
-        const itemCount = s.items.reduce((n, i) => n + i.qty, 0)
+        // Counted as the till counts them: a return is still an article handled,
+        // not "-2 articles".
+        const itemCount = s.items.reduce((n, i) => n + Math.abs(i.qty), 0)
         const client = clientName(s, nameById)
         const settled = statusOf(s)
         return (
+          // Reachable from the keyboard too: Tab used to skip every ticket, so
+          // the last customer's receipt could not be reprinted without a mouse.
           <Card.Root
             key={s.id}
             cursor="pointer"
+            role="button"
+            tabIndex={0}
+            aria-label={`${t('pos.ticket')} ${s.ticketNo}, ${money(s.total)}`}
             _hover={{ borderColor: 'brand.solid' }}
+            _focusVisible={{ outline: '2px solid', outlineColor: 'brand.solid', outlineOffset: '2px' }}
             onClick={() => onOpen(s.id)}
+            onKeyDown={(e) => {
+              if (e.target !== e.currentTarget) return
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onOpen(s.id)
+              }
+            }}
           >
             <Card.Body>
               <Flex align="center" gap={3} wrap="wrap">
@@ -682,7 +710,7 @@ const SaleCards = memo(function SaleCards({
                     )}
                   </HStack>
                   <Text fontSize="sm" color="fg.muted">
-                    {formatDateTime(s.date)} · {itemCount} {t('sales.items')}
+                    {formatDateTime(s.date)} · {t('tillFix.itemsCount', { count: itemCount })}
                     {client ? ` · ${client}` : ''}
                   </Text>
                 </Box>

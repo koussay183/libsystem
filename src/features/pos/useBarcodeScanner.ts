@@ -93,6 +93,31 @@ const isLetter = (ch: string) => ch >= 'a' && ch <= 'z'
  */
 const TRAILING_SUFFIX_MS = 150
 
+/**
+ * When the key was PRESSED, not when this handler got round to it.
+ *
+ * Every character a scan types into the till re-renders it, and on the shop's
+ * PC (and always in the dev build) that render outlasts INTERCHAR_MAX_MS. Timed
+ * with performance.now(), a 3 ms scanner then looked like a 90 ms human: the
+ * burst restarted mid-code, a real article came out as "produit inexistant",
+ * and in the payment dialog the digits plus the scanner's Enter confirmed the
+ * sale with the barcode as the amount given. The event's own stamp is taken
+ * when the OS delivered the key, so a busy page cannot stretch the gaps.
+ */
+function eventTime(e: KeyboardEvent): number {
+  const ts = e.timeStamp
+  return Number.isFinite(ts) && ts > 0 ? ts : performance.now()
+}
+
+/** A focused button or link: Space there means "press it", never a scan. */
+function isControl(el: Element | null): boolean {
+  if (!el || !(el instanceof HTMLElement) || el === document.body) return false
+  const control = el.closest(
+    'button, a[href], summary, [role="button"], [role="option"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="radio"], input[type="checkbox"], input[type="radio"]',
+  )
+  return control !== null && !isEditable(el)
+}
+
 function isEditable(el: Element | null): el is HTMLElement {
   if (!el || !(el instanceof HTMLElement)) return false
   if (el.isContentEditable) return true
@@ -250,7 +275,7 @@ export function useBarcodeScanner({
    * `flush`, and two paths reached the exit without it: the sub-`minLength`
    * early return, and `reset` itself (called when a non-printable key ends the
    * burst). A cashier who had clicked into a ticket quantity cell and then
-   * scanned a short code, or pressed an arrow key mid-burst, kept the burst
+   * scanned a code, or pressed an arrow key mid-burst, kept the burst
    * characters in that cell — and `usePosCart.setQty` clamps to MAX_QTY, so the
    * customer's ticket showed a quantity of up to 999.
    *
@@ -267,12 +292,12 @@ export function useBarcodeScanner({
     hijacked.current = null
     if (!stolen) return
 
-    // A single character is never a burst. The machine test is the *gap*
-    // between characters (INTERCHAR_MAX_MS), so a buffer that never grew past
-    // one character was typed by a hand — each of those keystrokes is "fresh"
-    // and re-snapshots the field, and undoing it would silently delete a
-    // character every time somebody types anywhere outside the scan field.
-    if (burst.length < 2) return
+    // Shorter than minLength is never treated as a scan (emit drops it), so it
+    // can only be the cashier's own fast keys — "12" rolled on the numpad into
+    // the quantity cell or the amount given. Undoing those turned 12 back into
+    // 1 and charged for one. The only case lost is a code under four
+    // characters scanned straight into a text field, which no label carries.
+    if (burst.length < minLength) return
 
     // The field can have been re-rendered away in the meantime (the ticket row
     // it belonged to removed by the scan itself). Writing to a detached node
@@ -290,11 +315,13 @@ export function useBarcodeScanner({
     // than the digits that were sent. Focus never left it in that case — we
     // deliberately do not steal it, see the hijack branch below — so "still the
     // active element" covers the controlled inputs and the substring test
-    // covers the plain ones whose focus has moved on.
-    if (!stolen.el.value.includes(burst) && document.activeElement !== stolen.el) return
+    // covers the plain ones whose focus has moved on. Only the head of the
+    // burst ever reaches the field: the rest is swallowed (see handleKey).
+    const head = burst.slice(0, minLength)
+    if (!stolen.el.value.includes(head) && document.activeElement !== stolen.el) return
 
     setNativeValue(stolen.el, stolen.value)
-  }, [])
+  }, [minLength])
 
   const reset = useCallback(() => {
     clearTimer()
@@ -315,14 +342,15 @@ export function useBarcodeScanner({
     const emit = (whole: boolean) => {
       const code = typed.current
       const alt = physical.current
-      // reset() puts the borrowed field back (see giveBack) — including on the
-      // sub-minLength return just below, which is the path that used to leave a
-      // short burst sitting in the cashier's quantity cell. The restore happens
-      // before onScan, as it always did: the caller decides where the focus
-      // goes next.
+      // reset() puts the borrowed field back (see giveBack) when the burst was
+      // long enough to be a scan; a shorter one was the cashier's own fast
+      // typing and stays. The restore happens before onScan, as it always did:
+      // the caller decides where the focus goes next.
       reset()
       if (code.length < minLength) return
-      flushedAt.current = performance.now()
+      // On the keys' own clock, like the gaps: the suffix is judged against
+      // when the last character was pressed. @see eventTime
+      flushedAt.current = lastAt.current
 
       /*
         TWO ARTICLES SWEPT ACROSS THE READER FASTER THAN THE BURST TIMER.
@@ -389,6 +417,31 @@ export function useBarcodeScanner({
       }
     }
 
+    /**
+     * The silence that ends a burst is measured on the wall clock, and a slow
+     * render can make it look longer than it was: the next characters are
+     * already waiting behind it. Where the browser can say so, wait for them
+     * instead of cutting the code in two (a few retries, never a hang).
+     */
+    const armEnd = (retries: number) => {
+      timer.current = setTimeout(
+        () => {
+          timer.current = null
+          const scheduling = (
+            navigator as Navigator & {
+              scheduling?: { isInputPending?: (o?: { includeContinuous?: boolean }) => boolean }
+            }
+          ).scheduling
+          if (retries < 4 && scheduling?.isInputPending?.({ includeContinuous: false })) {
+            armEnd(retries + 1)
+            return
+          }
+          flush(false)
+        },
+        retries === 0 ? END_OF_SCAN_MS : 10,
+      )
+    }
+
     const handleKey = (e: KeyboardEvent) => {
       // A held-down key repeats every ~30 ms and would read exactly like a
       // scan; an IME composition reports a meaningless key.
@@ -401,7 +454,7 @@ export function useBarcodeScanner({
         // scanner's suffix arriving late, and it must not reach the page.
         if (
           typed.current.length === 0 &&
-          performance.now() - flushedAt.current < TRAILING_SUFFIX_MS
+          eventTime(e) - flushedAt.current < TRAILING_SUFFIX_MS
         ) {
           e.preventDefault()
           e.stopPropagation()
@@ -435,7 +488,14 @@ export function useBarcodeScanner({
         return
       }
 
-      const now = performance.now()
+      // Space on a focused button presses it. Taken as the first key of a
+      // burst it moved the focus to the scan field and typed a space there,
+      // and the button never fired. No barcode starts with a space.
+      if (e.key === ' ' && typed.current === '' && isControl(document.activeElement)) {
+        return
+      }
+
+      const now = eventTime(e)
       const fresh = typed.current === '' || now - lastAt.current > INTERCHAR_MAX_MS
       lastAt.current = now
 
@@ -473,6 +533,12 @@ export function useBarcodeScanner({
       // Exactly at the threshold, not past it, so this fires once per burst.
       if (typed.current.length === minLength) onBurstStartRef.current?.()
 
+      // Past the threshold it is certainly a machine, and the code is already
+      // in the buffer. Letting the browser type the rest re-rendered the whole
+      // till once per character in the middle of the burst — the very stall
+      // that broke bursts apart — and filled whatever field had the focus.
+      if (typed.current.length > minLength) e.preventDefault()
+
       // The catalogue recognises what is in the buffer and nothing longer
       // starts with it, so there is nothing left to wait for. This is what
       // takes the delay between the beep and the line on the ticket down to
@@ -494,7 +560,7 @@ export function useBarcodeScanner({
       // Restart the "code complete" countdown on every character. This is what
       // removes the Enter key: the burst ends by simply going quiet.
       clearTimer()
-      timer.current = setTimeout(() => flush(false), END_OF_SCAN_MS)
+      armEnd(0)
     }
 
     /**
