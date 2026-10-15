@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -15,6 +15,10 @@ import { Truck, PencilLine } from 'lucide-react'
 import { useAlive } from '@/lib/useAlive'
 import { useProducts } from '@/features/stock/useProducts'
 import { createSupplier, updateSupplier } from './useSuppliers'
+import { PhoneInput } from '@/components/PhoneInput'
+import { SimilarRecords } from '@/components/SimilarRecords'
+import { findSimilar } from '@/lib/similar'
+import { normalizePhone } from '@/lib/phone'
 import type { Purchase, Supplier } from '@/types/models'
 
 export function SupplierForm({
@@ -22,12 +26,18 @@ export function SupplierForm({
   onClose,
   supplier,
   purchases = [],
+  suppliers = [],
+  onPickExisting,
 }: {
   open: boolean
   onClose: () => void
   supplier?: Supplier | null
   /** The live purchases, so a rename can carry them to the new name. */
   purchases?: Purchase[]
+  /** The existing suppliers, to warn before a second "Sotupa" is created. */
+  suppliers?: Supplier[]
+  /** Switches the form to an existing supplier the owner recognised. */
+  onPickExisting?: (supplier: Supplier) => void
 }) {
   const { t } = useTranslation()
   const { products } = useProducts()
@@ -50,8 +60,16 @@ export function SupplierForm({
     setTimeout(() => nameRef.current?.focus(), 50)
   }, [open, supplier])
 
+  // Only while creating: a rename that looks like another supplier is a
+  // deliberate act, and the list would mostly echo the one being edited.
+  const similar = useMemo(
+    () => (supplier ? [] : findSimilar(suppliers, name, phone)),
+    [supplier, suppliers, name, phone],
+  )
+
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
+    if (busy) return
     if (name.trim() === '') {
       setNameError(t('supplier.nameRequired'))
       return
@@ -60,7 +78,7 @@ export function SupplierForm({
     try {
       const input = {
         name: name.trim(),
-        phone: phone.trim() || undefined,
+        phone: normalizePhone(phone) || undefined,
         note: note.trim() || undefined,
       }
       if (supplier) {
@@ -101,7 +119,7 @@ export function SupplierForm({
             </Dialog.Header>
 
             <Dialog.Body>
-              <form id="supplier-form" onSubmit={submit}>
+              <form id="supplier-form" noValidate onSubmit={submit}>
                 <Stack gap={4}>
                   <Field.Root required invalid={!!nameError}>
                     <Field.Label>{t('supplier.name')}</Field.Label>
@@ -109,24 +127,20 @@ export function SupplierForm({
                       ref={nameRef}
                       size="lg"
                       value={name}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) =>
+                      onChange={(e: ChangeEvent<HTMLInputElement>) => {
                         setName(e.target.value)
-                      }
+                        setNameError('')
+                      }}
                       placeholder={t('supplier.namePlaceholder')}
                     />
                     <Field.ErrorText>{nameError}</Field.ErrorText>
                   </Field.Root>
 
+                  <SimilarRecords matches={similar} onPick={onPickExisting} />
+
                   <Field.Root>
                     <Field.Label>{t('supplier.phone')}</Field.Label>
-                    <Input
-                      size="lg"
-                      inputMode="tel"
-                      value={phone}
-                      onChange={(e: ChangeEvent<HTMLInputElement>) =>
-                        setPhone(e.target.value)
-                      }
-                    />
+                    <PhoneInput size="lg" value={phone} onChange={setPhone} />
                     <Field.HelperText>{t('common.optional')}</Field.HelperText>
                   </Field.Root>
 

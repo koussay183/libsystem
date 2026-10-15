@@ -25,6 +25,10 @@ import { useAlive } from '@/lib/useAlive'
 import { ProductSearch } from '@/features/invoices/ProductSearch'
 import { useSuppliers, createSupplier } from '@/features/suppliers/useSuppliers'
 import { recordPurchase, DuplicatePurchaseError } from './usePurchases'
+import { MoneyInput } from '@/components/MoneyInput'
+import { SimilarRecords } from '@/components/SimilarRecords'
+import { findSimilar } from '@/lib/similar'
+import { fold } from '@/lib/textIndex'
 import type { Product } from '@/types/models'
 
 interface CartItem {
@@ -122,6 +126,7 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
   const pickSupplier = (e: ChangeEvent<HTMLSelectElement>) => {
     const value = e.currentTarget.value
     if (value === NEW_SUPPLIER) {
+      adopted.current = false
       setTypingSupplier(true)
       setSupplier('')
     } else {
@@ -130,11 +135,28 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
     }
   }
 
+  /** Existing suppliers that look like the name being typed. */
+  const similarSuppliers = typingSupplier ? findSimilar(suppliers, supplier, '') : []
+  /** Set once an existing supplier was picked, so a late blur creates nothing. */
+  const adopted = useRef(false)
+  const adoptSupplier = (name: string) => {
+    adopted.current = true
+    setTypingSupplier(false)
+    setSupplier(name)
+  }
+
   /** A freshly typed name is registered as a supplier once, on blur. */
   const commitNewSupplier = (e: FocusEvent<HTMLInputElement>) => {
     const name = e.currentTarget.value.trim()
-    if (!name) return
+    if (!name || adopted.current) return
     if (supplierNames.includes(name)) return
+    // "sotupa" typed for the existing "Sotupa" is that supplier, not a second
+    // one whose purchases would never add up with the first's.
+    const same = suppliers.find((s) => fold(s.name) === fold(name))
+    if (same) {
+      adoptSupplier(same.name)
+      return
+    }
     if (createdRef.current.has(name)) return
     createdRef.current.add(name)
     // createSupplier is synchronous now (it no longer waits for the server),
@@ -277,6 +299,14 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                         <NativeSelect.Indicator />
                       </NativeSelect.Root>
                     )}
+                    {typingSupplier && (
+                      <Box mt={2} w="full">
+                        <SimilarRecords
+                          matches={similarSuppliers}
+                          onPick={(s) => adoptSupplier(s.name)}
+                        />
+                      </Box>
+                    )}
                   </Field.Root>
 
                   <Field.Root>
@@ -353,15 +383,17 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                           </Text>
                         </Box>
 
-                        <Input
-                          size="lg"
-                          w="7rem"
-                          textAlign="center"
-                          value={i.costStr}
-                          onChange={(e) => setCost(i.productId, e.target.value)}
-                          inputMode="decimal"
-                          aria-label={t('purchases.unitCost')}
-                        />
+                        <Box w="7rem">
+                          <MoneyInput
+                            size="lg"
+                            preview={false}
+                            textAlign="center"
+                            placeholder=""
+                            value={i.costStr}
+                            onChange={(v) => setCost(i.productId, v)}
+                            aria-label={t('purchases.unitCost')}
+                          />
+                        </Box>
 
                         <HStack
                           gap={0}
@@ -409,13 +441,12 @@ export function NewPurchase({ open, onClose }: { open: boolean; onClose: () => v
                   <SimpleGrid columns={{ base: 1, sm: 2 }} gap={4} alignItems="end">
                     <Field.Root>
                       <Field.Label fontSize="lg">{t('purchases.amountPaid')}</Field.Label>
-                      <Input
+                      <MoneyInput
                         size="xl"
-                        inputMode="decimal"
                         value={paidValue}
-                        onChange={(e) => {
+                        onChange={(v) => {
                           setPaidTouched(true)
-                          setPaidStr(e.target.value)
+                          setPaidStr(v)
                         }}
                       />
                     </Field.Root>

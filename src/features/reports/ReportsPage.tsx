@@ -12,19 +12,21 @@ import {
   Stat,
   SimpleGrid,
   Badge,
-  Input,
-  InputGroup,
+  Button,
   NativeSelect,
   EmptyState,
   Spinner,
   Switch,
 } from '@chakra-ui/react'
-import { TrendingUp, TrendingDown, Wallet, BarChart3, Package, Search } from 'lucide-react'
+import { TrendingUp, TrendingDown, Wallet, BarChart3, Package, RotateCcw } from 'lucide-react'
 import { formatMoney, moneySymbolKey } from '@/lib/money'
 import { formatPercent } from '@/lib/format'
 import { fold, foldedOf } from '@/lib/textIndex'
 import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
+import { SearchInput } from '@/components/SearchInput'
+import { ActiveFilters } from '@/components/ActiveFilters'
+import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useProducts } from '@/features/stock/useProducts'
 
 type SortKey = 'profit' | 'revenue' | 'sold'
@@ -49,10 +51,14 @@ interface Row {
 export function ReportsPage() {
   const { t } = useTranslation()
   const { products, loading, error } = useProducts()
-  const [sort, setSort] = useState<SortKey>('profit')
+  const [sort, setSort] = useSessionState<SortKey>(
+    'reports.sort',
+    'profit',
+    oneOf(['profit', 'revenue', 'sold']),
+  )
   const [search, setSearch] = useState('')
-  const [category, setCategory] = useState('')
-  const [onlySold, setOnlySold] = useState(true)
+  const [category, setCategory] = useSessionState('reports.category', '')
+  const [onlySold, setOnlySold] = useSessionState('reports.onlySold', true)
   const listTop = useRef<HTMLDivElement>(null)
 
   const symbol = t(moneySymbolKey())
@@ -127,7 +133,25 @@ export function ReportsPage() {
         }),
     [rows, onlySold, category, q, sort],
   )
-  const paged = usePaged(sorted, `${sort}|${q}|${category}|${onlySold}`)
+  const paged = usePaged(sorted, `${sort}|${q}|${category}|${onlySold}`, { persist: 'reports' })
+  const resetFilters = () => {
+    setSearch('')
+    setCategory('')
+    setOnlySold(true)
+  }
+  const activeFilters =
+    category === ''
+      ? []
+      : [
+          {
+            key: 'category',
+            label: t('smart.filterChip', {
+              name: t('filters.category'),
+              value: category || t('filters.categoryNone'),
+            }),
+            onRemove: () => setCategory(''),
+          },
+        ]
 
   const { totalRevenue, totalCost, totalBought, hasSales } = useMemo(() => {
     let totalRevenue = 0
@@ -214,14 +238,15 @@ export function ReportsPage() {
       ) : (
         <>
           <Flex gap={3} mb={3} wrap="wrap" align="center" ref={listTop}>
-            <InputGroup flex="2" minW="14rem" startElement={<Search size={20} />}>
-              <Input
-                size="lg"
+            <Box flex="2" minW="14rem">
+              <SearchInput
+                shortcut
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={setSearch}
+                count={q !== '' ? sorted.length : undefined}
                 placeholder={t('stock.searchPlaceholder')}
               />
-            </InputGroup>
+            </Box>
             <NativeSelect.Root size="lg" flex="1" minW="11rem">
               <NativeSelect.Field
                 value={category}
@@ -262,6 +287,7 @@ export function ReportsPage() {
               <Switch.Label>{t('filters.onlySold')}</Switch.Label>
             </Switch.Root>
           </Flex>
+          <ActiveFilters filters={activeFilters} onReset={resetFilters} />
 
           <Card.Root>
             <Card.Body p={0}>
@@ -291,6 +317,23 @@ export function ReportsPage() {
                     </Table.Row>
                   </Table.Header>
                   <Table.Body>
+                    {paged.pageItems.length === 0 && (
+                      <Table.Row>
+                        <Table.Cell colSpan={7}>
+                          <Flex align="center" gap={3} wrap="wrap">
+                            <Text color="fg.muted">
+                              {q !== ''
+                                ? t('smart.noMatchFor', { term: search.trim() })
+                                : t('stock.noResults')}
+                            </Text>
+                            <Button size="sm" variant="outline" onClick={resetFilters}>
+                              <RotateCcw size={14} />
+                              {t('smart.showAll')}
+                            </Button>
+                          </Flex>
+                        </Table.Cell>
+                      </Table.Row>
+                    )}
                     <ReportRows rows={paged.pageItems} symbol={symbol} />
                   </Table.Body>
                 </Table.Root>
