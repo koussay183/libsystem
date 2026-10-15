@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { Outlet, Link, NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { Outlet, Link, NavLink, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import type { LucideIcon } from 'lucide-react'
 import {
-  LogOut,
   ShieldAlert,
   AlertTriangle,
   CloudOff,
@@ -35,6 +34,8 @@ import { useShopSettings } from '@/features/settings/useShopSettings'
 import { LanguageToggle } from '@/components/LanguageToggle'
 import { BrandLogo } from '@/components/BrandLogo'
 import { SyncStatus, UpdateBanner, StaleBuildBanner, UnprotectedBanner } from '@/components/SyncStatus'
+import { PlanBanner } from './PlanBanner'
+import { LogoutButton } from './LogoutButton'
 import { syncStore, clearDenied } from '@/lib/syncStatus'
 import { retryLiveCollections } from '@/lib/liveCollection'
 import { useProductsFatal } from '@/features/stock/useProducts'
@@ -47,6 +48,9 @@ import { usePacksFatal } from '@/features/packs/usePacks'
 const paletteOf = (to: string) => ROUTE_PALETTE[to] ?? 'brand'
 
 const SIDEBAR_W = '18.5rem'
+
+/** A laptop screen too short for the menu at its full spacing. */
+const SHORT_SCREEN = '@media (max-height: 860px)'
 
 /**
  * Routes that own the viewport instead of scrolling with the document.
@@ -132,6 +136,79 @@ const FROZEN_COPY: Record<
 }
 
 /**
+ * Every module is a coloured block, all the time — not a grey line that only
+ * admits to its colour when the mouse is over it. An owner who does not read
+ * the labels navigates by colour and position, and neither of those exists
+ * until the colour is on the screen.
+ *
+ * NavLink sets `aria-current="page"` on the active route, so the active
+ * styling is expressed with the `_currentPage` condition.
+ *
+ * Module scope, not declared inside AppShell: a component created in a render
+ * body is a new type on every render, so each sync tick remounted every link
+ * and threw away keyboard focus.
+ */
+function NavButton({ to, icon: Icon, labelKey }: NavItemDef) {
+  const { t } = useTranslation()
+  const location = useLocation()
+  // The same rule NavLink uses to set aria-current, so the square and the
+  // row it sits on can never disagree about which page is open.
+  const active = location.pathname === to || location.pathname.startsWith(`${to}/`)
+  return (
+    <Button
+      asChild
+      h="3.5rem"
+      // Shorter rows on a short screen, so the whole menu fits at 768 px.
+      css={{ [SHORT_SCREEN]: { height: '2.5rem' } }}
+      w="full"
+      justifyContent="flex-start"
+      gap={3}
+      px={3}
+      variant="plain"
+      colorPalette={paletteOf(to)}
+      fontSize="lg"
+      fontWeight="bold"
+      borderRadius="l3"
+      bg="colorPalette.subtle"
+      color="colorPalette.fg"
+      transition="background-color 0.12s, transform 0.12s"
+      _hover={{ bg: 'colorPalette.muted' }}
+      _active={{ transform: 'scale(0.985)' }}
+      // Listed last so it wins over _hover: same specificity, source order decides.
+      _currentPage={{
+        bg: 'colorPalette.solid',
+        color: 'colorPalette.contrast',
+        boxShadow: 'md',
+      }}
+    >
+      <NavLink to={to}>
+        {/*
+          The square is the strongest mark on the row, so it has to hold up on
+          both grounds: a solid block of the module's colour on the pale
+          inactive row, and a translucent white one on the saturated active row
+          — where a solid block of the same colour would disappear into it.
+        */}
+        <Box
+          as="span"
+          flexShrink={0}
+          boxSize="2.5rem"
+          display="grid"
+          placeItems="center"
+          borderRadius="lg"
+          bg={active ? 'whiteAlpha.300' : 'colorPalette.solid'}
+          color="colorPalette.contrast"
+        >
+          <Icon size={22} />
+        </Box>
+        <Text as="span" truncate>
+          {t(labelKey)}
+        </Text>
+      </NavLink>
+    </Button>
+  )
+}
+
+/**
  * Two-part shell: a fixed sidebar from `lg` up, the same navigation inside a
  * drawer below that. The old single-row navbar could not fit eight modules —
  * it overflowed and pushed a horizontal scrollbar onto every page.
@@ -141,12 +218,11 @@ const FROZEN_COPY: Record<
  */
 export function AppShell() {
   const { t } = useTranslation()
-  const { logout, lapsed, blocked } = useAuth()
+  const { lapsed } = useAuth()
   const sync = useSyncExternalStore(syncStore.subscribe, syncStore.getSnapshot, syncStore.getSnapshot)
-  const navigate = useNavigate()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
-  const { shop } = useShopSettings()
+  const { shop, loading: shopLoading } = useShopSettings()
 
   /**
    * Dinars or millimes, for the whole app.
@@ -159,11 +235,27 @@ export function AppShell() {
    */
   const moneyMode = useSyncExternalStore(subscribeMoneyMode, getMoneyMode, getMoneyMode)
 
-  // The shop document is what carries the choice to the other machine; the
-  // local copy is only what makes the first paint right.
+  /**
+   * The shop document is what carries the choice to the other machine; the
+   * local copy is only what makes the first paint right.
+   *
+   * A change made on the OTHER machine waits for the next navigation here: it
+   * re-keys the page below, and doing that under the cashier closed the
+   * payment dialog he had open and dropped the amount he typed. The first
+   * snapshot of the session is applied at once — nothing is open yet.
+   */
+  const remoteMode = shop.moneyMode
+  const remoteModeRef = useRef(remoteMode)
+  remoteModeRef.current = remoteMode
+  const modeSynced = useRef(false)
   useEffect(() => {
-    if (shop.moneyMode) setMoneyMode(shop.moneyMode)
-  }, [shop.moneyMode])
+    if (shopLoading || !remoteMode || modeSynced.current) return
+    modeSynced.current = true
+    setMoneyMode(remoteMode)
+  }, [shopLoading, remoteMode])
+  useEffect(() => {
+    if (remoteModeRef.current) setMoneyMode(remoteModeRef.current)
+  }, [location.pathname])
 
   /**
    * Whether any of the five shared listeners has stopped for good.
@@ -264,11 +356,6 @@ export function AppShell() {
     setMenuOpen(false)
   }, [location.pathname])
 
-  const handleLogout = async () => {
-    await logout()
-    navigate('/login', { replace: true })
-  }
-
   const fullHeight = VIEWPORT_ROUTES.has(location.pathname)
 
   /*
@@ -284,78 +371,19 @@ export function AppShell() {
   const CurrentIcon = current?.icon ?? BookMarked
   const currentPalette = paletteFor(location.pathname)
 
-  /**
-   * NavLink sets `aria-current="page"` on the active route, so the active
-   * styling is expressed with the `_currentPage` condition. Listed last so it
-   * wins over `_hover` (equal specificity, source order decides).
-   */
-  /**
-   * Every module is a coloured block, all the time — not a grey line that only
-   * admits to its colour when the mouse is over it. An owner who does not read
-   * the labels navigates by colour and position, and neither of those exists
-   * until the colour is on the screen.
-   */
-  const NavButton = ({ to, icon: Icon, labelKey }: NavItemDef) => {
-    // The same rule NavLink uses to set aria-current, so the square and the
-    // row it sits on can never disagree about which page is open.
-    const active =
-      location.pathname === to || location.pathname.startsWith(`${to}/`)
-    return (
-      <Button
-        asChild
-        h="3.5rem"
-        w="full"
-        justifyContent="flex-start"
-        gap={3}
-        px={3}
-        variant="plain"
-        colorPalette={paletteOf(to)}
-        fontSize="lg"
-        fontWeight="bold"
-        borderRadius="l3"
-        bg="colorPalette.subtle"
-        color="colorPalette.fg"
-        transition="background-color 0.12s, transform 0.12s"
-        _hover={{ bg: 'colorPalette.muted' }}
-        _active={{ transform: 'scale(0.985)' }}
-        // Listed last so it wins over _hover: same specificity, source order decides.
-        _currentPage={{
-          bg: 'colorPalette.solid',
-          color: 'colorPalette.contrast',
-          boxShadow: 'md',
-        }}
-      >
-        <NavLink to={to}>
-          {/*
-            The square is the strongest mark on the row, so it has to hold up on
-            both grounds: a solid block of the module's colour on the pale
-            inactive row, and a translucent white one on the saturated active row
-            — where a solid block of the same colour would disappear into it.
-          */}
-          <Box
-            as="span"
-            flexShrink={0}
-            boxSize="2.5rem"
-            display="grid"
-            placeItems="center"
-            borderRadius="lg"
-            bg={active ? 'whiteAlpha.300' : 'colorPalette.solid'}
-            color="colorPalette.contrast"
-          >
-            <Icon size={22} />
-          </Box>
-          <Text as="span" truncate>
-            {t(labelKey)}
-          </Text>
-        </NavLink>
-      </Button>
-    )
-  }
-
   const navContent = (
-    <Stack gap={5} flex="1" overflowY="auto" px={3} py={4}>
+    <Stack
+      gap={5}
+      flex="1"
+      overflowY="auto"
+      px={3}
+      py={4}
+      // A 1366×768 laptop: tighter spacing so the whole menu, footer
+      // included, fits without scrolling the sidebar.
+      css={{ [SHORT_SCREEN]: { gap: '0.5rem', paddingBlock: '0.5rem' } }}
+    >
       {groups.map((g) => (
-        <Stack key={g.labelKey} gap={2}>
+        <Stack key={g.labelKey} gap={2} css={{ [SHORT_SCREEN]: { gap: '0.25rem' } }}>
           <Text
             fontSize="xs"
             fontWeight="bold"
@@ -375,10 +403,26 @@ export function AppShell() {
 
       <Box flex="1" />
 
-      <Stack gap={2} borderTopWidth="1px" borderColor="border" pt={3}>
+      {/* Sticky, so Réglages, Sauvegarde and Déconnexion stay on screen on a
+          1366×768 laptop instead of below the fold of the sidebar. */}
+      <Stack
+        gap={2}
+        css={{ [SHORT_SCREEN]: { gap: '0.25rem', paddingTop: '0.5rem' } }}
+        borderTopWidth="1px"
+        borderColor="border"
+        pt={3}
+        position="sticky"
+        bottom={0}
+        pb={1}
+        bg="bg"
+        zIndex={1}
+      >
         {footerItems.map((item) => (
           <NavButton key={item.to} {...item} />
         ))}
+        {/* Out of the header on purpose: one stray tap there, with the line
+            down, was a till nobody could sign back into. */}
+        <LogoutButton />
       </Stack>
     </Stack>
   )
@@ -466,49 +510,13 @@ export function AppShell() {
         <UnprotectedBanner />
 
         {/*
-          Two things the shop must never meet in silence.
-
-          A lapsed plan makes every write fail, and Firestore's answer to a
-          refused write is to roll the change back locally — the article
-          appears, then vanishes, with nothing on screen to explain it. And a
-          refused write can also mean the session simply needs renewing. Either
-          way the answer is a sentence, not a disappearing row.
+          A lapsed plan makes every write fail once its grace is over, and
+          Firestore's answer to a refused write is to roll the change back
+          locally — the article appears, then vanishes. PlanBanner says when the
+          plan ends, how long selling still works, and how to renew: orange
+          while there is runway, red only once the server really refuses.
         */}
-        {/*
-          TWO WINDOWS, TWO MESSAGES, AND THE DIFFERENCE MATTERS MORE THAN IT LOOKS.
-
-          `lapsed` goes true the moment paidUntil passes, but the rules grant a
-          fortnight past it (graceMs() in firestore.rules), so for those fourteen
-          days every sale still saves normally. This banner nevertheless read
-          "rien ne peut être enregistré" from the first minute — telling a
-          shopkeeper his till had stopped recording when it had not. A
-          shopkeeper who believes that starts writing tickets on paper, and then
-          either enters nothing or enters everything twice; the message meant to
-          protect his data was the thing most likely to cost him some.
-
-          So: orange while there is runway — the plan has run out, renew it,
-          selling continues. Red only once `blocked` says the grace has closed
-          and the server really is refusing.
-        */}
-        {lapsed && (
-          <Flex
-            align="center"
-            gap={3}
-            px={{ base: 3, md: 6 }}
-            py={2}
-            bg={blocked ? 'red.solid' : 'orange.solid'}
-            color={blocked ? 'red.contrast' : 'orange.contrast'}
-            flexShrink={0}
-          >
-            <ShieldAlert size={20} />
-            <Box minW={0}>
-              <Text fontWeight="bold">
-                {blocked ? t('auth.blockedTitle') : t('auth.lapsedTitle')}
-              </Text>
-              <Text fontSize="sm">{blocked ? t('auth.blockedBody') : t('auth.lapsedBody')}</Text>
-            </Box>
-          </Flex>
-        )}
+        <PlanBanner />
 
         {/*
           NOT gated on `lapsed`, and it used to be.
@@ -526,6 +534,7 @@ export function AppShell() {
         */}
         {sync.denied && (
           <Flex
+            role="alert"
             align="center"
             gap={3}
             px={{ base: 3, md: 6 }}
@@ -534,7 +543,9 @@ export function AppShell() {
             color="red.contrast"
             flexShrink={0}
           >
-            <ShieldAlert size={20} />
+            <Box flexShrink={0}>
+              <ShieldAlert size={20} />
+            </Box>
             <Text minW={0} fontWeight="semibold">
               {/*
                 Two remedies, so two sentences. 'refused' means nothing will
@@ -565,6 +576,7 @@ export function AppShell() {
         */}
         {frozenCopy !== null && (
           <Flex
+            role="alert"
             align="center"
             gap={3}
             px={{ base: 3, md: 6 }}
@@ -573,7 +585,9 @@ export function AppShell() {
             color={frozenCopy.fg}
             flexShrink={0}
           >
-            <FrozenIcon size={20} />
+            <Box flexShrink={0}>
+              <FrozenIcon size={20} />
+            </Box>
             <Box minW={0}>
               <Text fontWeight="bold">{t(frozenCopy.title)}</Text>
               <Text fontSize="sm">{t(frozenCopy.body)}</Text>
@@ -643,7 +657,7 @@ export function AppShell() {
             <MenuIcon size={24} />
           </IconButton>
 
-          <Flex align="center" gap={2} flex="1" minW={0} colorPalette={currentPalette}>
+          <Flex align="center" gap={2} flex="1" minW="5rem" colorPalette={currentPalette}>
             <Box
               flexShrink={0}
               boxSize="2.25rem"
@@ -663,12 +677,6 @@ export function AppShell() {
           <HStack gap={{ base: 1, sm: 2 }} flexShrink={0}>
             <SyncStatus />
             <LanguageToggle />
-            <Button variant="ghost" size="lg" onClick={handleLogout}>
-              <LogOut size={20} />
-              <Text as="span" display={{ base: 'none', md: 'inline' }}>
-                {t('common.logout')}
-              </Text>
-            </Button>
           </HStack>
         </Flex>
 
@@ -696,11 +704,15 @@ export function AppShell() {
             was worked out inside a useMemo written the old way, and a screen
             showing both units at once is worse than either.
 
-            Safe to remount: the switch lives in the settings, so the till —
-            the one screen holding state worth keeping — is not mounted when
-            it is touched, and its parked tickets are in localStorage anyway.
+            Réglages is the exception: it is where the switch is flipped, and a
+            remount there threw away the open section and any half-typed draft.
+            It follows the mode itself (SettingsPage subscribes to it). A change
+            made on the other machine waits for a navigation — see above.
           */}
-          <Box key={moneyMode} display="contents">
+          <Box
+            key={location.pathname === '/settings' ? 'settings' : moneyMode}
+            display="contents"
+          >
             <Outlet />
           </Box>
         </Box>

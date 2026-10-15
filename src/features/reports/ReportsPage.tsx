@@ -1,6 +1,7 @@
 import { memo, useDeferredValue, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
+import { Link as RouterLink } from 'react-router-dom'
 import {
   Alert,
   Box,
@@ -46,6 +47,8 @@ interface Row {
   margin: number | null
   /** The name folded for search. */
   folded: string
+  /** Matched exactly by a scan or a typed code. */
+  barcode: string
 }
 
 export function ReportsPage() {
@@ -102,6 +105,7 @@ export function ReportsPage() {
       margin: uncosted || soldRevenue <= 0 ? null : (profit / soldRevenue) * 100,
       // From the shared fold cache, so this is a lookup for an unchanged article.
       folded: foldedOf(p).name,
+      barcode: p.barcode ?? '',
     }
   }), [products])
 
@@ -111,7 +115,11 @@ export function ReportsPage() {
   )
 
   // The table follows the box at low priority, so typing never waits for it.
-  const q = fold(useDeferredValue(search))
+  const deferred = useDeferredValue(search)
+  const q = fold(deferred)
+  // The box says "Scanner ou taper un code": a scanned barcode must find its
+  // article, not only a name.
+  const code = deferred.trim()
   const sorted = useMemo(
     () =>
       rows
@@ -119,7 +127,7 @@ export function ReportsPage() {
           (r) =>
             (!onlySold || r.soldQty !== 0) &&
             (category === '' || r.category === category) &&
-            (q === '' || r.folded.includes(q)),
+            (q === '' || r.folded.includes(q) || (code !== '' && r.barcode === code)),
         )
         .sort((a, b) => {
           if (sort === 'revenue') return b.soldRevenue - a.soldRevenue
@@ -131,7 +139,7 @@ export function ReportsPage() {
           if (a.uncosted !== b.uncosted) return a.uncosted ? 1 : -1
           return b.profit - a.profit
         }),
-    [rows, onlySold, category, q, sort],
+    [rows, onlySold, category, q, code, sort],
   )
   const paged = usePaged(sorted, `${sort}|${q}|${category}|${onlySold}`, { persist: 'reports' })
   const resetFilters = () => {
@@ -153,20 +161,26 @@ export function ReportsPage() {
           },
         ]
 
-  const { totalRevenue, totalCost, totalBought, hasSales } = useMemo(() => {
-    let totalRevenue = 0
-    let totalCost = 0
-    let totalBought = 0
-    let hasSales = false
-    for (const r of rows) {
-      totalRevenue += r.soldRevenue
-      totalCost += r.soldCost
-      totalBought += r.boughtCost
-      if (r.soldQty > 0) hasSales = true
-    }
-    return { totalRevenue, totalCost, totalBought, hasSales }
-  }, [rows])
-  const totalProfit = totalRevenue - totalCost
+  const { totalRevenue, totalCost, totalBought, totalProfit, uncostedRevenue, hasSales } =
+    useMemo(() => {
+      let totalRevenue = 0
+      let totalCost = 0
+      let totalBought = 0
+      let totalProfit = 0
+      let uncostedRevenue = 0
+      let hasSales = false
+      for (const r of rows) {
+        totalRevenue += r.soldRevenue
+        totalCost += r.soldCost
+        totalBought += r.boughtCost
+        // Same rule as the rows: an uncosted article's revenue is not profit.
+        // Summed in, the headline said the opposite of the badge below it.
+        if (r.uncosted) uncostedRevenue += r.soldRevenue
+        else totalProfit += r.profit
+        if (r.soldQty > 0) hasSales = true
+      }
+      return { totalRevenue, totalCost, totalBought, totalProfit, uncostedRevenue, hasSales }
+    }, [rows])
 
   if (loading) {
     return (
@@ -184,11 +198,19 @@ export function ReportsPage() {
         </Box>
         <Heading size="2xl">{t('reports.title')}</Heading>
       </Flex>
-      <Text color="fg.muted" mb={5}>
+      <Text color="fg.muted" mb={1}>
         {t('reports.subtitle')}
       </Text>
+      {/* These are lifetime counters; Argent's figures are per period. Said
+          here so the two screens do not look like they disagree. */}
+      <Text color="fg.muted" fontSize="sm" mb={5}>
+        {t('platformFix.reportsLifetime')}{' '}
+        <RouterLink to="/dashboard" style={{ textDecoration: 'underline' }}>
+          {t('platformFix.reportsSeePeriod')}
+        </RouterLink>
+      </Text>
 
-      <SimpleGrid columns={{ base: 1, sm: 2, xl: 4 }} gap={3} mb={6}>
+      <SimpleGrid columns={{ base: 1, sm: 2, '2xl': 4 }} gap={3} mb={6}>
         <Kpi
           label={t('reports.totalRevenue')}
           value={money(totalRevenue)}
@@ -206,6 +228,11 @@ export function ReportsPage() {
           value={money(totalProfit)}
           palette={totalProfit >= 0 ? 'brand' : 'red'}
           icon={<Wallet size={22} />}
+          note={
+            uncostedRevenue > 0
+              ? t('platformFix.profitExcludes', { amount: money(uncostedRevenue) })
+              : undefined
+          }
         />
         <Kpi
           label={t('reports.totalBought')}
@@ -292,7 +319,9 @@ export function ReportsPage() {
           <Card.Root>
             <Card.Body p={0}>
               <Table.ScrollArea>
-                <Table.Root size="lg">
+                {/* Acheté and Coût des ventes give way below 2xl, so Bénéfice
+                    is not cut off at 1366 and 1024. */}
+                <Table.Root size={{ base: 'md', '2xl': 'lg' }}>
                   <Table.Header>
                     <Table.Row>
                       <Table.ColumnHeader>{t('reports.product')}</Table.ColumnHeader>
@@ -302,10 +331,10 @@ export function ReportsPage() {
                       <Table.ColumnHeader textAlign="end">
                         {t('reports.revenue')}
                       </Table.ColumnHeader>
-                      <Table.ColumnHeader textAlign="end">
+                      <Table.ColumnHeader textAlign="end" hideBelow="2xl">
                         {t('reports.bought')}
                       </Table.ColumnHeader>
-                      <Table.ColumnHeader textAlign="end">
+                      <Table.ColumnHeader textAlign="end" hideBelow="2xl">
                         {t('reports.cost')}
                       </Table.ColumnHeader>
                       <Table.ColumnHeader textAlign="end">
@@ -365,15 +394,7 @@ const ReportRows = memo(function ReportRows({
 }) {
   const { t } = useTranslation()
   const money = (m: number) => formatMoney(m, { symbol })
-  if (rows.length === 0) {
-    return (
-      <Table.Row>
-        <Table.Cell colSpan={7}>
-          <Text color="fg.muted">{t('stock.noResults')}</Text>
-        </Table.Cell>
-      </Table.Row>
-    )
-  }
+  // No empty-state row here: the page renders the one with "Tout afficher".
   return (
     <>
       {rows.map((r) => {
@@ -394,26 +415,28 @@ const ReportRows = memo(function ReportRows({
               {r.soldQty} {t('reports.units')}
             </Table.Cell>
             <Table.Cell textAlign="end">{money(r.soldRevenue)}</Table.Cell>
-            <Table.Cell textAlign="end">
+            <Table.Cell textAlign="end" hideBelow="2xl">
               {r.boughtQty} {t('reports.units')}
             </Table.Cell>
-            <Table.Cell textAlign="end">
-              {r.uncosted ? (
-                <Badge colorPalette="orange" size="sm">
-                  {t('reports.uncosted')}
-                </Badge>
-              ) : (
-                money(r.soldCost)
-              )}
+            <Table.Cell textAlign="end" hideBelow="2xl">
+              {r.uncosted ? '—' : money(r.soldCost)}
             </Table.Cell>
             <Table.Cell
               textAlign="end"
               fontWeight="bold"
               // A profit computed against no cost is not a profit, so it is
               // not painted as one.
-              color={r.uncosted ? 'fg.muted' : r.profit >= 0 ? 'green.600' : 'red.600'}
+              color={r.uncosted ? 'fg.muted' : r.profit >= 0 ? 'green.fg' : 'red.fg'}
             >
-              {money(r.profit)}
+              {/* Its revenue is not a profit; the badge says why (hidden with
+                  the cost column below 2xl, so it is repeated here). */}
+              {r.uncosted ? (
+                <Badge colorPalette="orange" size="sm" title={t('reports.uncostedHint')}>
+                  {t('reports.uncosted')}
+                </Badge>
+              ) : (
+                money(r.profit)
+              )}
             </Table.Cell>
             <Table.Cell textAlign="end" title={r.uncosted ? t('reports.uncostedHint') : undefined}>
               {r.uncosted ? '—' : formatPercent(r.margin)}
@@ -430,11 +453,14 @@ function Kpi({
   value,
   palette,
   icon,
+  note,
 }: {
   label: string
   value: string
   palette: string
-  icon: React.ReactNode
+  icon: ReactNode
+  /** A caveat under the figure. */
+  note?: string
 }) {
   return (
     <Card.Root>
@@ -454,9 +480,16 @@ function Kpi({
               formatted amount uses no-break spaces, so it cannot wrap. */}
           <Stat.Root minW={0}>
             <Stat.Label truncate>{label}</Stat.Label>
-            <Stat.ValueText fontSize={{ base: "xl", md: "2xl" }} truncate>
+            {/* Not truncated: "1 106,800 DT" cut to "1106,800 D" is a wrong
+                number, not a shorter one. The grid gives it room instead. */}
+            <Stat.ValueText fontSize={{ base: 'xl', md: '2xl' }} whiteSpace="nowrap">
               {value}
             </Stat.ValueText>
+            {note && (
+              <Text fontSize="xs" color="orange.fg">
+                {note}
+              </Text>
+            )}
           </Stat.Root>
         </Flex>
       </Card.Body>

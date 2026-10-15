@@ -21,6 +21,8 @@ interface DashboardKpiProps {
    * "achats" tile passes `down` and gets the colours the other way round.
    */
   goodWhen?: 'up' | 'down'
+  /** A caveat under the figure, e.g. what the profit leaves out. */
+  note?: string
 }
 
 /**
@@ -34,6 +36,7 @@ export function DashboardKpi({
   icon,
   growth,
   goodWhen = 'up',
+  note,
 }: DashboardKpiProps) {
   const { t } = useTranslation()
   // Normalise to `number | null` up front so the JSX below narrows cleanly.
@@ -72,7 +75,7 @@ export function DashboardKpi({
                   <Flex
                     align="center"
                     gap={0.5}
-                    color={good ? 'green.600' : 'red.600'}
+                    color={good ? 'green.fg' : 'red.fg'}
                     fontWeight="semibold"
                   >
                     {rising ? (
@@ -89,6 +92,11 @@ export function DashboardKpi({
                   </Text>
                 </Flex>
               </Stat.HelpText>
+            )}
+            {note && (
+              <Text fontSize="xs" color="orange.fg">
+                {note}
+              </Text>
             )}
           </Stat.Root>
         </Flex>

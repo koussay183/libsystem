@@ -6,8 +6,9 @@ import {
   writeBatch,
 } from 'firebase/firestore'
 import type { DocumentData, QuerySnapshot } from 'firebase/firestore'
+import dayjs from 'dayjs'
 import { db } from '@/lib/firebase'
-import { shopPath } from '@/lib/tenant'
+import { currentShopId, shopPath } from '@/lib/tenant'
 import { track } from '@/lib/syncStatus'
 import { withDeadline } from '@/lib/deadline'
 
@@ -48,15 +49,21 @@ export interface BackupFile {
    * read from the local cache, and the cache holds only what this device has
    * actually seen and still keeps: liveCollection unpins its listener 30 s
    * after the last unmount, several raw onSnapshot hooks drop their target the
-   * moment they unmount, and the SDK's 40 MB LRU evicts anything unpinned. So
-   * an export taken with the line down can be missing whole collections, or
-   * the older half of the sales, and still look like a perfectly good file.
+   * moment they unmount, and a document this device never loaded was never
+   * cached at all (the cache itself is unlimited, firebase.ts). So an export
+   * taken with the line down can be missing whole collections, or the older
+   * half of the sales, and still look like a perfectly good file.
    * This file is the shop's last line of defence on the day the account is
    * lost; it is not allowed to overstate what it holds.
    */
   fromCache?: boolean
   /** Exactly which collections came from the cache rather than the server. */
   cachedCollections?: string[]
+  /**
+   * The shop the file was taken from. Optional and additive like the two
+   * above; a file from another shop is flagged before it can be restored.
+   */
+  shopId?: string
   collections: Record<string, BackupRow[]>
 }
 
@@ -153,8 +160,17 @@ export async function exportAll(): Promise<BackupFile> {
     exportedAt: new Date().toISOString(),
     fromCache: cachedCollections.length > 0,
     cachedCollections,
+    shopId: currentShopId(),
     collections,
   }
+}
+
+/**
+ * The file was taken from a different shop than the one signed in. A file
+ * with no shopId (older builds) cannot say, and is not flagged.
+ */
+export function isForeignBackup(backup: BackupFile): boolean {
+  return typeof backup.shopId === 'string' && backup.shopId !== '' && backup.shopId !== currentShopId()
 }
 
 export function countDocs(backup: BackupFile): number {
@@ -190,13 +206,60 @@ export function partialCollections(backup: BackupFile): string[] {
 /** One line per collection, so a restore can be checked before it happens. */
 export function summarise(
   backup: BackupFile,
-): { name: string; count: number; fromCache: boolean }[] {
+): { name: string; count: number; fromCache: boolean; skipped: number }[] {
   const cached = new Set(partialCollections(backup))
-  return BACKUP_COLLECTIONS.map((name) => ({
-    name,
-    count: backup.collections[name]?.length ?? 0,
-    fromCache: cached.has(name),
-  }))
+  return BACKUP_COLLECTIONS.map((name) => {
+    const rows = rowsIn(backup, name)
+    const valid = rows.filter(isValidRow).length
+    return {
+      name,
+      count: valid,
+      fromCache: cached.has(name),
+      skipped: rows.length - valid,
+    }
+  })
+}
+
+/** A collection's rows, or none when the file holds something else there. */
+function rowsIn(backup: BackupFile, name: string): BackupRow[] {
+  const rows: unknown = backup.collections[name]
+  return Array.isArray(rows) ? (rows as BackupRow[]) : []
+}
+
+/** Integer millimes or whole units: a string or a fraction here is corruption. */
+const INTEGER_FIELDS = [
+  'balance', 'amount', 'total', 'paid', 'subtotal', 'discount', 'received',
+  'salePrice', 'costPrice', 'costPriceHT', 'price', 'defaultPrice',
+  'soldRevenue', 'soldCost', 'boughtCost',
+  'quantity', 'lowStockThreshold', 'soldQty', 'boughtQty',
+] as const
+/** Timestamps and other plain numbers. */
+const NUMBER_FIELDS = ['date', 'createdAt', 'updatedAt', 'lastSoldAt', 'vatRate', 'margin'] as const
+const STRING_FIELDS = ['name', 'customerId', 'type', 'label', 'phone', 'cin', 'barcode'] as const
+
+/**
+ * Whether a row can be written back without breaking the screens that read it.
+ *
+ * A balance restored as the string "5O" made the carnet total read "NaN DT"
+ * and showed a debtor as "Soldé"; the rules accept any shape, so this is the
+ * only place it can be stopped. Only fields the app does arithmetic or lookups
+ * on are checked, and only when present.
+ */
+export function isValidRow(row: unknown): boolean {
+  if (typeof row !== 'object' || row === null || Array.isArray(row)) return false
+  const r = row as Record<string, unknown>
+  if (typeof r.id !== 'string' || r.id === '' || r.id.includes('/')) return false
+  for (const k of INTEGER_FIELDS) {
+    if (k in r && r[k] !== null && !Number.isInteger(r[k])) return false
+  }
+  for (const k of NUMBER_FIELDS) {
+    if (k in r && r[k] !== null && !(typeof r[k] === 'number' && Number.isFinite(r[k]))) return false
+  }
+  for (const k of STRING_FIELDS) {
+    if (k in r && r[k] !== null && typeof r[k] !== 'string') return false
+  }
+  if ('items' in r && !Array.isArray(r.items)) return false
+  return true
 }
 
 /**
@@ -265,27 +328,57 @@ export function downloadJson(backup: BackupFile, filename: string) {
   )
 }
 
-/** Flattens rows to CSV. Nested values (like sale items) are JSON-encoded. */
+/** Stored as integer millimes; written to the CSV as dinars, "12,500". */
+const MONEY_FIELDS = new Set<string>([
+  'balance', 'amount', 'total', 'paid', 'subtotal', 'discount', 'received',
+  'salePrice', 'costPrice', 'costPriceHT', 'price', 'defaultPrice',
+  'soldRevenue', 'soldCost', 'boughtCost',
+])
+const DATE_FIELDS = new Set<string>(['date', 'createdAt', 'updatedAt', 'lastSoldAt'])
+
+/**
+ * Flattens rows to CSV for French-locale Excel, the accountant's tool.
+ *
+ * ';' and not ',': Excel set to French splits on ';', and with commas every
+ * row landed in column A. Amounts are dinars with a decimal comma and dates
+ * are DD/MM/YYYY HH:mm, not millimes and epoch milliseconds. Nested values
+ * (like sale items) stay JSON. A text cell starting with = + - @ is prefixed
+ * with ' so Excel shows it instead of running it as a formula.
+ */
 export function toCsv(rows: BackupRow[]): string {
   if (rows.length === 0) return ''
   const keys = Array.from(new Set(rows.flatMap((r) => Object.keys(r))))
-  const esc = (v: unknown) => {
+  const cell = (k: string, v: unknown): string => {
     if (v === null || v === undefined) return ''
-    const s = typeof v === 'object' ? JSON.stringify(v) : String(v)
-    return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+    if (typeof v === 'number' && Number.isFinite(v)) {
+      if (MONEY_FIELDS.has(k)) return (v / 1000).toFixed(3).replace('.', ',')
+      if (DATE_FIELDS.has(k) && v > 0) return dayjs(v).format('DD/MM/YYYY HH:mm')
+      return String(v).replace('.', ',')
+    }
+    if (typeof v === 'object') return JSON.stringify(v)
+    const s = String(v)
+    return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s
   }
+  const esc = (s: string) => (/[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s)
   return [
-    keys.join(','),
-    ...rows.map((r) => keys.map((k) => esc(r[k])).join(',')),
-  ].join('\n')
+    keys.map(esc).join(';'),
+    ...rows.map((r) => keys.map((k) => esc(cell(k, r[k]))).join(';')),
+  ].join('\r\n')
 }
 
-/** One CSV per collection. The BOM makes Excel read UTF-8 accents correctly. */
-export function downloadCsvFiles(backup: BackupFile) {
-  for (const [name, rows] of Object.entries(backup.collections)) {
+/**
+ * One CSV per collection. The BOM makes Excel read UTF-8 accents correctly.
+ * Spaced out a little: a burst of downloads is what browsers silently drop.
+ */
+export async function downloadCsvFiles(backup: BackupFile): Promise<void> {
+  let first = true
+  for (const name of BACKUP_COLLECTIONS) {
+    const rows = rowsIn(backup, name)
     if (rows.length === 0) continue
+    if (!first) await new Promise((resolve) => setTimeout(resolve, 400))
+    first = false
     triggerDownload(
-      new Blob(['﻿' + toCsv(rows)], { type: 'text/csv;charset=utf-8' }),
+      new Blob(['\ufeff' + toCsv(rows)], { type: 'text/csv;charset=utf-8' }),
       `${name}.csv`,
     )
   }
@@ -316,23 +409,27 @@ export function isBackupFile(value: unknown): value is BackupFile {
  * durable in IndexedDB, replayed to the server in order on reconnect — and the
  * caller must say so rather than claim an upload it has not seen finish.
  */
-export async function restoreAll(backup: BackupFile): Promise<number> {
+export async function restoreAll(
+  backup: BackupFile,
+  opts: { skipSettings?: boolean } = {},
+): Promise<number> {
   let written = 0
   const CHUNK = 400
-  for (const [name, rows] of Object.entries(backup.collections)) {
-    // The collection name and the row id both become Firestore path segments,
-    // and doc() throws SYNCHRONOUSLY on a segment carrying a slash — which,
-    // now that the commits are fire-and-forget, would abandon the restore
-    // half-queued and report a failure over data that was really written. A
-    // hand-edited or truncated file is not worth that.
-    if (name === '' || name.includes('/')) continue
+  // Only the collections this app owns. Iterating whatever the file listed let
+  // a hand-edited file write catalog_contributions — which feeds the catalogue
+  // every shop reads — or any other collection at all.
+  for (const name of BACKUP_COLLECTIONS) {
+    if (opts.skipSettings && name === 'settings') continue
+    // Rows that would break the screens (a balance that is a string, an id
+    // with a slash, which doc() throws on synchronously) are left out; the
+    // review dialog has already said how many.
+    const rows = rowsIn(backup, name).filter(isValidRow)
     for (let i = 0; i < rows.length; i += CHUNK) {
       const slice = rows.slice(i, i + CHUNK)
       const batch = writeBatch(db)
       let queued = 0
       for (const row of slice) {
         const { id, ...data } = row
-        if (typeof id !== 'string' || id === '' || id.includes('/')) continue
         batch.set(doc(db, shopPath(name), id), data)
         queued += 1
       }

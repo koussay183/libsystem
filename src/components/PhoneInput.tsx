@@ -39,7 +39,13 @@ export const PhoneInput = forwardRef<HTMLInputElement, Props>(function PhoneInpu
         onChange={(e) => {
           setLeft(false)
           typed.current = true
-          onChange(formatPhoneTyping(e.target.value))
+          // Regrouped only while typing at the end. A fix in the middle of the
+          // number keeps the raw text: regrouping it moved the caret to the end
+          // and the next digit landed there, saving a wrong number. The blur
+          // below tidies it.
+          const el = e.target
+          const atEnd = el.selectionStart === null || el.selectionStart === el.value.length
+          onChange(atEnd ? formatPhoneTyping(el.value) : el.value)
         }}
         onBlur={(e) => {
           setLeft(true)

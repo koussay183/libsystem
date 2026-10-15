@@ -142,6 +142,9 @@ export function parseMoney(input: string | number | null | undefined): Minor | n
   const cleaned = trimmed.replace(/[\s\u00a0\u202f]/g, '').replace(',', '.')
 
   if (cleaned === '') return null
+  // Digits with at most one decimal point, nothing else. Number() alone also
+  // read "1e3" as 1 000 DT and "0x10" as 16 DT, and saved them.
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleaned)) return null
   const value = Number(cleaned)
   if (!Number.isFinite(value) || value < 0) return null
   return toMinor(value)

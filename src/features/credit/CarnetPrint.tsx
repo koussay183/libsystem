@@ -2,7 +2,7 @@ import { createPortal } from 'react-dom'
 import { useTranslation } from 'react-i18next'
 import { formatMoney } from '@/lib/money'
 import { formatDate, formatDateTime } from '@/lib/format'
-import type { Customer } from '@/types/models'
+import type { Customer, ShopSettings } from '@/types/models'
 import type { LedgerRow, LedgerTotals } from './ledger'
 
 /**
@@ -18,6 +18,7 @@ export function CarnetPrint({
   rows,
   totals,
   shopName,
+  shop,
   symbol,
 }: {
   customer: Customer
@@ -25,6 +26,8 @@ export function CarnetPrint({
   rows: LedgerRow[]
   totals: LedgerTotals
   shopName: string
+  /** How the client reaches and identifies the shop, under its name. */
+  shop?: Pick<ShopSettings, 'address' | 'phone' | 'taxId'>
   symbol: string
 }) {
   const { t } = useTranslation()
@@ -55,6 +58,17 @@ export function CarnetPrint({
     <div id="print-area" className="a4">
       <div className="print-header" style={{ textAlign: 'center', marginBottom: 12 }}>
         <div style={{ fontSize: '1.5em', fontWeight: 700 }}>{shopName}</div>
+        {shop?.address && <div>{shop.address}</div>}
+        {shop?.phone && (
+          <div>
+            {t('settings.phone')} : <bdi dir="ltr">{shop.phone}</bdi>
+          </div>
+        )}
+        {shop?.taxId && (
+          <div>
+            {t('settings.taxId')} : <bdi dir="ltr">{shop.taxId}</bdi>
+          </div>
+        )}
         <div style={{ fontSize: '1.2em', marginTop: 2 }}>{t('credit.statement')}</div>
         <div style={{ marginTop: 2 }}>{formatDateTime(Date.now())}</div>
       </div>
@@ -68,10 +82,14 @@ export function CarnetPrint({
         }}
       >
         <div style={{ fontSize: '1.3em', fontWeight: 700 }}>{customer.name}</div>
-        {customer.phone && <div>{customer.phone}</div>}
+        {customer.phone && (
+          <div>
+            <bdi dir="ltr">{customer.phone}</bdi>
+          </div>
+        )}
         {customer.cin && (
           <div>
-            {t('customer.cinShort')} {customer.cin}
+            {t('customer.cinShort')} <bdi dir="ltr">{customer.cin}</bdi>
           </div>
         )}
         {customer.note && <div>{customer.note}</div>}
@@ -150,6 +168,11 @@ export function CarnetPrint({
                 : t('credit.settled')}
           </span>
         </div>
+        {owes && shop?.phone && (
+          <div style={{ marginTop: 10 }}>
+            {t('platformFix.statementFooter', { phone: shop.phone })}
+          </div>
+        )}
       </div>
     </div>,
     document.body,

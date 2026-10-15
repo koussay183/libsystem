@@ -51,6 +51,13 @@ function stampFor(dateStr: string, original: number | null): number {
 /** Round sums the owner actually handles: 5, 10, 20 and 50 dinars. */
 const QUICK_AMOUNTS = [5_000, 10_000, 20_000, 50_000]
 
+/**
+ * How long the overpayment question stands before it can be answered. The
+ * second click of a double-click on Enregistrer arrived after the re-render
+ * and read as "Confirmer", recording a 100 DT advance nobody meant.
+ */
+const CONFIRM_DELAY_MS = 700
+
 export function CreditEntryForm({
   open,
   onClose,
@@ -80,8 +87,12 @@ export function CreditEntryForm({
   const [error, setError] = useState('')
   const [saveError, setSaveError] = useState('')
   const [overpayAsked, setOverpayAsked] = useState(false)
+  /** When the overpayment question went up; see CONFIRM_DELAY_MS. */
+  const askedAt = useRef(0)
+  const [confirmLocked, setConfirmLocked] = useState(false)
   const [settling, setSettling] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [dateError, setDateError] = useState('')
   /** Synchronous in-flight guard — see the comment in submit(). */
   const submitting = useRef(false)
 
@@ -96,7 +107,14 @@ export function CreditEntryForm({
    * 50 DT payment that exactly settled a 50 DT debt read as a 50 DT advance —
    * and fixing nothing but its date asked for an overpayment confirmation.
    */
-  const owed = Math.max(0, balance + (entry?.type === 'payment' ? entry.amount : 0))
+  const owedRaw = balance + (entry?.type === 'payment' ? entry.amount : 0)
+  const owed = Math.max(0, owedRaw)
+
+  useEffect(() => {
+    if (!confirmLocked) return
+    const id = window.setTimeout(() => setConfirmLocked(false), CONFIRM_DELAY_MS)
+    return () => window.clearTimeout(id)
+  }, [confirmLocked])
 
   useEffect(() => {
     if (!open) return
@@ -104,8 +122,10 @@ export function CreditEntryForm({
     setLabel(entry?.label ?? '')
     setDateStr(dayjs(entry?.date ?? Date.now()).format('YYYY-MM-DD'))
     setError('')
+    setDateError('')
     setSaveError('')
     setOverpayAsked(false)
+    setConfirmLocked(false)
     setSettling(false)
     setBusy(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -133,10 +153,19 @@ export function CreditEntryForm({
       setError(t('credit.amountRequired'))
       return
     }
-    if (overpay && !overpayAsked) {
-      setOverpayAsked(true)
+    // noValidate also switched off the date field's max: a line dated 2062
+    // instead of 2026 would silence the « à relancer » flag for decades.
+    if (dateStr && dayjs(dateStr).isAfter(dayjs(), 'day')) {
+      setDateError(t('platformFix.dateInFuture'))
       return
     }
+    if (overpay && !overpayAsked) {
+      askedAt.current = Date.now()
+      setOverpayAsked(true)
+      setConfirmLocked(true)
+      return
+    }
+    if (overpay && Date.now() - askedAt.current < CONFIRM_DELAY_MS) return
     // `busy` is state and only lands on the next render; a second Enter before
     // then would record the payment twice and halve the client's debt for free.
     if (submitting.current) return
@@ -211,9 +240,14 @@ export function CreditEntryForm({
                     <Text
                       fontSize="xl"
                       fontWeight="bold"
-                      color={balance > 0 ? 'red.600' : 'green.600'}
+                      color={balance > 0 ? 'red.fg' : 'green.fg'}
                     >
-                      {balance > 0 ? money(balance) : t('credit.settled')}
+                      {/* An advance is not "soldé": he has money with the shop. */}
+                      {balance > 0
+                        ? money(balance)
+                        : balance < 0
+                          ? t('credit.creditor', { amount: money(-balance) })
+                          : t('credit.settled')}
                     </Text>
                   </HStack>
 
@@ -295,15 +329,19 @@ export function CreditEntryForm({
                   {/* The day it happened. A line copied in from a paper carnet
                       is last month's, and a carnet that dates every line today
                       loses the order the debts were run up in. */}
-                  <Field.Root>
+                  <Field.Root invalid={!!dateError}>
                     <Field.Label>{t('credit.entryDate')}</Field.Label>
                     <Input
                       size="lg"
                       type="date"
                       value={dateStr}
                       max={dayjs().format('YYYY-MM-DD')}
-                      onChange={(e) => setDateStr(e.target.value)}
+                      onChange={(e) => {
+                        setDateStr(e.target.value)
+                        setDateError('')
+                      }}
                     />
+                    <Field.ErrorText>{dateError}</Field.ErrorText>
                   </Field.Root>
 
                   <Field.Root>
@@ -324,8 +362,10 @@ export function CreditEntryForm({
                       </Alert.Indicator>
                       <Alert.Content>
                         <Alert.Title>
+                          {/* The advance he will hold AFTER this payment,
+                              counting any advance he already had. */}
                           {t('credit.creditor', {
-                            amount: money((minor ?? 0) - owed),
+                            amount: money((minor ?? 0) - owedRaw),
                           })}
                         </Alert.Title>
                       </Alert.Content>
@@ -352,7 +392,7 @@ export function CreditEntryForm({
                 size="lg"
                 type="submit"
                 form="credit-entry-form"
-                disabled={busy}
+                disabled={busy || confirmLocked}
                 colorPalette={overpay && overpayAsked ? 'orange' : isPayment ? 'green' : 'red'}
               >
                 {busy

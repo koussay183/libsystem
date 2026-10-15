@@ -7,6 +7,7 @@ import {
   Box,
   Button,
   Card,
+  Checkbox,
   Dialog,
   Flex,
   Heading,
@@ -24,6 +25,7 @@ import {
   downloadCsvFiles,
   restoreAll,
   isBackupFile,
+  isForeignBackup,
   countDocs,
   summarise,
   isPartialBackup,
@@ -72,6 +74,9 @@ export function BackupPanel() {
   const [lastPartial, setLastPartial] = useState<boolean>(readLastBackupPartial)
   /** A file that has been read and understood, waiting for a yes. */
   const [pending, setPending] = useState<BackupFile | null>(null)
+  /** For a file from another shop: the owner ticked that he knows. */
+  const [foreignOk, setForeignOk] = useState(false)
+  const foreign = pending !== null && isForeignBackup(pending)
 
   const staleDays = lastAt === null ? null : dayjs().diff(dayjs(lastAt), 'day')
   const isStale = lastAt === null || (staleDays ?? 0) >= STALE_BACKUP_DAYS
@@ -86,11 +91,14 @@ export function BackupPanel() {
     setStatus(null)
     try {
       const backup = await exportAll()
-      if (kind === 'json') {
-        downloadJson(backup, `librairie-sauvegarde-${dayjs().format('YYYY-MM-DD-HHmm')}.json`)
-      } else {
-        downloadCsvFiles(backup)
+      if (kind === 'csv') {
+        await downloadCsvFiles(backup)
+        // Not a backup: nothing restores from CSV. Marking the shop "saved"
+        // here gave it a green shield while it held no restorable file.
+        setStatus({ kind: 'ok', text: t('platformFix.csvExported'), note: t('platformFix.csvNotBackup') })
+        return
       }
+      downloadJson(backup, `librairie-sauvegarde-${dayjs().format('YYYY-MM-DD-HHmm')}.json`)
       // A cache-sourced export is still handed over — see exportAll — but it is
       // reported as a warning, not a success, and the collections that could
       // not be confirmed are named. The one thing this screen must never do is
@@ -130,6 +138,7 @@ export function BackupPanel() {
       // Never restore straight off a click: the owner sees exactly what the
       // file holds first. A wrong file silently overwriting the shop is the
       // one mistake here that cannot be undone.
+      setForeignOk(false)
       setPending(parsed)
     } catch {
       setStatus({ kind: 'error', text: t('backup.invalidFile') })
@@ -139,10 +148,12 @@ export function BackupPanel() {
   const confirmRestore = async () => {
     const backup = pending
     if (!backup) return
+    if (isForeignBackup(backup) && !foreignOk) return
     setPending(null)
     setBusy(true)
     try {
-      const written = await restoreAll(backup)
+      // Another shop's ticket header is never restored over this one.
+      const written = await restoreAll(backup, { skipSettings: isForeignBackup(backup) })
       // restoreAll no longer waits for the server, so "restauré" here means
       // "written to this computer and queued" — durable in IndexedDB and
       // replayed in order on reconnect. The note says exactly that instead of
@@ -160,6 +171,7 @@ export function BackupPanel() {
   }
 
   const rows = pending ? summarise(pending) : []
+  const skipped = rows.reduce((n, r) => n + r.skipped, 0)
 
   return (
     <Box>
@@ -189,7 +201,10 @@ export function BackupPanel() {
           {(isStale || wasPartial) && (
             <Alert.Description>
               <Stack gap={1}>
-                {isStale && <Text>{t('backup.backupOld', { days: STALE_BACKUP_DAYS })}</Text>}
+                {/* "Never" and "more than 7 days" contradicted each other. */}
+                {isStale && lastAt !== null && (
+                  <Text>{t('backup.backupOld', { days: STALE_BACKUP_DAYS })}</Text>
+                )}
                 {wasPartial && <Text>{t('backup.lastBackupPartial')}</Text>}
               </Stack>
             </Alert.Description>
@@ -292,6 +307,39 @@ export function BackupPanel() {
                     </Text>
                   )}
 
+                  {/* Whose shop is this? A demo or another client's file on the
+                      same laptop would merge its stock and carnet into this one. */}
+                  {foreign && (
+                    <Alert.Root status="error">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{t('platformFix.backupForeignTitle')}</Alert.Title>
+                        <Alert.Description>
+                          <Stack gap={2}>
+                            <Text>{t('platformFix.backupForeignBody')}</Text>
+                            <Checkbox.Root
+                              checked={foreignOk}
+                              onCheckedChange={(e) => setForeignOk(e.checked === true)}
+                            >
+                              <Checkbox.HiddenInput />
+                              <Checkbox.Control />
+                              <Checkbox.Label>{t('platformFix.backupForeignConfirm')}</Checkbox.Label>
+                            </Checkbox.Root>
+                          </Stack>
+                        </Alert.Description>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
+                  {skipped > 0 && (
+                    <Alert.Root status="warning">
+                      <Alert.Indicator />
+                      <Alert.Content>
+                        <Alert.Title>{t('platformFix.backupSkipped', { count: skipped })}</Alert.Title>
+                      </Alert.Content>
+                    </Alert.Root>
+                  )}
+
                   {/* The file says so itself. Shown before the counts, because
                       the counts are what look reassuring, and on a partial file
                       a low count is the symptom rather than the truth. */}
@@ -343,7 +391,13 @@ export function BackupPanel() {
                 <Button size="lg" variant="outline" onClick={() => setPending(null)}>
                   {t('common.cancel')}
                 </Button>
-                <Button size="lg" colorPalette="orange" loading={busy} onClick={confirmRestore}>
+                <Button
+                  size="lg"
+                  colorPalette="orange"
+                  loading={busy}
+                  disabled={foreign && !foreignOk}
+                  onClick={confirmRestore}
+                >
                   <Upload size={18} />
                   {t('backup.restoreNow')}
                 </Button>

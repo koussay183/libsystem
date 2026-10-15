@@ -36,7 +36,7 @@ import { ActiveFilters, NoResults } from '@/components/ActiveFilters'
 import { oneOf, useSessionState } from '@/lib/useSessionState'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { CustomerForm } from './CustomerForm'
-import { daysSince, debtStartedAt, groupByCustomer, needsReminder } from './ledger'
+import { carnetClock, daysSince, groupByCustomer } from './ledger'
 import type { Customer } from '@/types/models'
 
 type SortKey = 'debt' | 'name' | 'oldest'
@@ -44,6 +44,11 @@ type Show = 'all' | 'debtors' | 'reminder' | 'settled' | 'advance'
 
 /** A phone number or a CIN as typed: "98 123 456" and "98123456" are one number. */
 const digits = (v: string | undefined) => (v ?? '').replace(/[\s.\-/]/g, '')
+
+/** Only digits and phone punctuation: "Classe 7B" is not a phone number. */
+const PHONE_SHAPED = /^[\d\s+.\-/()]+$/
+/** A Tunisian CIN: 8 digits starting with 0 or 1, unlike any phone. */
+const CIN_SHAPED = /^[01]\d{7}$/
 
 /**
  * The index of the carnet: every client, what he owes, and how long he has
@@ -54,7 +59,7 @@ export function CreditPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
   const { customers, loading, error } = useCustomers()
-  const { entries, error: entriesError } = useAllCreditEntries()
+  const { entries, error: entriesError, horizon } = useAllCreditEntries()
 
   const [search, setSearch] = useState('')
   const [sort, setSort] = useSessionState<SortKey>('credit.sort', 'debt', oneOf(['debt', 'name', 'oldest']))
@@ -77,19 +82,21 @@ export function CreditPage() {
   const rows = useMemo(() => {
     return customers.map((c) => {
       const own = byCustomer.get(c.id) ?? []
-      const startedAt = debtStartedAt(own)
+      // The feed is capped; carnetClock keeps the age of a debt whose lines
+      // are all older than the cap instead of dropping it.
+      const { startedAt, relance } = carnetClock(own, c.balance, horizon)
       return {
         customer: c,
         startedAt,
         ageDays: startedAt === null ? null : daysSince(startedAt),
-        relance: needsReminder(own, c.balance),
+        relance,
         // Folded once per snapshot, not once per letter typed.
         name: fold(c.name),
         phone: digits(c.phone),
         cin: digits(c.cin),
       }
     })
-  }, [customers, byCustomer])
+  }, [customers, byCustomer, horizon])
 
   /**
    * Sorted before filtering, so typing in the box never re-sorts the carnet:
@@ -377,8 +384,15 @@ export function CreditPage() {
           withOpeningDebt
           // What found nobody in the search becomes the new client's name or
           // number, so it is not typed twice.
+          // A CIN-shaped search (8 digits from 0 or 1, which no Tunisian phone
+          // starts with) seeds the CIN; only a phone-shaped one seeds the phone.
           initialName={prefill && !/\d/.test(search) ? search.trim() : undefined}
-          initialPhone={prefill && /\d/.test(search) ? search.trim() : undefined}
+          initialPhone={
+            prefill && PHONE_SHAPED.test(search.trim()) && !CIN_SHAPED.test(digits(search))
+              ? search.trim()
+              : undefined
+          }
+          initialCin={prefill && CIN_SHAPED.test(digits(search)) ? digits(search) : undefined}
           onClose={() => {
             setFormOpen(false)
             setPrefill(false)
@@ -438,17 +452,23 @@ const CustomerCards = memo(function CustomerCards({
                     {c.name}
                   </Text>
                   {(c.phone || c.cin) && (
+                    // Each number isolated left-to-right: in Arabic "97 000 004"
+                    // was reordered to "004 000 97" and dialled wrong.
                     <Text fontSize="sm" color="fg.muted">
-                      {[c.phone, c.cin && `${t('customer.cinShort')} ${c.cin}`]
-                        .filter(Boolean)
-                        .join(' · ')}
+                      {c.phone && <bdi dir="ltr">{c.phone}</bdi>}
+                      {c.phone && c.cin && ' · '}
+                      {c.cin && (
+                        <>
+                          {t('customer.cinShort')} <bdi dir="ltr">{c.cin}</bdi>
+                        </>
+                      )}
                     </Text>
                   )}
                   <Flex wrap="wrap" gap={2} mt={2}>
                     {owes && ageDays !== null && (
                       <Badge colorPalette="orange" size="md">
                         <CalendarClock size={14} />
-                        {t('credit.daysOld', { count: ageDays })}
+                        {ageDays === 0 ? t('common.today') : t('credit.daysOld', { count: ageDays })}
                       </Badge>
                     )}
                     {relance && (
@@ -462,7 +482,7 @@ const CustomerCards = memo(function CustomerCards({
 
                 <Box textAlign="end" flexShrink={0}>
                   {owes ? (
-                    <Text fontSize="2xl" fontWeight="bold" color="red.600" whiteSpace="nowrap">
+                    <Text fontSize="2xl" fontWeight="bold" color="red.fg" whiteSpace="nowrap">
                       {money(c.balance)}
                     </Text>
                   ) : c.balance < 0 ? (
@@ -480,7 +500,7 @@ const CustomerCards = memo(function CustomerCards({
                   asChild
                   size="lg"
                   variant="ghost"
-                  aria-label={t('common.open')}
+                  aria-label={`${t('common.open')} ${c.name}`}
                   title={t('common.open')}
                   flexShrink={0}
                 >

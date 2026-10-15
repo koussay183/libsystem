@@ -188,6 +188,39 @@ export function needsReminder(
   return daysSince(reference, now) >= REMINDER_DAYS
 }
 
+/**
+ * Debt start and "à relancer" for one client, from a feed that may be cut.
+ *
+ * The carnet index reads only the newest N lines of the whole shop. A client
+ * whose last movement is older than that has no lines in the feed, so he lost
+ * his age and his reminder flag — the oldest debtors, exactly the ones to chase.
+ * When the feed was cut (`horizon` = the date of its oldest line) and his lines
+ * do not add up to his balance, the difference was carried in from before the
+ * horizon: his debt is then at least that old.
+ */
+export function carnetClock(
+  own: CreditEntry[],
+  balance: number,
+  horizon: number | null,
+  now: number = Date.now(),
+): { startedAt: number | null; relance: boolean } {
+  if (horizon === null) {
+    return { startedAt: debtStartedAt(own), relance: needsReminder(own, balance, now) }
+  }
+  let running = balance - own.reduce((n, e) => n + signedAmount(e), 0)
+  let startedAt: number | null = running > 0 ? horizon : null
+  for (const e of chronological(own)) {
+    const before = running
+    running += signedAmount(e)
+    if (before <= 0 && running > 0) startedAt = entryTime(e)
+    if (running <= 0) startedAt = null
+  }
+  if (running <= 0 || startedAt === null) return { startedAt: null, relance: false }
+  const paid = lastPaymentAt(own)
+  const since = paid === null ? startedAt : Math.max(paid, startedAt)
+  return { startedAt, relance: daysSince(since, now) >= REMINDER_DAYS }
+}
+
 /** Groups a flat feed of ledger lines by client, for the index page. */
 export function groupByCustomer(entries: CreditEntry[]): Map<string, CreditEntry[]> {
   const map = new Map<string, CreditEntry[]>()

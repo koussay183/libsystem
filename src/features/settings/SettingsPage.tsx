@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 import type { LucideIcon } from 'lucide-react'
@@ -47,8 +47,12 @@ import {
   defaultVatFor,
   parsePercent,
 } from '@/features/stock/pricing'
-import { setMoneyMode } from '@/lib/money'
+import { formatMoney, getMoneyMode, setMoneyMode, subscribeMoneyMode } from '@/lib/money'
 import { useAlive } from '@/lib/useAlive'
+import { useSessionState, oneOf } from '@/lib/useSessionState'
+import { useAuth } from '@/auth/AuthContext'
+import { CONTACT_DISPLAY, CONTACT_TEL, whatsappLink } from '@/lib/contact'
+import dayjs from 'dayjs'
 import { PhoneInput } from '@/components/PhoneInput'
 import { ROUTE_PALETTE } from '@/lib/navColors'
 import {
@@ -253,8 +257,54 @@ function IdentitySection({ f }: { f: ShopForm }) {
         </Card.Body>
       </Card.Root>
 
-      <TicketPreview form={form} />
+      <Stack gap={4}>
+        <TicketPreview form={form} />
+        <PlanCard shopName={form.name} />
+      </Stack>
     </SimpleGrid>
+  )
+}
+
+/** The subscription: until when it is paid, and how to renew it. */
+function PlanCard({ shopName }: { shopName: string }) {
+  const { t } = useTranslation()
+  const { shopId, paidUntil, graceEndsAt } = useAuth()
+  if (paidUntil === null) return null
+  const left = Math.max(0, Math.ceil((paidUntil - Date.now()) / 86_400_000))
+  const date = dayjs(paidUntil).format('DD/MM/YYYY')
+  const expired = paidUntil < Date.now()
+  return (
+    <Card.Root>
+      <Card.Body>
+        <Text fontWeight="bold" mb={1}>
+          {t('platformFix.planTitle')}
+        </Text>
+        <Text color={expired ? 'red.fg' : 'fg.muted'} fontSize="sm" mb={3}>
+          {expired
+            ? t('platformFix.planExpiredOn', {
+                date,
+                graceEnd: dayjs(graceEndsAt ?? paidUntil).format('DD/MM/YYYY'),
+              })
+            : t('platformFix.planPaidUntil', { date, count: left })}
+        </Text>
+        <Flex gap={2} wrap="wrap">
+          <Button asChild size="sm" colorPalette="green">
+            <a
+              href={whatsappLink(
+                t('platformFix.renewMessage', { shop: shopName || shopId, id: shopId }),
+              )}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {t('platformFix.renewWhatsapp')}
+            </a>
+          </Button>
+          <Button asChild size="sm" variant="outline">
+            <a href={CONTACT_TEL}>{CONTACT_DISPLAY}</a>
+          </Button>
+        </Flex>
+      </Card.Body>
+    </Card.Root>
   )
 }
 
@@ -288,12 +338,12 @@ function TicketPreview({ form }: { form: ShopSettings }) {
           <Box borderTopWidth="1px" borderBottomWidth="1px" borderColor="gray.400" my={2} py={2}>
             <Flex justify="space-between">
               <Text>Cahier 96 pages</Text>
-              <Text>2,500</Text>
+              <Text>{formatMoney(2500)}</Text>
             </Flex>
           </Box>
           <Flex justify="space-between" fontWeight="bold">
             <Text>TOTAL</Text>
-            <Text>2,500</Text>
+            <Text>{formatMoney(2500)}</Text>
           </Flex>
           <Text mt={3}>{form.footer || t('settings.footerPlaceholder')}</Text>
         </Box>
@@ -967,7 +1017,27 @@ const SECTIONS: SectionDef[] = [
 export function SettingsPage() {
   const { t } = useTranslation()
   const f = useShopForm()
-  const [section, setSection] = useState('shop')
+  // Remembered for the tab, so coming back to Réglages lands where he was.
+  const [section, setSection] = useSessionState(
+    'settings.section',
+    'shop',
+    oneOf(SECTIONS.map((s) => s.id)),
+  )
+  // AppShell no longer remounts this page on a dinars/millimes flip (that threw
+  // the draft away), so the page redraws itself for the new mode.
+  useSyncExternalStore(subscribeMoneyMode, getMoneyMode, getMoneyMode)
+
+  // A reload or a closed tab with a half-typed address asks first. (Moving to
+  // another screen cannot be intercepted with BrowserRouter.)
+  useEffect(() => {
+    if (!f.dirty) return
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [f.dirty])
 
   const current = SECTIONS.find((s) => s.id === section) ?? SECTIONS[0]
 
@@ -1011,22 +1081,22 @@ export function SettingsPage() {
 
       <Flex direction={{ base: 'column', lg: 'row' }} gap={{ base: 4, lg: 6 }} align="start">
         {/*
-          A rail on a wide screen, a scrolling row of chips on a phone. One set
+          A rail on a wide screen, wrapping rows of chips on a phone. One set
           of markup with responsive props rather than two — the old Tabs.List
           overflowed the moment a fifth tab was added, and a second copy of the
-          nav is a second place to forget a section.
+          nav is a second place to forget a section. Wrapped, not scrolled: a
+          hidden scrollbar left four of the six sections off-screen with
+          nothing saying they existed.
         */}
         <Flex
           as="nav"
           direction={{ base: 'row', lg: 'column' }}
+          wrap={{ base: 'wrap', lg: 'nowrap' }}
           gap={2}
           flexShrink={0}
           w={{ base: 'full', lg: '17.5rem' }}
-          overflowX={{ base: 'auto', lg: 'visible' }}
-          pb={{ base: 1, lg: 0 }}
           position={{ lg: 'sticky' }}
           top={{ lg: '6rem' }}
-          css={{ scrollbarWidth: 'none', '&::-webkit-scrollbar': { display: 'none' } }}
         >
           {SECTIONS.map((s) => {
             const active = s.id === current.id

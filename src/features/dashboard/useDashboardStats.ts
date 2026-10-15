@@ -19,7 +19,12 @@
 import { useMemo } from 'react'
 import type { Customer, CreditEntry, Product, Purchase, Sale } from '@/types/models'
 import { purchaseOwed, purchaseStatus } from '@/features/purchases/usePurchases'
-import { groupByCustomer, reminderSince } from '@/features/credit/ledger'
+import {
+  carnetClock,
+  groupByCustomer,
+  lastPaymentAt,
+  reminderSince,
+} from '@/features/credit/ledger'
 import { bucketKey, buildBuckets, periodRange, previousRange } from './periods'
 import type { Period, Range } from './periods'
 import { fromMinor } from '@/lib/money'
@@ -44,10 +49,33 @@ function daysSince(from: number, now: number): number {
  * Profit actually made on one ticket: the margin of every line, less the
  * whole-ticket discount (which the line prices do not know about). Return
  * lines carry a negative qty, so they subtract themselves naturally.
+ *
+ * An article sold with no purchase price is left OUT of the profit and
+ * reported as `uncosted` revenue instead: counted in, its whole price read as
+ * profit, while Rentabilité's own rows mark it "prix d'achat manquant". A
+ * service line (no productId) genuinely costs nothing and stays in. The
+ * ticket discount is shared between the two in proportion to their value.
  */
-function saleProfit(s: Sale): number {
-  const lines = s.items.reduce((n, i) => n + (i.unitPrice - i.unitCost) * i.qty, 0)
-  return lines - (s.discount ?? 0)
+function saleProfit(s: Sale): { profit: number; uncosted: number } {
+  let costedValue = 0
+  let uncostedValue = 0
+  let profit = 0
+  for (const i of s.items) {
+    const value = i.unitPrice * i.qty
+    if (i.productId && i.unitCost === 0 && i.unitPrice > 0) {
+      uncostedValue += value
+      continue
+    }
+    costedValue += value
+    profit += (i.unitPrice - i.unitCost) * i.qty
+  }
+  const discount = s.discount ?? 0
+  const all = costedValue + uncostedValue
+  const uncostedDiscount = all !== 0 ? Math.round((discount * uncostedValue) / all) : 0
+  return {
+    profit: profit - (discount - uncostedDiscount),
+    uncosted: uncostedValue - uncostedDiscount,
+  }
 }
 
 /** Percentage change against the previous period. Null when there is no base. */
@@ -62,13 +90,18 @@ export interface PeriodTotals {
   revenue: number
   /** Money out to suppliers, millimes. */
   spending: number
-  /** Estimated profit, millimes. */
+  /** Estimated profit, millimes — on articles that have a purchase price. */
   profit: number
+  /** Revenue from articles sold with no purchase price, left out of `profit`. */
+  uncostedRevenue: number
   /** Number of tickets. */
   tickets: number
   /** Average ticket, millimes. Zero when there were no tickets. */
   avgTicket: number
-  /** Overall margin as a percentage of revenue. Null when nothing was sold. */
+  /**
+   * Profit as a percentage of the revenue it was computed on (uncosted sales
+   * excluded from both). Null when nothing costed was sold.
+   */
   margin: number | null
 }
 
@@ -78,15 +111,23 @@ function totalsFor(sales: Sale[], purchases: Purchase[], range: Range): PeriodTo
   const spending = purchases
     .filter((p) => inRange(p.date))
     .reduce((n, p) => n + p.total, 0)
-  const profit = sales.reduce((n, s) => n + saleProfit(s), 0)
+  let profit = 0
+  let uncostedRevenue = 0
+  for (const s of sales) {
+    const part = saleProfit(s)
+    profit += part.profit
+    uncostedRevenue += part.uncosted
+  }
+  const costedRevenue = revenue - uncostedRevenue
   const tickets = sales.length
   return {
     revenue,
     spending,
     profit,
+    uncostedRevenue,
     tickets,
     avgTicket: tickets > 0 ? Math.round(revenue / tickets) : 0,
-    margin: revenue > 0 ? (profit / revenue) * 100 : null,
+    margin: costedRevenue > 0 ? (profit / costedRevenue) * 100 : null,
   }
 }
 
@@ -216,6 +257,8 @@ export interface DashboardInput {
   customers: Customer[]
   /** Ledger lines for every client, so debt age comes from real movements. */
   creditEntries: CreditEntry[]
+  /** Date of the oldest line read when the feed was capped, else null. */
+  creditHorizon?: number | null
 }
 
 export function useDashboardStats({
@@ -226,6 +269,7 @@ export function useDashboardStats({
   products,
   customers,
   creditEntries,
+  creditHorizon = null,
 }: DashboardInput): DashboardStats {
   // --- period figures: KPIs, chart, best moments --------------------------
   const periodPart = useMemo(() => {
@@ -428,7 +472,16 @@ export function useDashboardStats({
       .filter((c) => c.balance > 0)
       .map((c) => {
         const entries = byClient.get(c.id) ?? []
-        const since = reminderSince(entries)
+        // With a capped feed, a debtor whose lines are all older than the cap
+        // still has a clock — see carnetClock.
+        let since = reminderSince(entries)
+        if (creditHorizon !== null) {
+          const clock = carnetClock(entries, c.balance, creditHorizon, now)
+          if (clock.startedAt !== null) {
+            const paid = lastPaymentAt(entries)
+            since = paid === null ? clock.startedAt : Math.max(paid, clock.startedAt)
+          }
+        }
         return {
           id: c.id,
           name: c.name,
@@ -468,7 +521,7 @@ export function useDashboardStats({
       .filter((g) => g.rows.length > 0)
 
     return { fixGroups: groups }
-  }, [products, customers, purchases, creditEntries, now])
+  }, [products, customers, purchases, creditEntries, creditHorizon, now])
 
   return useMemo(
     () => ({

@@ -7,8 +7,10 @@ import { AppShell } from '@/components/layout/AppShell'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { LoginPage } from '@/features/auth/LoginPage'
 import { SetupNeeded } from '@/features/setup/SetupNeeded'
-import { Flex, Spinner } from '@chakra-ui/react'
+import { Flex, LocaleProvider, Spinner } from '@chakra-ui/react'
+import { useTranslation } from 'react-i18next'
 import { isFirebaseConfigured } from '@/lib/firebase'
+import { localeOf } from '@/i18n'
 
 // Code-split the feature pages so the initial load stays small (the dashboard
 // pulls in the charting library, which we don't want in the first bundle).
@@ -93,6 +95,17 @@ function PageBoundary({ children }: { children: ReactNode }) {
   )
 }
 
+/**
+ * Ark components (dialogs, tabs, segment groups, switches…) take their
+ * direction from this context, not from <html dir>: without it they stamp
+ * dir="ltr" on themselves and Arabic dialogs read left-to-right.
+ * useTranslation re-renders on languageChanged, so the toggle flips them live.
+ */
+function DirectionProvider({ children }: { children: ReactNode }) {
+  const { i18n } = useTranslation()
+  return <LocaleProvider locale={localeOf(i18n.language)}>{children}</LocaleProvider>
+}
+
 export function App() {
   /**
    * Warm the till in the background as soon as the browser is idle. Opening the
@@ -121,133 +134,135 @@ export function App() {
   if (!isFirebaseConfigured) return <SetupNeeded />
 
   return (
-    <AuthProvider>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/login" element={<LoginPage />} />
-          <Route
-            path="/decouvrir"
-            element={
-              <Suspense fallback={<PageFallback />}>
-                <LandingPage />
-              </Suspense>
-            }
-          />
-          <Route
-            element={
-              <RequireAuth>
-                <AppShell />
-              </RequireAuth>
-            }
-          >
+    <DirectionProvider>
+      <AuthProvider>
+        <BrowserRouter>
+          <Routes>
+            <Route path="/login" element={<LoginPage />} />
             <Route
-              path="/"
+              path="/decouvrir"
               element={
-                <PageBoundary>
-                  <HomePage />
-                </PageBoundary>
+                <Suspense fallback={<PageFallback />}>
+                  <LandingPage />
+                </Suspense>
               }
             />
             <Route
-              path="/caisse"
               element={
-                <PageBoundary>
-                  <CaissePage />
-                </PageBoundary>
+                <RequireAuth>
+                  <AppShell />
+                </RequireAuth>
               }
-            />
-            <Route
-              path="/catalog"
-              element={
-                <PageBoundary>
-                  <CatalogPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/stock"
-              element={
-                <PageBoundary>
-                  <StockPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/packs"
-              element={
-                <PageBoundary>
-                  <PacksPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/invoices"
-              element={
-                <PageBoundary>
-                  <InvoicesPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/suppliers"
-              element={
-                <PageBoundary>
-                  <SuppliersPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/credit"
-              element={
-                <PageBoundary>
-                  <CreditPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/credit/:id"
-              element={
-                <PageBoundary>
-                  <CustomerDetailPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/dashboard"
-              element={
-                <PageBoundary>
-                  <DashboardPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/reports"
-              element={
-                <PageBoundary>
-                  <ReportsPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/backup"
-              element={
-                <PageBoundary>
-                  <BackupPage />
-                </PageBoundary>
-              }
-            />
-            <Route
-              path="/settings"
-              element={
-                <PageBoundary>
-                  <SettingsPage />
-                </PageBoundary>
-              }
-            />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </BrowserRouter>
-    </AuthProvider>
+            >
+              <Route
+                path="/"
+                element={
+                  <PageBoundary>
+                    <HomePage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/caisse"
+                element={
+                  <PageBoundary>
+                    <CaissePage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/catalog"
+                element={
+                  <PageBoundary>
+                    <CatalogPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/stock"
+                element={
+                  <PageBoundary>
+                    <StockPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/packs"
+                element={
+                  <PageBoundary>
+                    <PacksPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/invoices"
+                element={
+                  <PageBoundary>
+                    <InvoicesPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/suppliers"
+                element={
+                  <PageBoundary>
+                    <SuppliersPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/credit"
+                element={
+                  <PageBoundary>
+                    <CreditPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/credit/:id"
+                element={
+                  <PageBoundary>
+                    <CustomerDetailPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/dashboard"
+                element={
+                  <PageBoundary>
+                    <DashboardPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/reports"
+                element={
+                  <PageBoundary>
+                    <ReportsPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/backup"
+                element={
+                  <PageBoundary>
+                    <BackupPage />
+                  </PageBoundary>
+                }
+              />
+              <Route
+                path="/settings"
+                element={
+                  <PageBoundary>
+                    <SettingsPage />
+                  </PageBoundary>
+                }
+              />
+            </Route>
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </BrowserRouter>
+      </AuthProvider>
+    </DirectionProvider>
   )
 }

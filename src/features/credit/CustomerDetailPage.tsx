@@ -17,6 +17,8 @@ import {
   Link2,
   FileText,
   ShoppingCart,
+  MessageCircle,
+  Phone,
 } from 'lucide-react'
 import {
   Alert,
@@ -48,6 +50,7 @@ import { usePaged } from '@/lib/usePaged'
 import { Pager } from '@/components/Pager'
 import { NoResults } from '@/components/ActiveFilters'
 import { useShopSettings } from '@/features/settings/useShopSettings'
+import { tnDigits } from '@/lib/phone'
 import {
   useCustomer,
   useCustomerLedger,
@@ -70,6 +73,26 @@ import {
  * One page of the carnet de crédit: who he is, what he owes right now, and
  * every line of his history with the running balance down the side.
  */
+
+/** wa.me wants the international number, digits only. Null when unusable. */
+function whatsappNumber(phone: string | undefined): string | null {
+  if (!phone) return null
+  const tn = tnDigits(phone)
+  if (tn) return `216${tn}`
+  const raw = phone.trim()
+  // A foreign number is usable only when it says which country it is.
+  if (raw.startsWith('+') || raw.startsWith('00')) {
+    const digits = raw.replace(/\D/g, '').replace(/^00/, '')
+    return digits.length >= 8 ? digits : null
+  }
+  return null
+}
+
+/** A number the phone app can dial: Tunisian ones get their +216. */
+function telOf(phone: string): string {
+  const tn = tnDigits(phone)
+  return tn ? `+216${tn}` : phone.replace(/[^\d+]/g, '')
+}
 
 /**
  * WHAT THAT LINE OF THE CARNET WAS FOR.
@@ -99,7 +122,7 @@ function SaleDetailRow({
 
   return (
     <Table.Row bg="bg.subtle">
-      <Table.Cell colSpan={6} p={0}>
+      <Table.Cell colSpan={7} p={0}>
         <Box px={{ base: 3, md: 6 }} py={4}>
           {loading ? (
             <HStack gap={3} color="fg.muted">
@@ -169,7 +192,7 @@ function SaleDetailRow({
                     <Text fontSize="sm" color="fg.muted">
                       {t('pos.paidAtCounter')}
                     </Text>
-                    <Text fontWeight="bold" color="green.600">
+                    <Text fontWeight="bold" color="green.fg">
                       {money(sale.paid)}
                     </Text>
                   </Box>
@@ -178,7 +201,7 @@ function SaleDetailRow({
                   <Text fontSize="sm" color="fg.muted">
                     {t('credit.putOnAccount')}
                   </Text>
-                  <Text fontWeight="bold" color="red.600">
+                  <Text fontWeight="bold" color="red.fg">
                     {money(sale.total - sale.paid)}
                   </Text>
                 </Box>
@@ -309,8 +332,19 @@ export function CustomerDetailPage() {
 
   const owes = customer.balance > 0
   const advance = customer.balance < 0
+  const waNumber = whatsappNumber(customer.phone)
 
   const onDelete = async () => {
+    // Refused at once when he still owes or holds an advance, instead of
+    // first asking "supprimer tout son historique ?" and then saying no.
+    if (customer.balance !== 0) {
+      setDeleteError(
+        customer.balance < 0
+          ? t('credit.cannotDeleteCreditor', { amount: money(-customer.balance) })
+          : t('credit.cannotDeleteDebtor', { amount: money(customer.balance) }),
+      )
+      return
+    }
     if (!window.confirm(t('customer.deleteConfirm'))) return
     setDeleting(true)
     setDeleteError('')
@@ -362,14 +396,16 @@ export function CustomerDetailPage() {
           <Flex wrap="wrap" align="start" justify="space-between" gap={4}>
             <Box minW="0">
               <Heading size="2xl">{customer.name}</Heading>
+              {/* Isolated left-to-right: in Arabic the digit groups of
+                  "98 000 001" were reordered and read as another number. */}
               {customer.phone && (
                 <Text mt={1} fontSize="lg" color="fg.muted">
-                  {customer.phone}
+                  <bdi dir="ltr">{customer.phone}</bdi>
                 </Text>
               )}
               {customer.cin && (
                 <Text mt={1} fontSize="lg" color="fg.muted">
-                  {t('customer.cinShort')} {customer.cin}
+                  {t('customer.cinShort')} <bdi dir="ltr">{customer.cin}</bdi>
                 </Text>
               )}
               {customer.note && (
@@ -385,7 +421,7 @@ export function CustomerDetailPage() {
                 {owes && ageDays !== null && (
                   <Badge colorPalette="orange" size="lg">
                     <CalendarClock size={16} />
-                    {t('credit.daysOld', { count: ageDays })}
+                    {ageDays === 0 ? t('common.today') : t('credit.daysOld', { count: ageDays })}
                   </Badge>
                 )}
                 {relance && (
@@ -399,14 +435,16 @@ export function CustomerDetailPage() {
 
             {/* The balance is deliberately the biggest thing on the page. */}
             <Box textAlign="end" minW="0">
+              {/* He paid more than he owed: the shop is the one holding money,
+                  so the label must not say "Solde dû" over his advance. */}
               <Text fontSize="lg" color="fg.muted">
-                {t('customer.balance')}
+                {advance ? t('platformFix.advanceLabel') : t('customer.balance')}
               </Text>
               <Text
                 fontSize={{ base: '5xl', md: '6xl' }}
                 lineHeight="1.1"
                 fontWeight="bold"
-                color={owes ? 'red.600' : 'green.600'}
+                color={owes ? 'red.fg' : 'green.fg'}
               >
                 {owes
                   ? money(customer.balance)
@@ -414,12 +452,6 @@ export function CustomerDetailPage() {
                     ? money(-customer.balance)
                     : t('credit.settled')}
               </Text>
-              {/* He paid more than he owed: the shop is the one holding money. */}
-              {advance && (
-                <Text fontSize="lg" fontWeight="semibold" color="green.600">
-                  {t('credit.creditor', { amount: money(-customer.balance) })}
-                </Text>
-              )}
             </Box>
           </Flex>
 
@@ -459,6 +491,39 @@ export function CustomerDetailPage() {
               <ShoppingCart size={24} />
               {t('credit.newCreditTicket')}
             </Button>
+            {/* The reminder the carnet exists for, without retyping his number.
+                Sending stays manual: WhatsApp opens with the text written. */}
+            {owes && waNumber && (
+              <Button size="xl" variant="outline" colorPalette="green" asChild>
+                <a
+                  href={`https://wa.me/${waNumber}?text=${encodeURIComponent(
+                    t('platformFix.reminderMessage', {
+                      name: customer.name,
+                      shop: shop.name,
+                      amount: money(customer.balance),
+                    }),
+                  )}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  <MessageCircle size={22} />
+                  {t('platformFix.reminderWhatsapp')}
+                </a>
+              </Button>
+            )}
+            {customer.phone && (
+              <IconButton
+                size="xl"
+                variant="outline"
+                asChild
+                aria-label={t('platformFix.callClient', { name: customer.name })}
+                title={customer.phone}
+              >
+                <a href={`tel:${telOf(customer.phone)}`}>
+                  <Phone size={22} />
+                </a>
+              </IconButton>
+            )}
             <Button size="xl" variant="outline" onClick={() => window.print()}>
               <Printer size={22} />
               {t('credit.printCarnet')}
@@ -478,7 +543,7 @@ export function CustomerDetailPage() {
             <Text fontSize="sm" color="fg.muted">
               {t('credit.totalTaken')}
             </Text>
-            <Text fontSize="2xl" fontWeight="bold" color="red.600">
+            <Text fontSize="2xl" fontWeight="bold" color="red.fg">
               {money(totals.taken)}
             </Text>
           </Card.Body>
@@ -488,7 +553,7 @@ export function CustomerDetailPage() {
             <Text fontSize="sm" color="fg.muted">
               {t('credit.totalPaid')}
             </Text>
-            <Text fontSize="2xl" fontWeight="bold" color="green.600">
+            <Text fontSize="2xl" fontWeight="bold" color="green.fg">
               {money(totals.paid)}
             </Text>
           </Card.Body>
@@ -547,7 +612,7 @@ export function CustomerDetailPage() {
               <Receipt size={40} />
             </EmptyState.Indicator>
             <EmptyState.Title>{t('credit.noEntries')}</EmptyState.Title>
-            <EmptyState.Description>{t('credit.subtitle')}</EmptyState.Description>
+            <EmptyState.Description>{t('platformFix.emptyCarnetHint')}</EmptyState.Description>
           </EmptyState.Content>
         </EmptyState.Root>
       ) : shownRows.length === 0 ? (
@@ -556,16 +621,22 @@ export function CustomerDetailPage() {
         <Card.Root ref={ledgerTop}>
           <Card.Body p={0}>
             <Box overflowX="auto">
-              <Table.Root size="lg">
+              {/* Below xl the Pris and Versé columns become one signed
+                  Montant, so the edit and delete buttons stay on screen at
+                  1024 px instead of behind a horizontal scroll. */}
+              <Table.Root size={{ base: 'md', xl: 'lg' }}>
                 <Table.Header>
                   <Table.Row>
                     <Table.ColumnHeader>{t('common.date')}</Table.ColumnHeader>
                     <Table.ColumnHeader>{t('credit.label')}</Table.ColumnHeader>
-                    <Table.ColumnHeader textAlign="end">
+                    <Table.ColumnHeader textAlign="end" hideBelow="xl">
                       {t('credit.out')}
                     </Table.ColumnHeader>
-                    <Table.ColumnHeader textAlign="end">
+                    <Table.ColumnHeader textAlign="end" hideBelow="xl">
                       {t('credit.in')}
+                    </Table.ColumnHeader>
+                    <Table.ColumnHeader textAlign="end" hideFrom="xl">
+                      {t('credit.amount')}
                     </Table.ColumnHeader>
                     <Table.ColumnHeader textAlign="end">
                       {t('credit.runningBalance')}
@@ -617,7 +688,8 @@ export function CustomerDetailPage() {
                           textAlign="end"
                           whiteSpace="nowrap"
                           fontWeight="bold"
-                          color="red.600"
+                          color="red.fg"
+                          hideBelow="xl"
                         >
                           {isDebit ? money(entry.amount) : '—'}
                         </Table.Cell>
@@ -625,7 +697,8 @@ export function CustomerDetailPage() {
                           textAlign="end"
                           whiteSpace="nowrap"
                           fontWeight="bold"
-                          color="green.600"
+                          color="green.fg"
+                          hideBelow="xl"
                         >
                           {isDebit ? '—' : money(entry.amount)}
                         </Table.Cell>
@@ -633,7 +706,16 @@ export function CustomerDetailPage() {
                           textAlign="end"
                           whiteSpace="nowrap"
                           fontWeight="bold"
-                          color={balance > 0 ? 'red.600' : 'green.600'}
+                          color={isDebit ? 'red.fg' : 'green.fg'}
+                          hideFrom="xl"
+                        >
+                          {isDebit ? `+${money(entry.amount)}` : `−${money(entry.amount)}`}
+                        </Table.Cell>
+                        <Table.Cell
+                          textAlign="end"
+                          whiteSpace="nowrap"
+                          fontWeight="bold"
+                          color={balance > 0 ? 'red.fg' : 'green.fg'}
                         >
                           {money(balance)}
                         </Table.Cell>
@@ -650,14 +732,17 @@ export function CustomerDetailPage() {
                             opens the ticket, where the editor lives.
                           */}
                           {openable ? (
+                            // The keyboard way to unfold the row (the row
+                            // itself only answers a mouse), so it toggles too.
                             <IconButton
-                              aria-label={t('credit.editTicket')}
-                              title={t('credit.editTicket')}
+                              aria-label={t('credit.seeItems')}
+                              title={t('credit.seeItems')}
+                              aria-expanded={isOpen}
                               variant="ghost"
                               size="sm"
                               onClick={(e) => {
                                 e.stopPropagation()
-                                setOpenId(entry.id)
+                                setOpenId(isOpen ? null : entry.id)
                               }}
                             >
                               <Link2 size={18} />
@@ -823,6 +908,7 @@ export function CustomerDetailPage() {
         rows={rows}
         totals={totals}
         shopName={shop.name}
+        shop={shop}
         symbol={symbol}
       />
     </Box>

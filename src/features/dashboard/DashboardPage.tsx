@@ -47,6 +47,7 @@ import { useSalesSince, useDayStart } from '@/features/sales/useSales'
 import { usePurchases } from '@/features/purchases/usePurchases'
 import { useCustomers, useAllCreditEntries } from '@/features/customers/useCustomers'
 import { useProducts } from '@/features/stock/useProducts'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { DashboardKpi } from './DashboardKpi'
 import { FixGroupCard } from './FixGroupCard'
 import { useDashboardStats } from './useDashboardStats'
@@ -141,7 +142,7 @@ export function DashboardPage() {
   } = useSalesSince(since, salesCapFor(period))
   const { purchases, loading: purchasesLoading, error: purchasesError } = usePurchases()
   const { customers, error: customersError } = useCustomers()
-  const { entries: creditEntries } = useAllCreditEntries()
+  const { entries: creditEntries, horizon: creditHorizon } = useAllCreditEntries()
   const { products, loading: productsLoading, error: productsError } = useProducts()
 
   const symbol = t(moneySymbolKey())
@@ -159,6 +160,7 @@ export function DashboardPage() {
     products,
     customers,
     creditEntries,
+    creditHorizon,
   })
 
   // On the "Aujourd'hui" view the best day is always today, which tells the
@@ -176,6 +178,8 @@ export function DashboardPage() {
       to: string
       showAmount?: boolean
       countLabel?: (n: number) => string
+      /** Filters set on the target list before opening it (FixGroupCard). */
+      preset?: Record<string, unknown>
     }
   > = {
     lossMakers: {
@@ -203,6 +207,7 @@ export function DashboardPage() {
       to: '/credit',
       showAmount: true,
       countLabel: (n) => t('credit.daysOld', { count: n }),
+      preset: { 'credit.show': 'reminder', 'credit.sort': 'oldest' },
     },
     outOfStock: {
       title: t('stock.outOfStock'),
@@ -210,6 +215,7 @@ export function DashboardPage() {
       tone: 'red',
       icon: <PackageX size={22} />,
       to: '/stock',
+      preset: { 'stock.state': 'out', 'stock.category': '' },
     },
     lowStock: {
       title: t('stock.lowStockBadge'),
@@ -218,7 +224,10 @@ export function DashboardPage() {
       icon: <AlertTriangle size={22} />,
       to: '/stock',
       countLabel: (n) => t('dashboard.unitsLeft', { count: n }),
+      preset: { 'stock.state': 'low', 'stock.category': '' },
     },
+    // Stock has no "sans prix d'achat" filter yet; at least nothing left over
+    // from the last visit hides the articles in question.
     noCost: {
       title: t('dashboard.noCost'),
       hint: t('dashboard.noCostHint'),
@@ -226,6 +235,7 @@ export function DashboardPage() {
       icon: <Coins size={22} />,
       to: '/stock',
       countLabel: (n) => t('dashboard.unitsLeft', { count: n }),
+      preset: { 'stock.state': 'all', 'stock.category': '' },
     },
     noBarcode: {
       title: t('dashboard.noBarcode'),
@@ -234,6 +244,7 @@ export function DashboardPage() {
       icon: <Barcode size={22} />,
       to: '/stock',
       countLabel: (n) => t('dashboard.unitsLeft', { count: n }),
+      preset: { 'stock.state': 'all', 'stock.category': '' },
     },
   }
 
@@ -335,6 +346,13 @@ export function DashboardPage() {
               palette={stats.current.profit >= 0 ? 'brand' : 'red'}
               icon={<Wallet size={22} />}
               growth={stats.growth.profit}
+              note={
+                stats.current.uncostedRevenue > 0
+                  ? t('platformFix.profitExcludes', {
+                      amount: money(stats.current.uncostedRevenue),
+                    })
+                  : undefined
+              }
             />
             <DashboardKpi
               label={t('dashboard.avgTicket')}
@@ -367,15 +385,27 @@ export function DashboardPage() {
               {/* dir="ltr": the chart axis always reads left-to-right, even in AR.
                   The fixed height keeps the page from jumping when it arrives. */}
               <Box dir="ltr" h="280px">
-                <Suspense fallback={null}>
-                  <DashboardChart
-                    data={stats.chart}
-                    interval={axisInterval(period)}
-                    symbol={symbol}
-                    inLabel={t('dashboard.in')}
-                    outLabel={t('dashboard.out')}
-                  />
-                </Suspense>
+                {/* Its own boundary: the chart chunk is the one most likely to
+                    be missing offline, and its failure must not replace the
+                    figures above with the crash screen. */}
+                <ErrorBoundary
+                  where="dashboard-chart"
+                  fallback={
+                    <Flex h="full" align="center" justify="center" color="fg.muted">
+                      <Text>{t('platformFix.chartUnavailable')}</Text>
+                    </Flex>
+                  }
+                >
+                  <Suspense fallback={null}>
+                    <DashboardChart
+                      data={stats.chart}
+                      interval={axisInterval(period)}
+                      symbol={symbol}
+                      inLabel={t('dashboard.in')}
+                      outLabel={t('dashboard.out')}
+                    />
+                  </Suspense>
+                </ErrorBoundary>
               </Box>
             </Card.Body>
           </Card.Root>
@@ -411,6 +441,7 @@ export function DashboardPage() {
                       total={g.total}
                       showAmount={meta.showAmount}
                       countLabel={meta.countLabel}
+                      preset={meta.preset}
                     />
                   )
                 })}
@@ -477,7 +508,7 @@ export function DashboardPage() {
                               textAlign="end"
                               fontWeight="bold"
                               whiteSpace="nowrap"
-                              color={r.profit >= 0 ? 'green.600' : 'red.600'}
+                              color={r.profit >= 0 ? 'green.fg' : 'red.fg'}
                             >
                               {money(r.profit)}
                             </Table.Cell>
@@ -635,7 +666,7 @@ export function DashboardPage() {
                               <Text whiteSpace="nowrap">{money(c.revenue)}</Text>
                               <Text
                                 whiteSpace="nowrap"
-                                color={c.profit >= 0 ? 'green.600' : 'red.600'}
+                                color={c.profit >= 0 ? 'green.fg' : 'red.fg'}
                                 fontWeight="semibold"
                               >
                                 {money(c.profit)}

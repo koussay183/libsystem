@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { ShieldAlert, LogOut } from 'lucide-react'
 import { useAuth } from './AuthContext'
 import { isShopMachine } from '@/features/landing/shopMachine'
+import { CONTACT_DISPLAY } from '@/lib/contact'
 
 /**
  * Nothing renders until we know WHICH shop this is.
@@ -60,7 +61,7 @@ export function RequireAuth({ children }: { children: ReactNode }) {
               <Alert.Root status="info">
                 <Alert.Indicator />
                 <Alert.Content>
-                  <Alert.Title>{t('auth.noShopHint')}</Alert.Title>
+                  <Alert.Title>{t('auth.noShopHint', { phone: CONTACT_DISPLAY })}</Alert.Title>
                 </Alert.Content>
               </Alert.Root>
               <Button size="lg" variant="outline" onClick={() => void logout()}>

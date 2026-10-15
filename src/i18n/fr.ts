@@ -369,12 +369,12 @@ export const fr = {
     wrongPassword: 'Mot de passe incorrect',
     offline: 'Pas de connexion — impossible de vérifier le compte',
     tooMany: 'Trop d’essais. Attendez une minute puis réessayez.',
-    disabled: 'Ce compte est désactivé. Contactez votre fournisseur.',
-    noAccountHint: 'Pas de compte ? Votre fournisseur vous en crée un.',
+    disabled: 'Ce compte est désactivé. Contactez Mektebti au {{phone}} (WhatsApp).',
+    noAccountHint: 'Pas encore client ? Écrivez-nous sur WhatsApp',
     noShopTitle: 'Compte pas encore activé',
     noShopBody:
       'Ce compte existe mais n’est rattaché à aucune boutique, donc il n’y a rien à ouvrir.',
-    noShopHint: 'Contactez votre fournisseur : il l’active en une minute.',
+    noShopHint: 'Contactez Mektebti au {{phone}} (WhatsApp) : le compte est activé en une minute.',
     // La nuance entre ces deux messages n’est pas cosmétique : pendant les
     // quatorze jours de tolérance, la caisse enregistre normalement. Dire
     // « rien ne peut être enregistré » à ce moment-là pousse le libraire à
@@ -573,6 +573,8 @@ export const fr = {
     creditor: 'Avance de {{amount}}',
     oldestDebt: 'Dette la plus ancienne',
     daysOld: '{{count}} jours',
+    daysOld_one: '{{count}} jour',
+    daysOld_other: '{{count}} jours',
     sortByDebt: 'Plus gros débiteurs',
     sortByName: 'Nom',
     sortByOldest: 'Dettes les plus anciennes',
@@ -783,10 +785,10 @@ export const fr = {
     byProfit: 'Bénéfice',
     byRevenue: 'Chiffre d’affaires',
     bySold: 'Quantité vendue',
-    totalRevenue: 'CA total',
-    totalCost: 'Coût total',
-    totalProfit: 'Bénéfice total',
-    totalBought: 'Total acheté',
+    totalRevenue: 'CA depuis le début',
+    totalCost: 'Coût des ventes depuis le début',
+    totalProfit: 'Bénéfice depuis le début',
+    totalBought: 'Acheté depuis le début',
     loss: 'À perte',
     units: 'u.',
   },
@@ -830,7 +832,8 @@ export const fr = {
     filePartial: 'Ce fichier a été créé sans connexion et peut être incomplet',
     unverified: 'Non vérifié auprès du serveur',
     restoreNow: 'Restaurer maintenant',
-    keepSafe: 'Gardez une copie ailleurs que sur cet ordinateur.',
+    keepSafe:
+      'Gardez une copie ailleurs que sur cet ordinateur, en lieu sûr : le fichier contient les téléphones et les CIN de vos clients.',
   },
   supplier: {
     title: 'Fournisseurs',
@@ -913,6 +916,59 @@ export const fr = {
       'La liste des produits n’est pas encore chargée sur cet ordinateur. Attendez un instant, puis réessayez.',
     nameRequired: 'Le nom est obligatoire',
     duplicate: 'Ce nom existe déjà',
+  },
+  // Corrections « plateforme » : abonnement, déconnexion, carnet, chiffres,
+  // sauvegarde. Les nombres sont tournés « jours restants : N » pour se lire
+  // avec n’importe quelle valeur (voir la note sur les pluriels plus haut).
+  platformFix: {
+    planTitle: 'Abonnement',
+    planPaidUntil: 'Payé jusqu’au {{date}} — jours restants : {{count}}',
+    planExpiredOn: 'Expiré le {{date}}. Les ventes s’enregistrent jusqu’au {{graceEnd}}.',
+    planEndsSoonTitle: 'Votre abonnement se termine bientôt',
+    planEndsSoonBody:
+      'Il se termine le {{date}} (jours restants : {{count}}). Renouvelez maintenant pour ne pas être interrompu.',
+    planLapsedBody:
+      'Expiré le {{date}}. Vos ventes s’enregistrent normalement jusqu’au {{graceEnd}} (jours restants : {{count}}). Renouvelez avant cette date pour ne rien perdre.',
+    planBlockedBody:
+      'Expiré le {{date}}, tolérance terminée le {{graceEnd}} : vous pouvez tout consulter et faire une sauvegarde, mais plus rien ne s’enregistre. Renouvelez pour reprendre la vente.',
+    planSnooze: 'Me le rappeler demain',
+    renewWhatsapp: 'Renouveler sur WhatsApp',
+    renewMessage: 'Bonjour, je souhaite renouveler l’abonnement Mektebti de {{shop}} ({{id}}).',
+    renewCheck: 'J’ai renouvelé — vérifier',
+    renewNotYet: 'Pas encore reçu. Réessayez dans quelques minutes, ou appelez-nous.',
+    renewOffline: 'Pas de connexion : la vérification se fera toute seule au retour d’internet.',
+    callUs: 'Appeler Mektebti au {{phone}}',
+    logoutTitle: 'Se déconnecter ?',
+    logoutBody: 'Pour revenir, il faudra retaper l’email et le mot de passe — avec internet.',
+    logoutOffline:
+      'Pas de connexion confirmée : sans internet, impossible de vous reconnecter avant son retour. La caisse resterait fermée.',
+    logoutPending: 'Opérations pas encore envoyées au serveur : {{count}}.',
+    logoutStay: 'Rester connecté',
+    logoutAnyway: 'Se déconnecter quand même',
+    forgotPassword: 'Mot de passe oublié ?',
+    forgotMessage: 'Bonjour, j’ai oublié le mot de passe Mektebti du compte {{email}}.',
+    newClientMessage: 'Bonjour, je voudrais utiliser Mektebti pour ma librairie.',
+    dateInFuture: 'Cette date est dans le futur. Vérifiez l’année.',
+    advanceLabel: 'Avance chez vous',
+    reminderWhatsapp: 'Rappel WhatsApp',
+    reminderMessage:
+      'Bonjour {{name}}, petit rappel de {{shop}} : votre solde au carnet est de {{amount}}. Merci !',
+    callClient: 'Appeler {{name}}',
+    emptyCarnetHint: 'Notez une dette avec « Il a pris », ou des articles avec « Ticket à crédit ».',
+    statementFooter: 'Pour régler : passez à la librairie ou appelez le {{phone}}.',
+    profitExcludes: 'hors {{amount}} de ventes sans prix d’achat — à compléter',
+    reportsLifetime: 'Cumul depuis la mise en service.',
+    reportsSeePeriod: 'Pour une période précise, voir Argent.',
+    chartUnavailable: 'Graphique indisponible pour l’instant. Les chiffres ci-dessus sont à jour.',
+    catalogDesc: 'Les articles déjà connus des autres librairies',
+    csvExported: 'Fichiers CSV téléchargés, pour Excel',
+    csvNotBackup:
+      'Ce n’est pas une sauvegarde : seul le fichier JSON peut être restauré. Si le navigateur demande d’autoriser plusieurs téléchargements, acceptez.',
+    backupForeignTitle: 'Ce fichier vient d’une autre boutique',
+    backupForeignBody:
+      'Le restaurer mélangerait son stock, ses ventes et son carnet avec les vôtres. L’en-tête de vos tickets ne sera pas remplacé.',
+    backupForeignConfirm: 'Je sais que ce fichier vient d’une autre boutique',
+    backupSkipped: 'Lignes illisibles ignorées : {{count}}. Le reste sera restauré.',
   },
   combobox: {
     search: 'Rechercher…',
