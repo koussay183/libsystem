@@ -184,9 +184,11 @@ const cgv: LegalDoc = {
       blocks: [
         {
           list: [
-            `Mensuel : ${PRICES.month} DT par mois, plus ${PRICES.setup} DT de mise en service (douchette code-barres et imprimante ticket, installées). Premier mois d’abonnement offert : [conditions et date de début de facturation].`,
-            `Annuel : ${PRICES.year} DT par an, mise en service et matériel inclus.`,
-            `À vie : ${PRICES.life} DT, payés une seule fois, mise en service et matériel inclus.`,
+            `Mensuel : ${PRICES.month} DT par mois, sans engagement (préavis de 30 jours). Premier mois d’abonnement offert : [conditions et date de début de facturation].`,
+            `Annuel : ${PRICES.year} DT par an, payés d’avance (soit deux mois offerts par rapport au mensuel).`,
+            `À vie (offre Fondateurs) : ${PRICES.life} DT, payés une seule fois, mise en service et kit matériel inclus, support inclus pendant 24 mois puis maintenance optionnelle à ${PRICES.maintenance} DT par an. Offre limitée à 20 licences numérotées.`,
+            `Mise en service (mensuel et annuel) : ${PRICES.setup} DT avec le kit matériel (douchette sans fil et imprimante ticket 80 mm), ${PRICES.setupNoKit} DT sans matériel.`,
+            `Poste supplémentaire : ${PRICES.extraTill} DT par mois.`,
           ],
         },
         'Prix en dinars tunisiens, [TTC ou HT à préciser]. Le matériel est [vendu ou mis à disposition].',

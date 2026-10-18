@@ -17,24 +17,64 @@ export const CONTACT = {
 }
 
 /**
- * The founder's prices, in dinars. The visible strings and the JSON-LD offers
- * are both built from these, so the page and what search engines read cannot
- * disagree.
+ * Prices in dinars (grid from docs/launch/03-business-plan.md §3.2). The
+ * visible strings, the JSON-LD offers and the CGV are all built from these,
+ * so the page, search engines and the contract cannot disagree.
+ *
+ * Annual = 10 × monthly (two months free), so it beats monthly at every
+ * horizon; lifetime is a capped launch offer with the kit included.
  */
-export const PRICES = { month: 83, setup: 500, year: 2000, life: 3400 } as const
+export const PRICES = {
+  month: 83,
+  year: 830,
+  life: 3400,
+  /** Mise en service with the standard kit (wireless scanner + 80 mm printer). */
+  setup: 500,
+  /** Mise en service when the shop keeps its own hardware. */
+  setupNoKit: 250,
+  extraTill: 20,
+  maintenance: 290,
+} as const
 
-/** 2000 → "2 000" (narrow no-break space, the French grouping). */
+/** Launch offer: half-price mise en service with the annual plan. */
+export const PROMO_UNTIL = { fr: '20 décembre 2026', ar: '20 ديسمبر 2026' }
+
+/** 2000 → "2 000" (the French grouping). */
 function dt(n: number): string {
-  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 }
 
 export type PlanId = 'month' | 'year' | 'life'
+
+interface Plan {
+  id: PlanId
+  name: string
+  price: string
+  unit: string
+  /** One line under the price. */
+  sub: string
+  badge: string
+  highlight: boolean
+  perks: string[]
+  /** Read by seo.ts as the offer description. */
+  note: string
+}
+
+interface Showcase {
+  /** Screenshot file stem in public/landing (…-fr / …-ar). */
+  img: string
+  eyebrow: string
+  title: string
+  body: string
+  bullets: string[]
+  alt: string
+}
 
 const fr = {
   seo: {
     title: 'Logiciel de caisse pour librairie en Tunisie | Mektebti.tn',
     description:
-      'Caisse au scanner, stock, packs scolaires et carnet de crédit pour librairies-papeteries en Tunisie. Installé chez vous, en français et en arabe.',
+      'Caisse au scanner, stock, packs scolaires et carnet de crédit pour librairies-papeteries en Tunisie. Installé chez vous, en français et en arabe. Dès 83 DT par mois.',
     ogTitle: 'Mektebti.tn, la caisse des librairies tunisiennes',
     ogDescription:
       'Caisse au scanner, packs scolaires, carnet de crédit et stock, au millime près. On installe, on charge votre stock, vous vendez.',
@@ -46,37 +86,29 @@ const fr = {
     pricing: 'Tarifs',
     faq: 'Questions',
     login: 'Se connecter',
+    demo: 'Demander une démo',
     /** The OTHER language, written in that language. */
     otherLang: 'عربي',
   },
+  promo: {
+    text: `Offre de lancement jusqu’au ${PROMO_UNTIL.fr} : mise en service à moitié prix avec l’abonnement annuel.`,
+    link: 'Voir les tarifs',
+  },
   hero: {
-    kicker: 'La caisse des librairies tunisiennes',
-    title1: 'Vendez plus vite.',
-    title2: 'Gérez sans cahier.',
-    sub: 'Caisse au scanner, stock, packs scolaires et carnet clients. Un seul écran, même quand internet coupe.',
+    kicker: 'Logiciel de caisse pour librairies et papeteries',
+    title: 'La caisse et la gestion de votre librairie,',
+    titleAccent: 'dans un seul logiciel.',
+    sub: 'Vente au scanner, stock, packs scolaires, carnet de crédit et chiffres du jour. Installé chez vous, en français et en arabe, et la caisse continue de vendre quand internet coupe.',
     cta: 'Demander une démo',
     cta2: 'Voir les tarifs',
-  },
-  mock: {
-    lines: [
-      ['Cahier 96 pages', '×3', '3,600'],
-      ['Stylo bleu', '×5', '2,250'],
-      ['Pack 1ère année', '×1', '64,500'],
-    ],
-    total: 'Total',
-    totalValue: '70,350 DT',
-    pay: 'Encaisser',
-    scanned: 'Scanné',
-    low: 'Stock bas · Cahier 96p',
-    lowValue: '4 restants',
-    debt: 'Carnet · Ahmed',
-    debtValue: '35,000 DT',
+    points: ['Installation et formation sur place', 'Fonctionne sans internet', 'Support sur WhatsApp'],
+    shotAlt: 'La caisse Mektebti : ticket en cours, total et bouton Encaisser',
   },
   facts: [
-    ['Hors ligne', 'la caisse continue quand internet coupe'],
-    ['Matériel inclus', 'douchette + imprimante ticket'],
-    ['FR · عربي', 'deux langues, un seul écran'],
-    ['1 mois', 'd’abonnement offert'],
+    ['Au millime près', 'totaux, rendu et carnet exacts'],
+    ['Hors ligne', 'la vente continue quand la ligne coupe'],
+    ['Français · عربي', 'chaque écran dans les deux langues'],
+    ['Plusieurs postes', 'les mêmes chiffres partout, en direct'],
   ] as [string, string][],
   trust: 'Déjà en service dans des librairies en Tunisie',
   wa: {
@@ -86,10 +118,60 @@ const fr = {
     /** Appended when the visit came from a campaign: lets the founder see which one. */
     ref: 'réf.',
   },
+  showcase: {
+    title: 'Pensé pour le comptoir d’une librairie',
+    sub: 'Les écrans ci-dessous sont ceux du logiciel, tels que vos caissiers les verront.',
+    items: [
+      {
+        img: 'packs',
+        eyebrow: 'Packs scolaires',
+        title: 'La rentrée, vendue en un scan.',
+        body: 'Composez une fois la liste de chaque niveau : le pack passe à la caisse en un scan, et le stock de chaque article est déduit tout seul.',
+        bullets: ['Un pack par niveau ou par école', 'Prix du pack et économie affichés', 'Stock de chaque article mis à jour'],
+        alt: 'Liste des packs scolaires avec leur contenu et leur prix',
+      },
+      {
+        img: 'stock',
+        eyebrow: 'Stock',
+        title: 'Votre stock à jour, article par article.',
+        body: 'Chaque vente et chaque achat mettent le stock à jour. Les articles qui s’épuisent sont signalés avant la rupture, et la valeur du stock est toujours sous vos yeux.',
+        bullets: ['Familles, déclinaisons et codes-barres', 'Alertes de stock bas', 'Achats fournisseurs et ajustements'],
+        alt: 'Liste du stock avec catégories, quantités et prix',
+      },
+      {
+        img: 'client',
+        eyebrow: 'Carnet de crédit',
+        title: 'Le carnet de crédit, sans cahier.',
+        body: 'Qui doit quoi, depuis quand. Les dettes anciennes ressortent d’elles-mêmes, et un rappel part sur WhatsApp en un clic.',
+        bullets: ['Solde de chaque client', 'Rappels WhatsApp', 'Carnet imprimable'],
+        alt: 'Fiche client avec solde dû, historique et bouton de rappel WhatsApp',
+      },
+      {
+        img: 'dashboard',
+        eyebrow: 'Chiffres',
+        title: 'Ce qui rentre, ce qui sort, ce qui rapporte.',
+        body: 'Ventes, achats, bénéfice estimé et panier moyen, par jour, semaine ou mois, et la rentabilité de chaque article.',
+        bullets: ['Tableau de bord du jour', 'Rentabilité par article', 'Export pour Excel et sauvegarde'],
+        alt: 'Tableau de bord : ventes, achats, bénéfice et graphique des entrées et sorties',
+      },
+    ] as Showcase[],
+  },
+  features: {
+    title: 'Tout ce que fait une librairie, dans une seule caisse',
+    items: [
+      ['scan', 'Caisse au scanner', 'Bip, c’est vendu. Ticket ou facture imprimés.'],
+      ['pack', 'Packs scolaires', 'La liste de la rentrée vendue en un scan.'],
+      ['carnet', 'Carnet clients', 'Les dettes, les paiements et les rappels.'],
+      ['stock', 'Stock vivant', 'Alerte avant la rupture.'],
+      ['supplier', 'Achats et fournisseurs', 'Factures, dettes fournisseurs, historique.'],
+      ['profit', 'Rentabilité', 'Ce que chaque article rapporte vraiment.'],
+    ] as [string, string, string][],
+  },
   why: {
     title: 'Pourquoi Mektebti ?',
+    sub: 'Comparé à une caisse généraliste ou au cahier.',
     featureCol: 'Fonction',
-    cols: ['Mektebti', 'Caisse classique', 'Cahier & Excel'],
+    cols: ['Mektebti', 'Caisse classique', 'Cahier et Excel'],
     marks: { yes: 'Oui', part: 'En partie', no: 'Non' } as Record<Mark, string>,
     rows: [
       ['Pensé pour les librairies : packs, rentrée', ['yes', 'no', 'no']],
@@ -101,65 +183,71 @@ const fr = {
       ['Mises à jour incluses', ['yes', 'part', 'no']],
     ] as [string, Mark[]][],
   },
-  features: {
-    title: 'Tout ce que fait une librairie, dans une seule caisse.',
-    items: [
-      ['scan', 'Caisse au scanner', 'Bip, c’est vendu. Ticket imprimé.'],
-      ['pack', 'Packs scolaires', 'La liste de la rentrée en un scan.'],
-      ['carnet', 'Carnet clients', 'Qui doit quoi, depuis quand.'],
-      ['stock', 'Stock vivant', 'Alerte avant la rupture.'],
-      ['supplier', 'Achats & fournisseurs', 'Factures, dettes, historique.'],
-      ['profit', 'Rentabilité', 'Ce qui rapporte vraiment.'],
-    ] as [string, string, string][],
-  },
   steps: {
-    title: 'Prêt en 3 étapes',
-    items: ['On installe chez vous', 'On charge votre stock', 'Vous vendez'],
+    title: 'Opérationnel en trois étapes',
+    items: [
+      ['On installe chez vous', 'Logiciel, douchette et imprimante, réglés sur vos postes.'],
+      ['On charge votre stock', 'Vos articles, prix et codes-barres, prêts à vendre.'],
+      ['Vous vendez', 'Formation de l’équipe, puis support sur WhatsApp.'],
+    ] as [string, string][],
   },
   pricing: {
-    title: 'Des prix clairs, en dinars',
+    title: 'Des tarifs simples, en dinars',
+    sub: 'Toutes les fonctions dans chaque formule. Premier mois offert.',
     plans: [
       {
-        id: 'month' as PlanId,
+        id: 'month',
         name: 'Mensuel',
         price: dt(PRICES.month),
         unit: 'DT / mois',
-        badge: '1er mois offert',
-        perks: ['Toutes les fonctions', 'Mises à jour incluses'],
-        note: `+ ${dt(PRICES.setup)} DT de mise en service : douchette + imprimante ticket, installées`,
+        sub: 'Sans engagement, premier mois offert',
+        badge: '',
+        highlight: false,
+        perks: ['Toutes les fonctions', 'Mises à jour incluses', 'Support sur WhatsApp', '1 poste de caisse'],
+        note: `Mise en service ${dt(PRICES.setup)} DT avec matériel, ${dt(PRICES.setupNoKit)} DT sans`,
       },
       {
-        id: 'year' as PlanId,
+        id: 'year',
         name: 'Annuel',
         price: dt(PRICES.year),
         unit: 'DT / an',
-        badge: '',
+        sub: `Soit ${(PRICES.year / 12).toFixed(1).replace('.', ',')} DT par mois, deux mois offerts`,
+        badge: 'Recommandé',
+        highlight: true,
         perks: [
           'Toutes les fonctions',
           'Mises à jour incluses',
-          'Mise en service incluse : douchette + imprimante ticket',
+          'Support prioritaire à la rentrée',
+          `Mise en service à moitié prix jusqu’au ${PROMO_UNTIL.fr}`,
         ],
-        note: '',
+        note: `Mise en service ${dt(PRICES.setup)} DT avec matériel, ${dt(PRICES.setupNoKit)} DT sans`,
       },
       {
-        id: 'life' as PlanId,
-        name: 'À vie',
+        id: 'life',
+        name: 'À vie — Fondateurs',
         price: dt(PRICES.life),
         unit: 'DT, une seule fois',
-        // Was « Le plus rentable », which is only true after about three years
-        // against the monthly plan. This one is simply what the plan is.
-        badge: 'Payez une seule fois',
+        sub: 'Offre limitée à 20 licences',
+        badge: '',
+        highlight: false,
         perks: [
-          'Toutes les fonctions',
-          'Mises à jour incluses',
-          'Mise en service incluse : douchette + imprimante ticket',
-          'Accès à vie',
+          'Toutes les fonctions, sans abonnement',
+          'Kit matériel et mise en service inclus',
+          'Support inclus pendant 24 mois',
+          `Puis maintenance optionnelle ${dt(PRICES.maintenance)} DT / an`,
         ],
-        note: '',
+        note: 'Mise en service et matériel inclus',
       },
-    ],
-    choose: 'Choisir',
-    /** Accessible name of each plan button, so three « Choisir » can be told apart. */
+    ] as Plan[],
+    setupTitle: 'Mise en service',
+    setup: [
+      [`${dt(PRICES.setup)} DT`, 'avec le kit : douchette sans fil et imprimante ticket 80 mm à découpe, installées'],
+      [`${dt(PRICES.setupNoKit)} DT`, 'sans matériel, si vous gardez le vôtre (testé avec vous avant)'],
+      [`+${PRICES.extraTill} DT / mois`, 'par poste de caisse supplémentaire'],
+    ] as [string, string][],
+    taxNote: 'Prix en dinars tunisiens. Le paiement se fait par virement, chèque ou espèces, avec facture.',
+    choose: 'Choisir cette formule',
+    /** Accessible name of each plan button, so the three buttons can be told apart. */
     chooseLabel: 'Choisir la formule {{plan}}',
     terms: 'Le détail de chaque formule est dans les',
     termsLink: 'conditions générales',
@@ -173,30 +261,31 @@ const fr = {
       ],
       [
         'Je peux garder ma douchette et mon imprimante ?',
-        'Oui, si elles sont compatibles : une douchette USB et une imprimante ticket 80 mm (ou A4) suffisent. On les teste avec vous avant l’installation.',
+        `Oui, si elles sont compatibles : une douchette USB et une imprimante ticket 80 mm (ou A4) suffisent. On les teste avec vous, et la mise en service passe alors à ${dt(PRICES.setupNoKit)} DT.`,
       ],
       [
         'Comment payer ?',
-        'En dinars : espèces, chèque ou virement. Le mensuel se règle chaque mois, l’annuel une fois par an, la formule à vie une seule fois.',
+        'En dinars, par virement, chèque ou espèces, avec une facture. Le mensuel se règle chaque mois, l’annuel une fois par an, la formule à vie une seule fois.',
+      ],
+      [
+        'Quelle formule choisir ?',
+        `L’annuel revient moins cher que le mensuel dès la première année (deux mois offerts). La formule à vie est rentable si vous comptez garder le logiciel plus de quatre ans ; elle est limitée à 20 licences.`,
       ],
       [
         'Mes données sont-elles en sécurité ?',
         'Elles sont hébergées sur Google Cloud à Paris, avec une connexion chiffrée. Chaque librairie a son propre espace, séparé des autres. Vous pouvez tout exporter à tout moment : sauvegarde complète et fichiers pour Excel.',
       ],
       [
-        'Y a-t-il un contrat ?',
-        'Oui, un contrat simple : les conditions générales décrivent chaque formule. Si vous arrêtez, vos données restent à vous et vous les exportez avant de partir.',
-      ],
-      [
         'Il faut quel ordinateur ?',
-        'Un PC avec Chrome ou Edge suffit. Plusieurs postes peuvent travailler ensemble et voient les mêmes chiffres.',
+        'Un PC avec Chrome ou Edge suffit, même ancien. Plusieurs postes peuvent travailler ensemble et voient les mêmes chiffres.',
       ],
     ] as [string, string][],
   },
   final: {
-    title: 'Prêt pour la rentrée ?',
+    title: 'Prêt pour la prochaine rentrée ?',
+    sub: 'Une démonstration de 20 minutes, chez vous ou sur WhatsApp, avec vos propres articles.',
     cta: 'Demander une démo sur WhatsApp',
-    call: 'Appeler',
+    call: 'Ou appelez le',
   },
   footer: {
     made: '© 2026 Mektebti.tn · Fait en Tunisie',
@@ -214,7 +303,7 @@ const ar: LandingCopy = {
   seo: {
     title: 'كاسة وبرنامج تصرّف للمكتبات في تونس | مكتبتي Mektebti.tn',
     description:
-      'كاسة بالسكانر، مخزون، باكات مدرسية وكرّاس الكريدي للمكتبات في تونس. نركّبوها عندك، بالعربي والفرنسي.',
+      'كاسة بالسكانر، مخزون، باكات مدرسية وكرّاس الكريدي للمكتبات في تونس. نركّبوها عندك، بالعربي والفرنسي. من 83 د في الشهر.',
     ogTitle: 'مكتبتي، الكاسة متاع المكتبات التونسية',
     ogDescription:
       'كاسة بالسكانر، باكات مدرسية، كرّاس الكريدي والمخزون، بالمليم. نركّبو، نحطّو السلعة، وانت تبيع.',
@@ -226,36 +315,28 @@ const ar: LandingCopy = {
     pricing: 'الأسعار',
     faq: 'أسئلة',
     login: 'تسجيل الدخول',
+    demo: 'اطلب ديمو',
     otherLang: 'Français',
   },
+  promo: {
+    text: `عرض الانطلاق حتى ${PROMO_UNTIL.ar}: التركيب بنصّ السوم مع الاشتراك السنوي.`,
+    link: 'شوف الأسعار',
+  },
   hero: {
-    kicker: 'نظام الكاسة للمكتبات التونسية',
-    title1: 'بيع أسرع.',
-    title2: 'تصرّف بلا كرّاس.',
-    sub: 'كاسة بالسكانر، مخزون، باكات مدرسية وكرّاس الكريدي. شاشة وحدة، حتى كي يقصّ الإنترنت.',
+    kicker: 'برنامج كاسة للمكتبات والكتبيات',
+    title: 'الكاسة والتصرّف في المكتبة متاعك،',
+    titleAccent: 'في برنامج واحد.',
+    sub: 'بيع بالسكانر، مخزون، باكات مدرسية، كرّاس الكريدي وأرقام النهار. نركّبوه عندك، بالعربي والفرنسي، والكاسة تكمّل تبيع حتى كي يقصّ الإنترنت.',
     cta: 'اطلب ديمو',
     cta2: 'شوف الأسعار',
-  },
-  mock: {
-    lines: [
-      ['كرّاس 96 صفحة', '×3', '3,600'],
-      ['ستيلو أزرق', '×5', '2,250'],
-      ['باك السنة الأولى', '×1', '64,500'],
-    ],
-    total: 'المجموع',
-    totalValue: '70,350 د',
-    pay: 'خلّص',
-    scanned: 'تسكانا',
-    low: 'مخزون ناقص · كرّاس 96',
-    lowValue: '4 باقين',
-    debt: 'الكرّاس · أحمد',
-    debtValue: '35,000 د',
+    points: ['تركيب وتكوين في المحل', 'يخدم بلا إنترنت', 'دعم على الواتساب'],
+    shotAlt: 'كاسة مكتبتي: تيكيت مفتوح، المجموع وزرّ الخلاص',
   },
   facts: [
-    ['بلا إنترنت', 'الكاسة تكمّل كي يقصّ الإنترنت'],
-    ['المعدّات مشمولة', 'سكانر + طابعة تيكيات'],
-    ['عربي · FR', 'لغتين، شاشة وحدة'],
-    ['شهر', 'اشتراك بلاش للبداية'],
+    ['بالمليم', 'المجموع، الصرف والكرّاس مضبوطين'],
+    ['بلا إنترنت', 'البيع يكمّل كي تقصّ الكونكسيون'],
+    ['عربي · Français', 'كل شاشة باللغتين'],
+    ['أكثر من حاسوب', 'نفس الأرقام في كل بلاصة، مباشرة'],
   ],
   trust: 'يخدم توّا في مكتبات في تونس',
   wa: {
@@ -264,8 +345,58 @@ const ar: LandingCopy = {
     plan: 'السلام، يهمّني العرض {{plan}} متاع مكتبتي. المدينة: ',
     ref: 'réf.',
   },
+  showcase: {
+    title: 'مصنوع لكونتوار المكتبة',
+    sub: 'الشاشات هاذي هي متاع البرنامج، كيف ما باش يشوفوها الكاسيرات متاعك.',
+    items: [
+      {
+        img: 'packs',
+        eyebrow: 'الباكات المدرسية',
+        title: 'العودة المدرسية، تتباع في سكان واحد.',
+        body: 'تعمل قائمة كل مستوى مرّة وحدة: الباك يتعدّى في الكاسة بسكان واحد، والمخزون متاع كل سلعة ينقص وحدو.',
+        bullets: ['باك لكل مستوى ولا لكل مدرسة', 'سوم الباك والربح للحريف ظاهرين', 'المخزون متاع كل سلعة يتحيّن'],
+        alt: 'قائمة الباكات المدرسية بالمحتوى والسوم',
+      },
+      {
+        img: 'stock',
+        eyebrow: 'المخزون',
+        title: 'المخزون محيّن، سلعة بسلعة.',
+        body: 'كل بيع وكل شراء يحيّنو المخزون. السلع اللي قاعدة تفرغ تتنبّه عليها قبل، وقيمة المخزون ديما قدّامك.',
+        bullets: ['عائلات، أنواع وكودات', 'تنبيه كي يقلّ المخزون', 'شراءات المزودين والتعديلات'],
+        alt: 'قائمة المخزون بالأصناف والكميات والأسوام',
+      },
+      {
+        img: 'client',
+        eyebrow: 'كرّاس الكريدي',
+        title: 'كرّاس الكريدي، بلا كرّاس.',
+        body: 'شكون يتسال، قدّاش، ومن وقتاش. الديون القديمة تطلع وحدها، والتذكير يمشي على الواتساب في كليك.',
+        bullets: ['الرصيد متاع كل حريف', 'تذكير على الواتساب', 'كرّاس ينطبع'],
+        alt: 'بطاقة حريف فيها الدين، التاريخ وزرّ التذكير على الواتساب',
+      },
+      {
+        img: 'dashboard',
+        eyebrow: 'الأرقام',
+        title: 'شنوّة دخل، شنوّة خرج، وشنوّة ربّح.',
+        body: 'المبيعات، الشراءات، الربح التقريبي ومعدّل السلّة، بالنهار، الجمعة ولا الشهر، والربح متاع كل سلعة.',
+        bullets: ['لوحة أرقام النهار', 'الربح لكل سلعة', 'تصدير لـ Excel ونسخة احتياطية'],
+        alt: 'لوحة الأرقام: المبيعات، الشراءات، الربح ورسم الدخول والخروج',
+      },
+    ],
+  },
+  features: {
+    title: 'كل ما تعملو المكتبة، في كاسة وحدة',
+    items: [
+      ['scan', 'كاسة بالسكانر', 'بيب، تباعت. تيكيت ولا فاتورة تنطبع.'],
+      ['pack', 'باكات مدرسية', 'قائمة العودة المدرسية تتباع في سكان واحد.'],
+      ['carnet', 'كرّاس الحرفاء', 'الديون، الخلاص والتذكير.'],
+      ['stock', 'مخزون حي', 'تنبيه قبل ما تفرغ السلعة.'],
+      ['supplier', 'الشراءات والمزودين', 'فواتير، ديون المزودين، وتاريخ كامل.'],
+      ['profit', 'الربح', 'قدّاش تربّح كل سلعة بالحق.'],
+    ],
+  },
   why: {
     title: 'علاش مكتبتي؟',
+    sub: 'مقارنة بكاسة عامة ولا بالكرّاس.',
     featureCol: 'الميزة',
     cols: ['مكتبتي', 'كاسة عادية', 'كرّاس و Excel'],
     marks: { yes: 'إيه', part: 'جزئياً', no: 'لا' },
@@ -279,58 +410,70 @@ const ar: LandingCopy = {
       ['التحديثات مشمولة', ['yes', 'part', 'no']],
     ],
   },
-  features: {
-    title: 'كل ما تعملو المكتبة، في كاسة وحدة.',
+  steps: {
+    title: 'جاهز في ثلاث خطوات',
     items: [
-      ['scan', 'كاسة بالسكانر', 'بيب، تباعت. والتيكيت يطبع.'],
-      ['pack', 'باكات مدرسية', 'قائمة العودة المدرسية في سكان واحد.'],
-      ['carnet', 'كرّاس الحرفاء', 'شكون يتسال، قدّاش، ومن وقتاش.'],
-      ['stock', 'مخزون حي', 'تنبيه قبل ما تفرغ السلعة.'],
-      ['supplier', 'الشراءات والمزودين', 'فواتير، ديون، وتاريخ كامل.'],
-      ['profit', 'الربح', 'شنوّة اللي يربّح بالحق.'],
+      ['نركّبو عندك', 'البرنامج، السكانر والطابعة، مظبوطين على الحواسب متاعك.'],
+      ['نحطّو المخزون متاعك', 'السلع، الأسوام والكودات، جاهزين للبيع.'],
+      ['تبدا تبيع', 'تكوين للفريق، ومن بعد دعم على الواتساب.'],
     ],
   },
-  steps: {
-    title: 'جاهز في 3 خطوات',
-    items: ['نركّبو عندك', 'نحطّو المخزون متاعك', 'تبدا تبيع'],
-  },
   pricing: {
-    title: 'أسعار واضحة بالدينار',
+    title: 'أسعار بسيطة، بالدينار',
+    sub: 'كل الخدمات في كل عرض. الشهر الأول مجاني.',
     plans: [
       {
         id: 'month',
         name: 'شهري',
         price: dt(PRICES.month),
         unit: 'د / الشهر',
-        badge: 'الشهر الأول مجاني',
-        perks: ['كل الخدمات', 'التحديثات مشمولة'],
-        note: `+ ${dt(PRICES.setup)} د للتركيب: سكانر + طابعة تيكيات، مركّبين`,
+        sub: 'بلا التزام، الشهر الأول مجاني',
+        badge: '',
+        highlight: false,
+        perks: ['كل الخدمات', 'التحديثات مشمولة', 'دعم على الواتساب', 'كاسة وحدة'],
+        note: `التركيب ${dt(PRICES.setup)} د بالمعدّات، ${dt(PRICES.setupNoKit)} د بلاش معدّات`,
       },
       {
         id: 'year',
         name: 'سنوي',
         price: dt(PRICES.year),
         unit: 'د / السنة',
-        badge: '',
-        perks: ['كل الخدمات', 'التحديثات مشمولة', 'التركيب مشمول: سكانر + طابعة تيكيات'],
-        note: '',
-      },
-      {
-        id: 'life',
-        name: 'مدى الحياة',
-        price: dt(PRICES.life),
-        unit: 'د، مرة وحدة',
-        badge: 'تخلّص مرّة وحدة',
+        sub: `يعني ${(PRICES.year / 12).toFixed(1).replace('.', ',')} د في الشهر، شهرين بلاش`,
+        badge: 'ننصحو بيه',
+        highlight: true,
         perks: [
           'كل الخدمات',
           'التحديثات مشمولة',
-          'التركيب مشمول: سكانر + طابعة تيكيات',
-          'نفاذ مدى الحياة',
+          'دعم أولوية في العودة المدرسية',
+          `التركيب بنصّ السوم حتى ${PROMO_UNTIL.ar}`,
         ],
-        note: '',
+        note: `التركيب ${dt(PRICES.setup)} د بالمعدّات، ${dt(PRICES.setupNoKit)} د بلاش معدّات`,
+      },
+      {
+        id: 'life',
+        name: 'مدى الحياة — المؤسّسين',
+        price: dt(PRICES.life),
+        unit: 'د، مرّة وحدة',
+        sub: 'عرض محدود بـ 20 رخصة',
+        badge: '',
+        highlight: false,
+        perks: [
+          'كل الخدمات، بلا اشتراك',
+          'المعدّات والتركيب مشمولين',
+          'دعم مشمول مدّة 24 شهر',
+          `من بعد صيانة اختيارية ${dt(PRICES.maintenance)} د / السنة`,
+        ],
+        note: 'التركيب والمعدّات مشمولين',
       },
     ],
-    choose: 'اختار',
+    setupTitle: 'التركيب',
+    setup: [
+      [`${dt(PRICES.setup)} د`, 'بالمعدّات: سكانر بلا خيط وطابعة تيكيات 80 مم تقصّ وحدها، مركّبين'],
+      [`${dt(PRICES.setupNoKit)} د`, 'بلاش معدّات، كان تحب تخدم بمتاعك (نجرّبوه معاك قبل)'],
+      [`+${PRICES.extraTill} د / الشهر`, 'لكل كاسة زايدة'],
+    ],
+    taxNote: 'الأسعار بالدينار التونسي. الخلاص بالفيرمو، بالشيك ولا كاش، بفاتورة.',
+    choose: 'اختار العرض هذا',
     chooseLabel: 'اختار العرض {{plan}}',
     terms: 'تفاصيل كل عرض موجودة في',
     termsLink: 'الشروط العامة',
@@ -344,30 +487,31 @@ const ar: LandingCopy = {
       ],
       [
         'نجم نخدم بالسكانر والطابعة متاعي؟',
-        'إيه، كان متوافقين: سكانر USB وطابعة تيكيات 80 مم (ولا A4) يكفيو. نجرّبوهم معاك قبل التركيب.',
+        `إيه، كان متوافقين: سكانر USB وطابعة تيكيات 80 مم (ولا A4) يكفيو. نجرّبوهم معاك، والتركيب يولّي ${dt(PRICES.setupNoKit)} د.`,
       ],
       [
         'كيفاش نخلّص؟',
-        'بالدينار: كاش، شيك ولا فيرمو. الشهري كل شهر، السنوي مرّة في العام، ومدى الحياة مرّة وحدة.',
+        'بالدينار، بالفيرمو، بالشيك ولا كاش، بفاتورة. الشهري كل شهر، السنوي مرّة في العام، ومدى الحياة مرّة وحدة.',
+      ],
+      [
+        'آما عرض نختار؟',
+        'السنوي أرخص من الشهري من أوّل عام (شهرين بلاش). مدى الحياة يربّحك كان باش تخدم بالبرنامج أكثر من أربعة سنين، وهو محدود بـ 20 رخصة.',
       ],
       [
         'معطياتي في أمان؟',
         'مخزّنة على Google Cloud في باريس والاتصال مشفّر. كل مكتبة عندها فضاءها، مفصول على الآخرين. وتنجم تصدّر كل شي وقت ما تحب: نسخة احتياطية كاملة وملفات لـ Excel.',
       ],
       [
-        'فما عقد؟',
-        'إيه، عقد بسيط: الشروط العامة تفسّر كل عرض. وكان تحبس، المعطيات متاعك تبقى ليك وتصدّرهم قبل ما تمشي.',
-      ],
-      [
         'شنوّة الحاسوب اللي يلزم؟',
-        'PC بـ Chrome ولا Edge يكفي. وتنجم تخدم بأكثر من حاسوب، وكلهم يشوفو نفس الأرقام.',
+        'PC بـ Chrome ولا Edge يكفي، حتى كان قديم. وتنجم تخدم بأكثر من حاسوب، وكلهم يشوفو نفس الأرقام.',
       ],
     ],
   },
   final: {
-    title: 'جاهز للعودة المدرسية؟',
+    title: 'جاهز للعودة المدرسية الجاية؟',
+    sub: 'ديمو في 20 دقيقة، عندك في المحل ولا على الواتساب، بالسلع متاعك.',
     cta: 'اطلب ديمو على الواتساب',
-    call: 'كلّمنا',
+    call: 'ولا كلّمنا على',
   },
   footer: {
     made: '© 2026 Mektebti.tn · صنع في تونس',
