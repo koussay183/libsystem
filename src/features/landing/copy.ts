@@ -95,9 +95,9 @@ const fr = {
     link: 'Voir les tarifs',
   },
   hero: {
-    kicker: 'Logiciel de caisse pour librairies et papeteries',
-    title: 'La caisse et la gestion de votre librairie,',
-    titleAccent: 'dans un seul logiciel.',
+    kicker: 'Caisse · Stock · Packs scolaires · Carnet de crédit',
+    title: 'Le logiciel de caisse',
+    titleAccent: 'des librairies tunisiennes.',
     sub: 'Vente au scanner, stock, packs scolaires, carnet de crédit et chiffres du jour. Installé chez vous, en français et en arabe, et la caisse continue de vendre quand internet coupe.',
     cta: 'Demander une démo',
     cta2: 'Voir les tarifs',
@@ -191,6 +191,21 @@ const fr = {
       ['Vous vendez', 'Formation de l’équipe, puis support sur WhatsApp.'],
     ] as [string, string][],
   },
+  offline: {
+    eyebrow: 'Hors ligne',
+    title: 'Internet coupe ? La caisse continue.',
+    body: 'Chaque vente est enregistrée d’abord sur le poste, puis envoyée en ligne dès que la connexion revient. Aucune vente perdue, aucun client qui attend.',
+    points: [
+      ['Vente sans connexion', 'scan, ticket et rendu fonctionnent sans internet'],
+      ['Synchronisation automatique', 'les postes se remettent d’accord tout seuls'],
+      ['Sauvegarde en ligne', 'vos données à l’abri, exportables à tout moment'],
+    ] as [string, string][],
+  },
+  faqAside: {
+    title: 'Une autre question ?',
+    body: 'Écrivez-nous sur WhatsApp : on répond en français ou en arabe, et on peut vous montrer le logiciel avec vos propres articles.',
+    cta: 'Poser une question',
+  },
   pricing: {
     title: 'Des tarifs simples, en dinars',
     sub: 'Toutes les fonctions dans chaque formule. Premier mois offert.',
@@ -240,6 +255,7 @@ const fr = {
       },
     ] as Plan[],
     setupTitle: 'Mise en service',
+    extraTitle: 'Option',
     setup: [
       [`${dt(PRICES.setup)} DT`, 'avec le kit : douchette sans fil et imprimante ticket 80 mm à découpe, installées'],
       [`${dt(PRICES.setupNoKit)} DT`, 'sans matériel, si vous gardez le vôtre (testé avec vous avant)'],
@@ -323,9 +339,9 @@ const ar: LandingCopy = {
     link: 'شوف الأسعار',
   },
   hero: {
-    kicker: 'برنامج كاسة للمكتبات والكتبيات',
-    title: 'الكاسة والتصرّف في المكتبة متاعك،',
-    titleAccent: 'في برنامج واحد.',
+    kicker: 'كاسة · مخزون · باكات مدرسية · كرّاس الكريدي',
+    title: 'برنامج الكاسة',
+    titleAccent: 'متاع المكتبات التونسية.',
     sub: 'بيع بالسكانر، مخزون، باكات مدرسية، كرّاس الكريدي وأرقام النهار. نركّبوه عندك، بالعربي والفرنسي، والكاسة تكمّل تبيع حتى كي يقصّ الإنترنت.',
     cta: 'اطلب ديمو',
     cta2: 'شوف الأسعار',
@@ -418,6 +434,21 @@ const ar: LandingCopy = {
       ['تبدا تبيع', 'تكوين للفريق، ومن بعد دعم على الواتساب.'],
     ],
   },
+  offline: {
+    eyebrow: 'بلا إنترنت',
+    title: 'قصّ الإنترنت؟ الكاسة تكمّل.',
+    body: 'كل بيعة تتسجّل في الحاسوب الأول، ومن بعد تتبعث أونلاين كي ترجع الكونكسيون. حتى بيعة ما تضيع، وحتى حريف ما يستنّى.',
+    points: [
+      ['بيع بلا كونكسيون', 'السكان، التيكيت والصرف يخدمو بلا إنترنت'],
+      ['مزامنة وحدها', 'الحواسب يتفاهمو وحدهم'],
+      ['نسخة احتياطية أونلاين', 'معطياتك محفوظة، وتنجم تصدّرها وقت ما تحب'],
+    ],
+  },
+  faqAside: {
+    title: 'عندك سؤال آخر؟',
+    body: 'ابعثلنا على الواتساب: نجاوبو بالعربي ولا بالفرنسي، ونجمو نوريوك البرنامج بالسلع متاعك.',
+    cta: 'اسأل سؤال',
+  },
   pricing: {
     title: 'أسعار بسيطة، بالدينار',
     sub: 'كل الخدمات في كل عرض. الشهر الأول مجاني.',
@@ -467,6 +498,7 @@ const ar: LandingCopy = {
       },
     ],
     setupTitle: 'التركيب',
+    extraTitle: 'خيار',
     setup: [
       [`${dt(PRICES.setup)} د`, 'بالمعدّات: سكانر بلا خيط وطابعة تيكيات 80 مم تقصّ وحدها، مركّبين'],
       [`${dt(PRICES.setupNoKit)} د`, 'بلاش معدّات، كان تحب تخدم بمتاعك (نجرّبوه معاك قبل)'],
