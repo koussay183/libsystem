@@ -544,7 +544,7 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
               {c.pricing.setup.map(([price, what], i) => (
                 <div key={price} className="bg-white p-6">
                   <p className="m-0 text-xs font-semibold uppercase tracking-widest text-ink-muted rtl:tracking-normal">
-                    {i < 2 ? c.pricing.setupTitle : c.pricing.extraTitle}
+                    {[c.pricing.setupTitle, c.pricing.kitTitle, c.pricing.extraTitle][i]}
                   </p>
                   <p className="m-0 mt-2 text-2xl font-bold text-ink" dir="ltr">
                     {price}

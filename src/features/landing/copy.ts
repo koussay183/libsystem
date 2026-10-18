@@ -17,22 +17,25 @@ export const CONTACT = {
 }
 
 /**
- * Prices in dinars (grid from docs/launch/03-business-plan.md §3.2). The
- * visible strings, the JSON-LD offers and the CGV are all built from these,
- * so the page, search engines and the contract cannot disagree.
- *
- * Annual = 10 × monthly (two months free), so it beats monthly at every
- * horizon; lifetime is a capped launch offer with the kit included.
+ * Prices in dinars. The visible strings, the JSON-LD offers and the CGV are
+ * all built from these, so the page, search engines and the contract cannot
+ * disagree. Rationale in docs/launch/08-pricing-v2.md:
+ *  · the kit costs 500 DT to buy, so it is never sold below 590;
+ *  · installation (≈ a day of work) is paid on its own, never folded into
+ *    the hardware;
+ *  · the subscription pays servers, support and updates — annual = 10 ×
+ *    monthly, so it beats monthly from the first year.
  */
 export const PRICES = {
-  month: 83,
-  year: 830,
-  life: 3400,
-  /** Mise en service with the standard kit (wireless scanner + 80 mm printer). */
-  setup: 500,
-  /** Mise en service when the shop keeps its own hardware. */
-  setupNoKit: 250,
-  extraTill: 20,
+  month: 99,
+  year: 990,
+  /** Lifetime, kit included. */
+  life: 4400,
+  /** Installation on site, training, catalogue loading — the team's time. */
+  setup: 290,
+  /** Hardware kit: wireless scanner + 80 mm ticket printer (cost 500 DT). */
+  kit: 590,
+  extraTill: 25,
   maintenance: 290,
 } as const
 
@@ -74,7 +77,7 @@ const fr = {
   seo: {
     title: 'Logiciel de caisse pour librairie en Tunisie | Mektebti.tn',
     description:
-      'Caisse au scanner, stock, packs scolaires et carnet de crédit pour librairies-papeteries en Tunisie. Installé chez vous, en français et en arabe. Dès 83 DT par mois.',
+      'Caisse au scanner, stock, packs scolaires et carnet de crédit pour librairies-papeteries en Tunisie. Installé chez vous, en français et en arabe. Dès 99 DT par mois.',
     ogTitle: 'Mektebti.tn, la caisse des librairies tunisiennes',
     ogDescription:
       'Caisse au scanner, packs scolaires, carnet de crédit et stock, au millime près. On installe, on charge votre stock, vous vendez.',
@@ -91,7 +94,7 @@ const fr = {
     otherLang: 'عربي',
   },
   promo: {
-    text: `Offre de lancement jusqu’au ${PROMO_UNTIL.fr} : mise en service à moitié prix avec l’abonnement annuel.`,
+    text: `Offre de lancement jusqu’au ${PROMO_UNTIL.fr} : installation et formation offertes avec l’abonnement annuel.`,
     link: 'Voir les tarifs',
   },
   hero: {
@@ -219,7 +222,7 @@ const fr = {
         badge: '',
         highlight: false,
         perks: ['Toutes les fonctions', 'Mises à jour incluses', 'Support sur WhatsApp', '1 poste de caisse'],
-        note: `Mise en service ${dt(PRICES.setup)} DT avec matériel, ${dt(PRICES.setupNoKit)} DT sans`,
+        note: `+ installation ${dt(PRICES.setup)} DT · kit matériel ${dt(PRICES.kit)} DT si besoin`,
       },
       {
         id: 'year',
@@ -233,9 +236,9 @@ const fr = {
           'Toutes les fonctions',
           'Mises à jour incluses',
           'Support prioritaire à la rentrée',
-          `Mise en service à moitié prix jusqu’au ${PROMO_UNTIL.fr}`,
+          `Installation offerte jusqu’au ${PROMO_UNTIL.fr}`,
         ],
-        note: `Mise en service ${dt(PRICES.setup)} DT avec matériel, ${dt(PRICES.setupNoKit)} DT sans`,
+        note: `+ installation ${dt(PRICES.setup)} DT · kit matériel ${dt(PRICES.kit)} DT si besoin`,
       },
       {
         id: 'life',
@@ -254,11 +257,12 @@ const fr = {
         note: 'Mise en service et matériel inclus',
       },
     ] as Plan[],
-    setupTitle: 'Mise en service',
+    setupTitle: 'Installation',
+    kitTitle: 'Matériel (optionnel)',
     extraTitle: 'Option',
     setup: [
-      [`${dt(PRICES.setup)} DT`, 'avec le kit : douchette sans fil et imprimante ticket 80 mm à découpe, installées'],
-      [`${dt(PRICES.setupNoKit)} DT`, 'sans matériel, si vous gardez le vôtre (testé avec vous avant)'],
+      [`${dt(PRICES.setup)} DT`, 'installation sur place, formation de l’équipe et chargement de votre stock'],
+      [`${dt(PRICES.kit)} DT`, 'kit matériel : douchette sans fil et imprimante ticket 80 mm, configurés (inutile si vous avez déjà le vôtre)'],
       [`+${PRICES.extraTill} DT / mois`, 'par poste de caisse supplémentaire'],
     ] as [string, string][],
     taxNote: 'Prix en dinars tunisiens. Le paiement se fait par virement, chèque ou espèces, avec facture.',
@@ -277,7 +281,7 @@ const fr = {
       ],
       [
         'Je peux garder ma douchette et mon imprimante ?',
-        `Oui, si elles sont compatibles : une douchette USB et une imprimante ticket 80 mm (ou A4) suffisent. On les teste avec vous, et la mise en service passe alors à ${dt(PRICES.setupNoKit)} DT.`,
+        `Oui, si elles sont compatibles : une douchette USB et une imprimante ticket 80 mm (ou A4) suffisent. On les teste avec vous : vous ne payez alors que l’installation, sans le kit matériel.`,
       ],
       [
         'Comment payer ?',
@@ -285,7 +289,7 @@ const fr = {
       ],
       [
         'Quelle formule choisir ?',
-        `L’annuel revient moins cher que le mensuel dès la première année (deux mois offerts). La formule à vie est rentable si vous comptez garder le logiciel plus de quatre ans ; elle est limitée à 20 licences.`,
+        `L’annuel revient moins cher que le mensuel dès la première année (deux mois offerts). La formule à vie, kit compris, devient la moins chère à partir de la quatrième année ; elle est limitée à 20 licences.`,
       ],
       [
         'Mes données sont-elles en sécurité ?',
@@ -319,7 +323,7 @@ const ar: LandingCopy = {
   seo: {
     title: 'كاسة وبرنامج تصرّف للمكتبات في تونس | مكتبتي Mektebti.tn',
     description:
-      'كاسة بالسكانر، مخزون، باكات مدرسية وكرّاس الكريدي للمكتبات في تونس. نركّبوها عندك، بالعربي والفرنسي. من 83 د في الشهر.',
+      'كاسة بالسكانر، مخزون، باكات مدرسية وكرّاس الكريدي للمكتبات في تونس. نركّبوها عندك، بالعربي والفرنسي. من 99 د في الشهر.',
     ogTitle: 'مكتبتي، الكاسة متاع المكتبات التونسية',
     ogDescription:
       'كاسة بالسكانر، باكات مدرسية، كرّاس الكريدي والمخزون، بالمليم. نركّبو، نحطّو السلعة، وانت تبيع.',
@@ -335,7 +339,7 @@ const ar: LandingCopy = {
     otherLang: 'Français',
   },
   promo: {
-    text: `عرض الانطلاق حتى ${PROMO_UNTIL.ar}: التركيب بنصّ السوم مع الاشتراك السنوي.`,
+    text: `عرض الانطلاق حتى ${PROMO_UNTIL.ar}: التركيب والتكوين بلاش مع الاشتراك السنوي.`,
     link: 'شوف الأسعار',
   },
   hero: {
@@ -462,7 +466,7 @@ const ar: LandingCopy = {
         badge: '',
         highlight: false,
         perks: ['كل الخدمات', 'التحديثات مشمولة', 'دعم على الواتساب', 'كاسة وحدة'],
-        note: `التركيب ${dt(PRICES.setup)} د بالمعدّات، ${dt(PRICES.setupNoKit)} د بلاش معدّات`,
+        note: `+ التركيب ${dt(PRICES.setup)} د · المعدّات ${dt(PRICES.kit)} د كان يلزم`,
       },
       {
         id: 'year',
@@ -476,9 +480,9 @@ const ar: LandingCopy = {
           'كل الخدمات',
           'التحديثات مشمولة',
           'دعم أولوية في العودة المدرسية',
-          `التركيب بنصّ السوم حتى ${PROMO_UNTIL.ar}`,
+          `التركيب بلاش حتى ${PROMO_UNTIL.ar}`,
         ],
-        note: `التركيب ${dt(PRICES.setup)} د بالمعدّات، ${dt(PRICES.setupNoKit)} د بلاش معدّات`,
+        note: `+ التركيب ${dt(PRICES.setup)} د · المعدّات ${dt(PRICES.kit)} د كان يلزم`,
       },
       {
         id: 'life',
@@ -498,10 +502,11 @@ const ar: LandingCopy = {
       },
     ],
     setupTitle: 'التركيب',
+    kitTitle: 'المعدّات (اختياري)',
     extraTitle: 'خيار',
     setup: [
-      [`${dt(PRICES.setup)} د`, 'بالمعدّات: سكانر بلا خيط وطابعة تيكيات 80 مم تقصّ وحدها، مركّبين'],
-      [`${dt(PRICES.setupNoKit)} د`, 'بلاش معدّات، كان تحب تخدم بمتاعك (نجرّبوه معاك قبل)'],
+      [`${dt(PRICES.setup)} د`, 'تركيب في المحل، تكوين للفريق وتحميل المخزون متاعك'],
+      [`${dt(PRICES.kit)} د`, 'المعدّات: سكانر بلا خيط وطابعة تيكيات 80 مم، مظبوطين (ما يلزمش كان عندك متاعك)'],
       [`+${PRICES.extraTill} د / الشهر`, 'لكل كاسة زايدة'],
     ],
     taxNote: 'الأسعار بالدينار التونسي. الخلاص بالفيرمو، بالشيك ولا كاش، بفاتورة.',
@@ -519,7 +524,7 @@ const ar: LandingCopy = {
       ],
       [
         'نجم نخدم بالسكانر والطابعة متاعي؟',
-        `إيه، كان متوافقين: سكانر USB وطابعة تيكيات 80 مم (ولا A4) يكفيو. نجرّبوهم معاك، والتركيب يولّي ${dt(PRICES.setupNoKit)} د.`,
+        `إيه، كان متوافقين: سكانر USB وطابعة تيكيات 80 مم (ولا A4) يكفيو. نجرّبوهم معاك، وتخلّص كان التركيب، بلاش المعدّات.`,
       ],
       [
         'كيفاش نخلّص؟',
@@ -527,7 +532,7 @@ const ar: LandingCopy = {
       ],
       [
         'آما عرض نختار؟',
-        'السنوي أرخص من الشهري من أوّل عام (شهرين بلاش). مدى الحياة يربّحك كان باش تخدم بالبرنامج أكثر من أربعة سنين، وهو محدود بـ 20 رخصة.',
+        'السنوي أرخص من الشهري من أوّل عام (شهرين بلاش). مدى الحياة، بالمعدّات، يولّي الأرخص من العام الرابع، وهو محدود بـ 20 رخصة.',
       ],
       [
         'معطياتي في أمان؟',

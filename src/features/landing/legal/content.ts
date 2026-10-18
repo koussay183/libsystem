@@ -187,7 +187,7 @@ const cgv: LegalDoc = {
             `Mensuel : ${PRICES.month} DT par mois, sans engagement (préavis de 30 jours). Premier mois d’abonnement offert : [conditions et date de début de facturation].`,
             `Annuel : ${PRICES.year} DT par an, payés d’avance (soit deux mois offerts par rapport au mensuel).`,
             `À vie (offre Fondateurs) : ${PRICES.life} DT, payés une seule fois, mise en service et kit matériel inclus, support inclus pendant 24 mois puis maintenance optionnelle à ${PRICES.maintenance} DT par an. Offre limitée à 20 licences numérotées.`,
-            `Mise en service (mensuel et annuel) : ${PRICES.setup} DT avec le kit matériel (douchette sans fil et imprimante ticket 80 mm), ${PRICES.setupNoKit} DT sans matériel.`,
+            `Installation (mensuel et annuel) : ${PRICES.setup} DT, comprenant l’installation sur place, la formation et le chargement du stock. Kit matériel optionnel (douchette sans fil et imprimante ticket 80 mm) : ${PRICES.kit} DT.`,
             `Poste supplémentaire : ${PRICES.extraTill} DT par mois.`,
           ],
         },
