@@ -128,7 +128,7 @@ function Img({
         alt={alt}
         width={w}
         height={h}
-        decoding="async"
+
         className={`block h-auto w-full ${className}`}
       />
     </picture>
@@ -226,21 +226,19 @@ function currentLang(): Lang {
 function Hero({ c, lang, cta }: { c: LandingCopy; lang: Lang; cta: string }) {
   return (
     <section className="relative overflow-hidden bg-white" id="top">
-      {/* soft brand glow behind the headline, static and cheap to paint */}
       <div
-        className="pointer-events-none absolute inset-x-0 top-0 h-[34rem] bg-[radial-gradient(60rem_26rem_at_50%_0%,#e3e0ff,transparent_70%)]"
+        className="pointer-events-none absolute inset-x-0 top-0 h-[30rem] bg-[radial-gradient(60rem_24rem_at_50%_0%,#e3e0ff,transparent_70%)]"
         aria-hidden="true"
       />
-      <div className={`${WRAP} relative pt-16 text-center lg:pt-24`}>
-        <p className="m-0 inline-flex items-center gap-2 rounded-full border border-brand-200 bg-white/80 px-4 py-1.5 text-sm font-medium text-brand-800">
-          <span className="h-2 w-2 rounded-full bg-emerald-500" aria-hidden="true" />
-          {c.hero.kicker}
+      <div className={`${WRAP} relative pt-12 text-center sm:pt-16 lg:pt-20`}>
+        <p className="m-0 inline-flex items-center gap-2 rounded-full bg-amber-300/30 px-3 py-1 text-xs font-bold text-ink sm:text-sm">
+          {c.hero.priceTag}
         </p>
-        <h1 className="mx-auto mb-0 mt-6 max-w-4xl text-[2.6rem] font-bold leading-[1.08] tracking-tight text-ink sm:text-6xl rtl:leading-tight rtl:tracking-normal">
+        <h1 className="mx-auto mb-0 mt-5 max-w-3xl text-[2.1rem] font-extrabold leading-[1.1] tracking-tight text-ink sm:text-5xl lg:text-6xl rtl:leading-snug rtl:tracking-normal">
           {c.hero.title} <span className="text-brand-700">{c.hero.titleAccent}</span>
         </h1>
-        <p className="mx-auto mb-0 mt-6 max-w-2xl text-lg leading-relaxed text-ink-soft sm:text-xl">{c.hero.sub}</p>
-        <div className="mt-9 flex flex-wrap justify-center gap-3">
+        <p className="mx-auto mb-0 mt-5 max-w-xl text-base text-ink-soft sm:text-lg">{c.hero.sub}</p>
+        <div className="mx-auto mt-8 flex max-w-sm flex-col gap-3 sm:max-w-none sm:flex-row sm:justify-center">
           <a href={cta} className={`${BTN_PRIMARY} px-6 py-3.5 text-base shadow-card`} data-mk="wa" data-loc="hero" {...ext}>
             <WhatsAppIcon size={18} />
             {c.hero.cta}
@@ -250,22 +248,21 @@ function Hero({ c, lang, cta }: { c: LandingCopy; lang: Lang; cta: string }) {
             <ArrowRight size={18} className="rtl:-scale-x-100" aria-hidden="true" />
           </a>
         </div>
-        <ul className="m-0 mt-7 flex list-none flex-wrap justify-center gap-x-6 gap-y-2 p-0">
+        <ul className="m-0 mt-6 flex list-none flex-wrap justify-center gap-x-5 gap-y-2 p-0">
           {c.hero.points.map((pt) => (
-            <li key={pt} className="flex items-center gap-2 text-sm font-medium text-ink-soft">
+            <li key={pt} className="flex items-center gap-1.5 text-sm font-medium text-ink-soft">
               <Check size={16} strokeWidth={2.5} className="text-emerald-600" aria-hidden="true" />
               {pt}
             </li>
           ))}
         </ul>
 
-        {/* the product, big, with two real details lifted out of it */}
-        <div className="relative mx-auto mt-14 max-w-5xl pb-6 text-start">
+        <div className="relative mx-auto mt-10 max-w-5xl pb-4 text-start sm:mt-14">
           <AppWindow name="caisse" lang={lang} alt={c.hero.shotAlt} w={1702} h={1242} />
-          <div className="absolute -bottom-4 hidden w-72 overflow-hidden rounded-xl border border-line bg-white p-1 shadow-shot md:block lg:-end-14 md:end-4">
+          <div className="absolute -bottom-3 end-4 hidden w-64 overflow-hidden rounded-xl border border-line bg-white p-1 shadow-shot md:block lg:-end-12">
             <Img name="d-kpi" lang={lang} alt="" w={535} h={170} />
           </div>
-          <div className="absolute bottom-24 hidden w-72 overflow-hidden rounded-xl border border-line bg-white p-1 shadow-shot lg:-start-16 lg:block">
+          <div className="absolute bottom-20 start-4 hidden w-64 overflow-hidden rounded-xl border border-line bg-white p-1 shadow-shot lg:-start-12 lg:block">
             <Img name="d-solde" lang={lang} alt="" w={540} h={160} />
           </div>
         </div>
@@ -285,8 +282,8 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
     client: [1702, 1182],
     dashboard: [1702, 1242],
   }
-  const PANEL = ['bg-brand-50', 'bg-amber-300/20', 'bg-rose-50', 'bg-emerald-50']
   const OFFLINE_ICONS: LucideIcon[] = [WifiOff, RefreshCw, CloudUpload]
+  const START = c.pricing.setup
 
   return (
     <div className="mk" lang={lang}>
@@ -341,46 +338,34 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
 
         {/* ---------------- proof band ---------------- */}
         <section className="border-y border-line bg-paper">
-          <div className={`${WRAP} grid grid-cols-2 divide-line py-2 lg:grid-cols-4 lg:divide-x rtl:lg:divide-x-reverse`}>
-            {c.facts.map(([big, small], i) => {
+          <div className={`${WRAP} grid grid-cols-2 gap-y-6 py-8 lg:grid-cols-4`}>
+            {c.facts.map(([big], i) => {
               const Icon = FACT_ICONS[i]
               return (
-                <div key={big} className="flex flex-col items-center gap-2 px-4 py-7 text-center">
-                  <Icon size={22} className="text-brand-700" aria-hidden="true" />
-                  <p className="m-0 text-lg font-bold text-ink">{big}</p>
-                  <p className="m-0 max-w-[16rem] text-sm text-ink-muted">{small}</p>
+                <div key={big} className="flex items-center justify-center gap-2.5 px-2 text-center">
+                  <Icon size={20} className="shrink-0 text-brand-700" aria-hidden="true" />
+                  <p className="m-0 text-sm font-semibold text-ink sm:text-base">{big}</p>
                 </div>
               )
             })}
           </div>
         </section>
 
-        {/* ---------------- product, screen by screen ---------------- */}
-        <section className="bg-white py-24" id="fonctions">
+        {/* ---------------- features: picture first, one line each ---------------- */}
+        <section className="bg-white py-16 sm:py-24" id="fonctions">
           <div className={WRAP}>
-            <SectionTitle eyebrow={c.nav.features} title={c.showcase.title} sub={c.showcase.sub} />
-            <div className="grid gap-24">
-              {c.showcase.items.map((s, i) => {
+            <SectionTitle title={c.showcase.title} />
+            <div className="grid gap-6 md:grid-cols-2">
+              {c.showcase.items.map((s) => {
                 const [w, h] = SHOT_SIZE[s.img]
                 return (
-                  <article key={s.img} className="grid items-center gap-10 lg:grid-cols-12 lg:gap-14">
-                    <div className={`lg:col-span-5 ${i % 2 ? 'lg:order-2' : ''}`}>
-                      <p className="m-0 text-sm font-semibold uppercase tracking-widest text-brand-700 rtl:tracking-normal">{s.eyebrow}</p>
-                      <h3 className="mb-0 mt-3 text-[1.75rem] font-bold leading-tight tracking-tight text-ink sm:text-[2rem]">{s.title}</h3>
-                      <p className="mb-0 mt-4 text-lg leading-relaxed text-ink-soft">{s.body}</p>
-                      <ul className="m-0 mt-7 grid list-none gap-3.5 p-0">
-                        {s.bullets.map((b) => (
-                          <li key={b} className="flex items-start gap-3 font-medium text-ink">
-                            <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-brand-700 text-white">
-                              <Check size={12} strokeWidth={3.5} aria-hidden="true" />
-                            </span>
-                            {b}
-                          </li>
-                        ))}
-                      </ul>
+                  <article key={s.img} className="flex flex-col overflow-hidden rounded-2xl border border-line bg-paper">
+                    <div className="px-6 pt-6 sm:px-8 sm:pt-8">
+                      <p className="m-0 text-xs font-bold uppercase tracking-widest text-brand-700 rtl:tracking-normal">{s.eyebrow}</p>
+                      <h3 className="mb-0 mt-2 text-xl font-bold leading-snug text-ink sm:text-2xl">{s.title}</h3>
                     </div>
-                    <div className={`rounded-2xl p-4 sm:p-8 lg:col-span-7 ${PANEL[i % PANEL.length]}`}>
-                      <div className="overflow-hidden rounded-xl border border-black/5 bg-white shadow-shot">
+                    <div className="mt-6 flex flex-1 items-end ps-6 sm:ps-8">
+                      <div className="w-full overflow-hidden rounded-ss-xl border-s border-t border-line bg-white shadow-card">
                         <Img name={s.img} lang={lang} alt={s.alt} w={w} h={h} />
                       </div>
                     </div>
@@ -391,24 +376,19 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
           </div>
         </section>
 
-        {/* ---------------- offline, the differentiator ---------------- */}
-        <section className="relative overflow-hidden bg-ink py-24 text-white">
-          <div
-            className="pointer-events-none absolute inset-0 bg-[radial-gradient(40rem_20rem_at_80%_0%,rgba(91,75,255,.35),transparent_70%)]"
-            aria-hidden="true"
-          />
-          <div className={`${WRAP} relative`}>
-            <SectionTitle eyebrow={c.offline.eyebrow} title={c.offline.title} sub={c.offline.body} dark />
-            <div className="grid gap-6 md:grid-cols-3">
-              {c.offline.points.map(([title, body], i) => {
+        {/* ---------------- offline ---------------- */}
+        <section className="bg-ink py-14 text-white sm:py-16">
+          <div className={`${WRAP} grid items-center gap-8 lg:grid-cols-[1.1fr_2fr]`}>
+            <h2 className="m-0 text-center text-2xl font-extrabold leading-tight sm:text-3xl lg:text-start">{c.offline.title}</h2>
+            <div className="grid gap-4 sm:grid-cols-3">
+              {c.offline.points.map(([title], i) => {
                 const Icon = OFFLINE_ICONS[i]
                 return (
-                  <div key={title} className="rounded-2xl border border-white/10 bg-white/[0.04] p-7">
-                    <span className="grid h-11 w-11 place-items-center rounded-lg bg-brand-600 text-white">
-                      <Icon size={22} aria-hidden="true" />
+                  <div key={title} className="flex items-center gap-3 rounded-xl bg-white/[0.06] px-4 py-4">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-brand-600">
+                      <Icon size={20} aria-hidden="true" />
                     </span>
-                    <h3 className="mb-0 mt-5 text-lg font-semibold text-white">{title}</h3>
-                    <p className="mb-0 mt-2 text-brand-200">{body}</p>
+                    <span className="font-semibold">{title}</span>
                   </div>
                 )
               })}
@@ -416,117 +396,41 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
           </div>
         </section>
 
-        {/* ---------------- comparison ---------------- */}
-        <section className="bg-paper py-24" id="pourquoi">
-          <div className={WRAP}>
-            <SectionTitle title={c.why.title} sub={c.why.sub} />
-            <div className="mx-auto max-w-4xl overflow-x-auto rounded-2xl border border-line bg-white shadow-card">
-              <table className="w-full border-collapse text-sm sm:text-base">
-                <thead>
-                  <tr className="border-b border-line">
-                    <th scope="col" className="p-5 text-start font-medium text-ink-muted">
-                      <span className="mk-sr">{c.why.featureCol}</span>
-                    </th>
-                    {c.why.cols.map((col, i) => (
-                      <th
-                        key={col}
-                        scope="col"
-                        className={`p-5 text-center font-semibold ${i === 0 ? 'bg-brand-800 text-white' : 'text-ink-muted'}`}
-                      >
-                        {col}
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {c.why.rows.map(([label, marks]) => (
-                    <tr key={label} className="border-b border-line last:border-0">
-                      <th scope="row" className="p-5 text-start font-medium text-ink">
-                        {label}
-                      </th>
-                      {marks.map((m, i) => (
-                        <td key={i} className={`p-5 text-center ${i === 0 ? 'bg-brand-50' : ''}`}>
-                          <MarkCell mark={m} label={c.why.marks[m]} />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </section>
-
-        {/* ---------------- steps ---------------- */}
-        <section className="bg-white py-24">
-          <div className={WRAP}>
-            <SectionTitle title={c.steps.title} />
-            <ol className="relative m-0 grid list-none gap-10 p-0 md:grid-cols-3 md:gap-8">
-              <span className="absolute inset-x-[16%] top-7 hidden h-px bg-brand-200 md:block" aria-hidden="true" />
-              {c.steps.items.map(([title, body], i) => {
-                const Icon = STEP_ICONS[i]
-                return (
-                  <li key={title} className="relative text-center">
-                    <span className="relative mx-auto grid h-14 w-14 place-items-center rounded-full bg-brand-800 text-white ring-8 ring-white">
-                      <Icon size={24} aria-hidden="true" />
-                    </span>
-                    <p className="mb-0 mt-5 text-sm font-bold text-brand-700">0{i + 1}</p>
-                    <h3 className="mb-0 mt-1 text-xl font-semibold text-ink">{title}</h3>
-                    <p className="mx-auto mb-0 mt-2 max-w-xs text-ink-muted">{body}</p>
-                  </li>
-                )
-              })}
-            </ol>
-          </div>
-        </section>
-
         {/* ---------------- pricing ---------------- */}
-        <section className="border-t border-line bg-paper py-24" id="tarifs">
+        <section className="bg-paper py-16 sm:py-24" id="tarifs">
           <div className={WRAP}>
-            <SectionTitle eyebrow={c.nav.pricing} title={c.pricing.title} sub={c.pricing.sub} />
-            <div className="mx-auto grid max-w-5xl items-stretch gap-6 lg:grid-cols-3">
+            <SectionTitle title={c.pricing.title} sub={c.pricing.sub} />
+            <div className="mx-auto grid max-w-md items-stretch gap-5 lg:max-w-5xl lg:grid-cols-3">
               {c.pricing.plans.map((p) => (
                 <article
                   key={p.id}
-                  className={`relative flex flex-col rounded-2xl p-8 ${
-                    p.highlight ? 'bg-brand-800 text-white shadow-shot lg:-my-4 lg:py-12' : 'border border-line bg-white shadow-card'
+                  className={`relative flex flex-col rounded-2xl p-6 sm:p-7 ${
+                    p.highlight ? 'bg-brand-800 text-white shadow-shot lg:-my-3 lg:py-10' : 'border border-line bg-white'
                   }`}
                 >
                   {p.badge ? (
-                    <span className="absolute -top-3 start-8 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-ink">
-                      {p.badge}
-                    </span>
+                    <span className="absolute -top-3 start-6 rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-ink">{p.badge}</span>
                   ) : null}
-                  <h3 className={`m-0 text-lg font-semibold ${p.highlight ? 'text-white' : 'text-ink'}`}>{p.name}</h3>
-                  <p className="mb-0 mt-5 flex flex-wrap items-baseline gap-x-2">
-                    <strong className={`text-5xl font-bold tracking-tight ${p.highlight ? 'text-white' : 'text-ink'}`} dir="ltr">
+                  <h3 className={`m-0 text-base font-semibold ${p.highlight ? 'text-brand-100' : 'text-ink-muted'}`}>{p.name}</h3>
+                  <p className="mb-0 mt-3 flex items-baseline gap-1.5">
+                    <strong className={`whitespace-nowrap text-[2.75rem] font-extrabold leading-none tracking-tight ${p.highlight ? 'text-white' : 'text-ink'}`} dir="ltr">
                       {p.price}
                     </strong>
-                    <span className={p.highlight ? 'text-brand-200' : 'text-ink-muted'}>{p.unit}</span>
+                    <span className={`text-sm font-medium ${p.highlight ? 'text-brand-200' : 'text-ink-muted'}`}>{p.unit}</span>
                   </p>
-                  <p className={`mb-0 mt-2 text-sm font-medium ${p.highlight ? 'text-amber-300' : 'text-brand-700'}`}>{p.sub}</p>
-                  <ul
-                    className={`m-0 mt-7 grid flex-1 list-none content-start gap-3.5 border-t p-0 pt-7 ${
-                      p.highlight ? 'border-white/15' : 'border-line'
-                    }`}
-                  >
+                  <p className={`mb-0 mt-2 text-sm font-semibold ${p.highlight ? 'text-amber-300' : 'text-brand-700'}`}>{p.sub}</p>
+                  <ul className="m-0 mt-6 grid flex-1 list-none content-start gap-3 p-0">
                     {p.perks.map((perk) => (
-                      <li key={perk} className="flex items-start gap-3">
-                        <Check
-                          size={18}
-                          strokeWidth={2.5}
-                          className={`mt-0.5 shrink-0 ${p.highlight ? 'text-amber-300' : 'text-emerald-600'}`}
-                          aria-hidden="true"
-                        />
+                      <li key={perk} className="flex items-start gap-2.5 text-[0.95rem]">
+                        <Check size={18} strokeWidth={2.5} className={`mt-0.5 shrink-0 ${p.highlight ? 'text-amber-300' : 'text-emerald-600'}`} aria-hidden="true" />
                         <span className={p.highlight ? 'text-white' : 'text-ink'}>{perk}</span>
                       </li>
                     ))}
                   </ul>
-                  <p className={`mb-0 mt-7 text-sm ${p.highlight ? 'text-brand-200' : 'text-ink-muted'}`}>{p.note}</p>
                   <a
                     href={waLink(c.wa.plan.replace('{{plan}}', p.name))}
-                    className={`${BTN} mt-4 w-full px-5 py-3 ${
-                      p.highlight ? 'bg-white text-brand-800 hover:bg-brand-50' : 'border border-line bg-white text-ink hover:border-brand-300 hover:bg-brand-50'
+                    className={`${BTN} mt-7 w-full px-5 py-3 ${
+                      p.highlight ? 'bg-white text-brand-800 hover:bg-brand-50' : 'bg-brand-50 text-brand-800 hover:bg-brand-100'
                     }`}
                     aria-label={c.pricing.chooseLabel.replace('{{plan}}', p.name)}
                     data-mk="wa"
@@ -540,51 +444,43 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
               ))}
             </div>
 
-            <div className="mx-auto mt-12 grid max-w-5xl gap-px overflow-hidden rounded-2xl border border-line bg-line md:grid-cols-3">
-              {c.pricing.setup.map(([price, what], i) => (
-                <div key={price} className="bg-white p-6">
-                  <p className="m-0 text-xs font-semibold uppercase tracking-widest text-ink-muted rtl:tracking-normal">
-                    {[c.pricing.setupTitle, c.pricing.kitTitle, c.pricing.extraTitle][i]}
-                  </p>
-                  <p className="m-0 mt-2 text-2xl font-bold text-ink" dir="ltr">
-                    {price}
-                  </p>
-                  <p className="m-0 mt-1 text-sm text-ink-muted">{what}</p>
-                </div>
-              ))}
+            {/* one-time costs, in one clean row */}
+            <div className="mx-auto mt-10 max-w-5xl rounded-2xl border border-line bg-white p-5 sm:p-6">
+              <div className="grid gap-4 sm:grid-cols-3 sm:gap-0 sm:divide-x sm:divide-line rtl:sm:divide-x-reverse">
+                {START.map(([price, what], i) => (
+                  <div key={price} className="sm:px-6 sm:first:ps-0 sm:last:pe-0">
+                    <p className="m-0 text-xs font-bold uppercase tracking-widest text-ink-muted rtl:tracking-normal">
+                      {[c.pricing.setupTitle, c.pricing.kitTitle, c.pricing.extraTitle][i]}
+                    </p>
+                    <p className="m-0 mt-1 text-xl font-extrabold text-ink" dir="ltr">
+                      {price}
+                    </p>
+                    <p className="m-0 mt-1 text-sm text-ink-muted">{what}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="mx-auto mb-0 mt-6 max-w-3xl text-center text-sm text-ink-muted">
-              {c.pricing.taxNote} {c.pricing.terms}{' '}
+            <p className="mx-auto mb-0 mt-5 max-w-3xl text-center text-xs text-ink-muted sm:text-sm">
+              {c.pricing.taxNote}{' '}
               <a href="/cgv" className="text-brand-700 underline underline-offset-2">
                 {c.pricing.termsLink}
               </a>
-              .
             </p>
           </div>
         </section>
 
         {/* ---------------- FAQ ---------------- */}
-        <section className="border-t border-line bg-white py-24" id="faq">
-          <div className={`${WRAP} grid gap-12 lg:grid-cols-12`}>
-            <div className="lg:col-span-4">
-              <h2 className="m-0 text-3xl font-bold tracking-tight text-ink sm:text-[2.6rem] sm:leading-tight">{c.faq.title}</h2>
-              <div className="mt-8 rounded-2xl bg-paper p-6">
-                <p className="m-0 font-semibold text-ink">{c.faqAside.title}</p>
-                <p className="mb-0 mt-2 text-ink-muted">{c.faqAside.body}</p>
-                <a href={cta} className={`${BTN} mt-5 bg-[#25d366] px-4 py-2.5 text-white hover:bg-[#1ebe5b]`} data-mk="wa" data-loc="final" {...ext}>
-                  <MessageCircle size={18} aria-hidden="true" />
-                  {c.faqAside.cta}
-                </a>
-              </div>
-            </div>
-            <div className="divide-y divide-line border-y border-line lg:col-span-8">
-              {c.faq.items.map(([q, a]) => (
+        <section className="bg-white py-16 sm:py-24" id="faq">
+          <div className={`${WRAP} max-w-3xl`}>
+            <SectionTitle title={c.faq.title} />
+            <div className="divide-y divide-line border-y border-line">
+              {c.faq.items.slice(0, 4).map(([q, a]) => (
                 <details key={q} className="group">
-                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-5 text-lg font-semibold text-ink [&::-webkit-details-marker]:hidden">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-5 text-base font-semibold text-ink sm:text-lg [&::-webkit-details-marker]:hidden">
                     {q}
                     <ChevronDown size={20} className="shrink-0 text-ink-muted transition-transform group-open:rotate-180" aria-hidden="true" />
                   </summary>
-                  <p className="m-0 pb-6 leading-relaxed text-ink-soft">{a}</p>
+                  <p className="m-0 pb-5 leading-relaxed text-ink-soft">{a}</p>
                 </details>
               ))}
             </div>
@@ -592,29 +488,18 @@ export function LandingPage({ lang: given }: { lang?: Lang } = {}) {
         </section>
 
         {/* ---------------- final CTA ---------------- */}
-        <section className="bg-white pb-24" id="contact">
+        <section className="bg-white pb-16 sm:pb-24" id="contact">
           <div className={WRAP}>
-            <div className="relative overflow-hidden rounded-3xl bg-brand-800 px-6 py-16 text-center text-white sm:px-16">
-              <div
-                className="pointer-events-none absolute inset-0 bg-[radial-gradient(30rem_16rem_at_50%_0%,rgba(255,255,255,.18),transparent_70%)]"
-                aria-hidden="true"
-              />
-              <div className="relative flex flex-col items-center gap-5">
-                <h2 className="m-0 text-3xl font-bold tracking-tight sm:text-[2.6rem] sm:leading-tight">{c.final.title}</h2>
-                <p className="m-0 max-w-xl text-lg text-brand-100">{c.final.sub}</p>
-                <a
-                  href={cta}
-                  className={`${BTN} bg-white px-6 py-3.5 text-base text-brand-800 hover:bg-brand-50`}
-                  data-mk="wa"
-                  data-loc="final"
-                  {...ext}
-                >
+            <div className="rounded-3xl bg-brand-800 px-6 py-12 text-center text-white sm:px-16 sm:py-16">
+              <h2 className="m-0 text-2xl font-extrabold tracking-tight sm:text-4xl">{c.final.title}</h2>
+              <div className="mx-auto mt-7 flex max-w-sm flex-col items-center gap-4 sm:max-w-none">
+                <a href={cta} className={`${BTN} w-full bg-white px-6 py-3.5 text-base text-brand-800 hover:bg-brand-50 sm:w-auto`} data-mk="wa" data-loc="final" {...ext}>
                   <WhatsAppIcon size={18} />
                   {c.final.cta}
                 </a>
                 <a href={TEL} className="inline-flex items-center gap-2 text-brand-100 hover:text-white" data-mk="call" data-loc="final">
                   <Phone size={16} aria-hidden="true" />
-                  {c.final.call} <span dir="ltr" className="font-semibold">{PHONE_LABEL}</span>
+                  <span dir="ltr" className="font-semibold">{PHONE_LABEL}</span>
                 </a>
               </div>
             </div>
