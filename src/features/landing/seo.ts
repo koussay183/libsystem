@@ -37,6 +37,11 @@ function common(o: SiteOptions): string[] {
     '<link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png">',
     '<link rel="icon" type="image/png" sizes="16x16" href="/brand/favicon-16.png">',
     '<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">',
+    // Plus Jakarta Sans for Latin, IBM Plex Sans Arabic for Arabic; swap so
+    // text shows at once in the system font while the files arrive.
+    '<link rel="preconnect" href="https://fonts.googleapis.com">',
+    '<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>',
+    '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap">',
   ]
   if (o.googleVerification) out.push(meta('name', 'google-site-verification', o.googleVerification))
   if (o.bingVerification) out.push(meta('name', 'msvalidate.01', o.bingVerification))
