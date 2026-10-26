@@ -35,7 +35,7 @@
   min-height: 100dvh;
   background: var(--paper);
   color: var(--ink);
-  font-family: 'Segoe UI', 'Noto Kufi Arabic', system-ui, -apple-system, sans-serif;
+  font-family: 'Plus Jakarta Sans', 'IBM Plex Sans Arabic', 'Segoe UI', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
   overflow-x: clip;
   -webkit-font-smoothing: antialiased;
@@ -338,7 +338,7 @@ html:has(.mk) {
   color: var(--ink, #0b0a1f);
   border: 1px solid #e7e5f5;
   box-shadow: 0 24px 60px -20px rgba(11, 10, 31, 0.45);
-  font-family: 'Segoe UI', 'Noto Kufi Arabic', system-ui, -apple-system, sans-serif;
+  font-family: 'Plus Jakarta Sans', 'IBM Plex Sans Arabic', 'Segoe UI', system-ui, -apple-system, sans-serif;
   line-height: 1.5;
 }
 .mkc h2 {

@@ -34,7 +34,7 @@ export default {
         paper: '#f7f7fb',
       },
       fontFamily: {
-        sans: ['"Segoe UI"', '"Noto Kufi Arabic"', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['"Plus Jakarta Sans"', '"IBM Plex Sans Arabic"', '"Segoe UI"', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         card: '0 1px 2px rgba(11,10,31,.06), 0 8px 24px -12px rgba(11,10,31,.12)',
