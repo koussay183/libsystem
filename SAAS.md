@@ -420,6 +420,55 @@ paying clients' tills stop mid-afternoon.
 
 ---
 
+## Backups — three layers, all automatic, almost free
+
+| Layer | Where | Runs | Costs us | Survives |
+| --- | --- | --- | --- | --- |
+| **Restore points** | the till's own browser (IndexedDB, gzip) | every day, by itself | nothing — reads only (below) | an owner mistake, a bad restore, our servers |
+| **Folder copy** | a folder the owner picks once: USB key, Documents, Drive/OneDrive sync folder | every day, by itself | nothing | the PC dying, the browser being wiped, our servers |
+| **Managed backups** | Firestore itself, whole project | daily (7 d) + weekly (14 w) | storage only — fractions of a cent | a bug or a bad CLI command hitting every shop |
+
+**On the till** (`src/features/backup/autoBackup.ts`, started by `AppShell`):
+90 s after the app opens, then every 30 min check, at most one run per 20 h,
+one tab only (Web Locks). It syncs against the **server** — never the cache — so
+every restore point is complete; with the line down it simply retries later.
+Points are thinned to one a day for 7 days, one a week for 5 weeks, one a month
+for a year (~24 points, a few MB). An unchanged day does not add a point.
+
+Every point and every file is run through the **carnet check**
+(`carnet.ts`): each customer's balance must equal the sum of his credit lines.
+A mismatch is shown on the backup screen and in the restore review; the folder
+also gets `carnet-credit.csv`, the debts list readable in Excel with no app.
+
+**Read cost**, which is the only cost: small collections (< 300 docs) are
+re-read whole; big ones (products, sales, credit lines) only as a **delta** —
+`createdAt`/`updatedAt` ≥ last sync − 3 days — proven by one `count()` (1 read
+per 1 000 docs). A count that disagrees (a deletion, a late write) re-reads that
+collection at once, and everything is re-read in full once a week. For a shop
+of 10 000 documents: ~10 000 reads once a week, a few hundred the other days,
+instead of 70 000 a week for a naive daily export. A manual download primes the
+same mirror, so the next automatic run is a delta too.
+
+The folder copy uses the File System Access API: **Chrome or Edge on the PC**.
+After a browser restart Chrome may ask once more ("Autoriser" on the backup
+screen) unless the owner ticks *Allow on every visit* in the prompt. Firefox,
+Safari and phones get restore points but no folder copy, and are told so.
+
+**Server side**, once per project:
+
+```bash
+node cli/lib.mjs backup:schedule          # daily 7 d + weekly 14 w, idempotent
+node cli/lib.mjs backup:schedule --list
+node cli/lib.mjs backup --all --keep 30   # every shop to backups/, old files pruned
+```
+
+`backup:schedule` needs `roles/datastore.owner` on the service account; when it
+is missing the command prints the two `gcloud` lines to run instead. A managed
+backup restores into a **new** database (`gcloud firestore databases restore`);
+pull the one shop out of it and `import:file` it back.
+
+---
+
 ## Still open
 
 Written down because a known gap is cheaper than a rediscovered one.

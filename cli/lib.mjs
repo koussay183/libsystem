@@ -16,7 +16,7 @@
  * installs the app's dependencies and never sees this folder.
  */
 
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline/promises'
@@ -113,6 +113,9 @@ const BOOLEAN_FLAGS = new Set([
   'allow-cross-shop',
   'update',
   'millimes',
+  'all',
+  'list',
+  'remove',
 ])
 
 const flags = {}
@@ -318,6 +321,9 @@ function credentialsPath() {
 
 let _db = null
 let _auth = null
+/** Kept for the REST calls the Admin SDK has no wrapper for (backup schedules). */
+let _cred = null
+let _projectId = null
 let _admin = null
 
 /**
@@ -370,7 +376,9 @@ async function connect() {
   }
   if (!parsed.project_id) die(`${path} does not look like a service-account key.`)
   const admin = await loadAdmin()
-  admin.initializeApp({ credential: admin.cert(parsed), projectId: parsed.project_id })
+  _cred = admin.cert(parsed)
+  _projectId = parsed.project_id
+  admin.initializeApp({ credential: _cred, projectId: parsed.project_id })
   _db = admin.getFirestore()
   _auth = admin.getAuth()
   log(c.dim(`· project ${parsed.project_id}`))
@@ -2405,33 +2413,179 @@ commands['import:products'] = {
   },
 }
 
+/**
+ * The carnet check the app runs on every restore point (src/features/backup/
+ * carnet.ts), repeated here so an admin backup says the same thing: every
+ * customer's stored balance must equal the sum of his credit lines.
+ */
+function carnetSummary(out) {
+  const sums = new Map()
+  const customers = out.customers ?? []
+  const known = new Set(customers.map((c) => c.id))
+  let orphans = 0
+  for (const e of out.credit_entries ?? []) {
+    if (!known.has(e.customerId)) {
+      orphans += 1
+      continue
+    }
+    const amt = Number.isFinite(e.amount) ? e.amount : 0
+    sums.set(e.customerId, (sums.get(e.customerId) ?? 0) + (e.type === 'debit' ? amt : -amt))
+  }
+  let outstanding = 0
+  let debtors = 0
+  const mismatches = []
+  for (const cu of customers) {
+    const bal = Number.isFinite(cu.balance) ? cu.balance : 0
+    if (bal > 0) {
+      debtors += 1
+      outstanding += bal
+    }
+    if (bal !== (sums.get(cu.id) ?? 0)) mismatches.push(cu.name ?? cu.id)
+  }
+  return { debtors, outstanding, orphans, mismatches }
+}
+
+/** One shop to backups/<shopId>-<stamp>.json, then old files of that shop pruned. */
+async function backupOneShop(db, shopId, keep) {
+  const out = {}
+  let total = 0
+  for (const col of SHOP_COLLECTIONS) {
+    const snap = await db.collection('shops').doc(shopId).collection(col).get()
+    out[col] = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+    total += snap.size
+    log(`  ${col.padEnd(16)} ${String(snap.size).padStart(6)}`)
+  }
+  // The shop's own record (name, plan, dates) — never restored by the app,
+  // but it is what tells whoever opens this file whose shop it is.
+  const record = await db.collection('shops').doc(shopId).get()
+  const dir = join(ROOT, 'backups')
+  mkdirSync(dir, { recursive: true })
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const file = join(dir, `${shopId}-${stamp}.json`)
+  writeFileSync(
+    file,
+    JSON.stringify(
+      {
+        app: 'lib-manager',
+        version: 1,
+        shopId,
+        exportedAt: new Date().toISOString(),
+        shop: record.exists ? record.data() : null,
+        collections: out,
+      },
+      null,
+      1,
+    ),
+  )
+  const carnet = carnetSummary(out)
+  ok(`${total} documents → ${file}`)
+  log(
+    `  carnet: ${carnet.debtors} debtors, ${(carnet.outstanding / 1000).toFixed(3)} DT outstanding` +
+      (carnet.orphans ? c.yellow(`, ${carnet.orphans} orphan lines`) : ''),
+  )
+  if (carnet.mismatches.length) {
+    warn(`balance ≠ ledger for ${carnet.mismatches.length}: ${carnet.mismatches.slice(0, 8).join(', ')}`)
+  }
+  if (keep > 0) {
+    const mine = readdirSync(dir)
+      .filter((f) => f.startsWith(`${shopId}-`) && /^\S+-\d{4}-\d{2}-\d{2}T[\d-]+\.json$/.test(f))
+      .sort()
+      .reverse()
+    for (const old of mine.slice(keep)) unlinkSync(join(dir, old))
+    if (mine.length > keep) log(c.dim(`  pruned ${mine.length - keep} older file(s), kept ${keep}`))
+  }
+  return { total, carnet }
+}
+
 commands['backup'] = {
-  blurb: 'Write one shop to a JSON file on this PC  --shop <shopId>',
+  blurb: 'Write shops to JSON files on this PC  --shop <shopId> | --all  [--keep 30]',
   async run() {
     const { db } = await connect()
-    const shopId = flags.shop ?? positional[0]
-    if (!shopId) die('Need --shop <shopId>.')
-    const out = {}
-    let total = 0
-    for (const col of SHOP_COLLECTIONS) {
-      const snap = await db.collection('shops').doc(shopId).collection(col).get()
-      out[col] = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-      total += snap.size
-      log(`  ${col.padEnd(16)} ${String(snap.size).padStart(6)}`)
+    const keep = flags.keep === undefined ? 30 : Number(flags.keep)
+    if (!Number.isInteger(keep) || keep < 0) die('--keep must be a whole number (0 = keep everything).')
+    let ids
+    if (flags.all) {
+      ids = (await db.collection('shops').get()).docs.map((d) => d.id)
+    } else {
+      const shopId = flags.shop ?? positional[0]
+      if (!shopId) die('Need --shop <shopId>, or --all.')
+      ids = [shopId]
     }
-    const dir = join(ROOT, 'backups')
-    mkdirSync(dir, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
-    const file = join(dir, `${shopId}-${stamp}.json`)
-    writeFileSync(
-      file,
-      JSON.stringify(
-        { app: 'lib-manager', version: 1, shopId, exportedAt: new Date().toISOString(), collections: out },
-        null,
-        1,
-      ),
-    )
-    ok(`${total} documents → ${file}`)
+    let grand = 0
+    for (const id of ids) {
+      log('')
+      log(c.bold(`  shops/${id}`))
+      grand += (await backupOneShop(db, id, keep)).total
+    }
+    if (ids.length > 1) ok(`${ids.length} shops, ${grand} documents`)
+  },
+}
+
+/**
+ * Firestore's own managed backups — the server-side safety net.
+ *
+ * Fully automatic and the cheapest copy there is: Google takes it inside the
+ * database, nothing runs on our side, no reads are billed for it, and storage
+ * is billed per GiB-month on a database that weighs megabytes — fractions of a
+ * cent. One daily schedule (kept 7 days) and one weekly (kept 14 weeks, the
+ * maximum) per database. It covers the whole project, every shop at once;
+ * restoring goes to a NEW database (gcloud firestore databases restore), so a
+ * single shop can then be copied back with import:file.
+ *
+ * Needs the service account to hold roles/datastore.owner (or the narrower
+ * Datastore Backup Schedules Admin role).
+ */
+commands['backup:schedule'] = {
+  blurb: 'Turn on Firestore daily+weekly managed backups (server-side)  [--list] [--remove]',
+  async run() {
+    await connect()
+    const token = (await _cred.getAccessToken()).access_token
+    const base = `https://firestore.googleapis.com/v1/projects/${_projectId}/databases/(default)/backupSchedules`
+    const call = async (method, url, body) => {
+      const res = await fetch(url, {
+        method,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) {
+        const msg = json?.error?.message ?? res.statusText
+        if (res.status === 403) {
+          die(
+            `Not allowed: ${msg}`,
+            'Give the service account roles/datastore.owner in IAM, or run it yourself once:\n' +
+              `  gcloud firestore backups schedules create --database='(default)' --recurrence=daily --retention=7d --project=${_projectId}\n` +
+              `  gcloud firestore backups schedules create --database='(default)' --recurrence=weekly --day-of-week=SUN --retention=14w --project=${_projectId}`,
+          )
+        }
+        die(`${method} failed (${res.status}): ${msg}`)
+      }
+      return json
+    }
+    const existing = (await call('GET', base)).backupSchedules ?? []
+    const show = (list) => {
+      if (list.length === 0) log(c.dim('  no backup schedule'))
+      for (const s of list) {
+        const kind = s.dailyRecurrence ? 'daily' : `weekly (${s.weeklyRecurrence?.day ?? '?'})`
+        log(`  ${c.blue(kind.padEnd(16))} keep ${s.retention}  ${c.dim(s.name.split('/').pop())}`)
+      }
+    }
+    if (flags.list) return show(existing)
+    if (flags.remove) {
+      if (!(await confirm(`Delete ${existing.length} backup schedule(s)?`))) return
+      for (const s of existing) await call('DELETE', `https://firestore.googleapis.com/v1/${s.name}`)
+      return ok('Backup schedules removed. Existing backups expire on their own.')
+    }
+    if (!existing.some((s) => s.dailyRecurrence)) {
+      await call('POST', base, { retention: `${7 * 86400}s`, dailyRecurrence: {} })
+      ok('Daily backup on, kept 7 days')
+    }
+    if (!existing.some((s) => s.weeklyRecurrence)) {
+      await call('POST', base, { retention: `${14 * 7 * 86400}s`, weeklyRecurrence: { day: 'SUNDAY' } })
+      ok('Weekly backup on (Sunday), kept 14 weeks')
+    }
+    show((await call('GET', base)).backupSchedules ?? [])
+    log(c.dim('  List the backups:  gcloud firestore backups list --project=' + _projectId))
   },
 }
 

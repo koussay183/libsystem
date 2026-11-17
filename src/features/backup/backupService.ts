@@ -310,6 +310,10 @@ export function writeLastBackupAt(at: number, partial = false) {
   }
 }
 
+export function downloadBlob(blob: Blob, filename: string) {
+  triggerDownload(blob, filename)
+}
+
 function triggerDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

@@ -350,6 +350,20 @@ export function AppShell() {
   const groups = visibleNavGroups(shop.hiddenNav)
   const footerItems = visibleNavFooter(shop.hiddenNav)
 
+  /*
+    The automatic backup. Started here because the shell is mounted for the
+    whole signed-in session and nowhere else is; loaded as its own chunk, and
+    only after a pause, so opening the till in the morning pays nothing for it.
+    startAutoBackup is idempotent, so a remount is harmless.
+  */
+  useEffect(() => {
+    void import('@/features/backup/autoBackup')
+      .then((m) => m.startAutoBackup())
+      .catch(() => {
+        /* offline first load of a new build — tried again on the next visit */
+      })
+  }, [])
+
   // Close the drawer whenever navigation happens, so tapping a link on a phone
   // does not leave the overlay covering the page it just opened.
   useEffect(() => {

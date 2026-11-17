@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, useSyncExternalStore } from 'react'
 import type { ChangeEvent } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
@@ -36,6 +36,10 @@ import {
   STALE_BACKUP_DAYS,
 } from './backupService'
 import type { BackupFile } from './backupService'
+import { autoBackupStore, recordRestorePoint } from './autoBackup'
+import { AutoBackupCard } from './AutoBackupCard'
+import { checkCarnet } from './carnet'
+import { formatMoney, moneySymbolKey } from '@/lib/money'
 
 /** Firestore collection name → the words the owner uses for it. */
 const COLLECTION_LABEL: Record<string, string> = {
@@ -69,7 +73,11 @@ export function BackupPanel() {
     /** The second line: why the outcome is not simply "done". */
     note?: string
   } | null>(null)
-  const [lastAt, setLastAt] = useState<number | null>(readLastBackupAt)
+  const [downloadedAt, setLastAt] = useState<number | null>(readLastBackupAt)
+  // A daily copy written by itself to the owner's folder (USB key, Documents)
+  // is a file he holds, exactly like a download: it counts for the shield.
+  const folderAt = useSyncExternalStore(autoBackupStore.subscribe, () => autoBackupStore.getSnapshot().folderLastAt)
+  const lastAt = Math.max(downloadedAt ?? 0, folderAt ?? 0) || null
   /** Whether that last backup was the offline, possibly-incomplete kind. */
   const [lastPartial, setLastPartial] = useState<boolean>(readLastBackupPartial)
   /** A file that has been read and understood, waiting for a yes. */
@@ -80,7 +88,8 @@ export function BackupPanel() {
 
   const staleDays = lastAt === null ? null : dayjs().diff(dayjs(lastAt), 'day')
   const isStale = lastAt === null || (staleDays ?? 0) >= STALE_BACKUP_DAYS
-  const wasPartial = lastAt !== null && lastPartial
+  // A complete folder copy taken after a partial download supersedes it.
+  const wasPartial = lastAt !== null && lastPartial && (folderAt ?? 0) < (downloadedAt ?? 0)
 
   /** Collection names in the words the owner uses, for a warning sentence. */
   const nameList = (names: string[]) =>
@@ -99,6 +108,9 @@ export function BackupPanel() {
         return
       }
       downloadJson(backup, `librairie-sauvegarde-${dayjs().format('YYYY-MM-DD-HHmm')}.json`)
+      // A complete download doubles as a restore point here, and primes the
+      // automatic backup so its next run only reads what changed since.
+      void recordRestorePoint(backup, 'manual').catch(() => undefined)
       // A cache-sourced export is still handed over — see exportAll — but it is
       // reported as a warning, not a success, and the collections that could
       // not be confirmed are named. The one thing this screen must never do is
@@ -172,6 +184,7 @@ export function BackupPanel() {
 
   const rows = pending ? summarise(pending) : []
   const skipped = rows.reduce((n, r) => n + r.skipped, 0)
+  const carnet = pending ? checkCarnet(pending) : null
 
   return (
     <Box>
@@ -211,6 +224,16 @@ export function BackupPanel() {
           )}
         </Alert.Content>
       </Alert.Root>
+
+      <AutoBackupCard
+        onRestore={(backup) => {
+          // Same review dialog as a file picked off a USB key: nothing is
+          // written before the owner has seen what the point holds.
+          setStatus(null)
+          setForeignOk(false)
+          setPending(backup)
+        }}
+      />
 
       <SimpleGrid columns={{ base: 1, lg: 2 }} gap={5}>
         {/* -------------------------- Download -------------------------- */}
@@ -378,6 +401,25 @@ export function BackupPanel() {
                       </Flex>
                     ))}
                   </Stack>
+
+                  {/* Who owes what, in this file — the list that exists nowhere
+                      else, so the owner sees it before overwriting today's. */}
+                  {carnet && (
+                    <Text color={carnet.mismatches.length ? 'orange.fg' : 'fg.muted'} fontSize="sm">
+                      {t('autoBackup.carnetTitle')} :{' '}
+                      {carnet.debtors > 0
+                        ? t('autoBackup.carnetOk', {
+                            debtors: carnet.debtors,
+                            amount: formatMoney(carnet.outstanding, { symbol: t(moneySymbolKey()) }),
+                          })
+                        : t('autoBackup.carnetEmpty')}
+                      {carnet.mismatches.length > 0 &&
+                        ` — ${t('autoBackup.carnetMismatch', {
+                          count: carnet.mismatches.length,
+                          names: carnet.mismatches.slice(0, 5).map((m) => m.name).join(', '),
+                        })}`}
+                    </Text>
+                  )}
 
                   <Alert.Root status="warning">
                     <Alert.Indicator />
