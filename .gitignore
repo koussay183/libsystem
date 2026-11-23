@@ -50,4 +50,5 @@ cli/service-account*.json
 service-account.json
 **/service-account*.json
 *-firebase-adminsdk-*.json
-config.bat
+.env
+.env.local
